@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 
 
 def set_up_data(H):
+    H.angle_rad = torch.deg2rad(torch.tensor(H.angle))
     shift_loss = -127.5
     scale_loss = 1. / 127.5
     if H.dataset == 'imagenet32':

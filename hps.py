@@ -101,10 +101,22 @@ def add_imle_arguments(parser):
     parser.add_argument('--image_size', type=int, default=256)  # image size of dataset -- possible to downsample the dataset
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
+    
+    parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
+    parser.add_argument('--use_splatter', type=bool, default=False)  # angle
+
+    parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
+    parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
+
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--use_wandb', type=int, default=0)
     parser.add_argument('--wandb_mode', type=str, default='online')
+
+    parser.add_argument('--use_comet', type=bool, default=False)
+    parser.add_argument('--comet_name', type=str, default='AdaptiveIMLE')  # used in comet.ml
+    parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
+    parser.add_argument('--comet_experiment_key', type=str, default='')
 
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
@@ -117,5 +129,5 @@ def add_imle_arguments(parser):
     parser.add_argument("--step", type=float, default=0.1, help="step size for interpolation")
     parser.add_argument('--ppl_save_name', type=str, default='ppl')
     parser.add_argument("--fid_factor", type=int, default=5, help="number of the samples for calculating FID")
-    parser.add_argument("--fid_freq", type=int, default=5, help="frequency of calculating fid")
+    parser.add_argument("--fid_freq", type=int, default=500, help="frequency of calculating fid")
     return parser

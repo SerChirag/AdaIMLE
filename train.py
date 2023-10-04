@@ -1,9 +1,11 @@
 import os
 import time
 
+from comet_ml import Experiment, ExistingExperiment
 import imageio
 import torch
 import wandb
+import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -30,7 +32,22 @@ from visual.utils import (generate_and_save, generate_for_NN,
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
     t0 = time.time()
     imle.zero_grad()
-    px_z = imle(latents, snoise)
+
+    if(H.use_splatter):
+        norms = torch.norm(latents,dim=1,p=2)
+        normilzed_latents = nn.functional.normalize(latents, dim=1, p=2)
+        
+        b = torch.normal(0,1,size=normilzed_latents.shape)
+        b = nn.functional.normalize(b, dim=1)
+
+        w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normilzed_latents),-1) * normilzed_latents
+        w = nn.functional.normalize(w,p=2,dim=-1)
+        cur_batch_latents = torch.cos(H.angle_rad) * normilzed_latents + torch.sin(H.angle_rad) * w
+        cur_batch_latents = cur_batch_latents * norms.view(-1, 1)
+    else:
+        cur_batch_latents = latents
+
+    px_z = imle(cur_batch_latents, snoise)
     loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
     loss.backward()
     optimizer.step()
@@ -42,7 +59,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     return stats
 
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint):
+def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment = None):
     subset_len = len(data_train)
     if H.subset_len != -1:
         subset_len = H.subset_len
@@ -50,7 +67,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         data_train = TensorDataset(data_train[0])
         break
 
-    optimizer, scheduler, _, iterate, _ = load_opt(H, imle, logprint)
+    optimizer, scheduler, _, iterate, starting_epoch = load_opt(H, imle, logprint)
+
+    print("Starting epoch: ", starting_epoch)
+    print("Starting iteration: ", iterate)
 
     stats = []
     H.ema_rate = torch.as_tensor(H.ema_rate)
@@ -68,7 +88,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     best_fid = 100000
 
 
-    epoch = -1
+    epoch = starting_epoch - 1
     for outer in range(H.num_epochs):
         for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
             split_x_tensor = split_x_tensor[0].contiguous()
@@ -90,7 +110,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 all_conditions = torch.logical_or(in_threshold, updated_too_much)
                 to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
-                if epoch == 0:
+                if (epoch == starting_epoch):
                     if os.path.isfile(str(H.restore_latent_path)):
                         latents = torch.load(H.restore_latent_path)
                         sampler.selected_latents[:] = latents[:]
@@ -116,13 +136,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
                 sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
+                to_update = to_update.cpu()
                 last_updated[to_update] = 0
                 times_updated[to_update] = times_updated[to_update] + 1
 
                 save_latents_latest(H, split_ind, sampler.selected_latents)
                 save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-                if to_update.shape[0] >= H.num_images_visualize:
+                if to_update.shape[0] >= H.num_images_visualize + 8:
                     latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                     with torch.no_grad():
                         generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
@@ -149,7 +170,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                     sampler.selected_latents[0: H.num_images_visualize],
                                                     [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
                                                     viz_batch_original.shape, imle, ema_imle,
-                                                    f'{H.save_dir}/samples-{iterate}.png', logprint)
+                                                    f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
 
                     iterate += 1
                     if iterate % H.iters_per_save == 0:
@@ -195,6 +216,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
                 if H.use_wandb:
                     wandb.log(metrics, step=iterate)
+                
+                if experiment is not None:
+                    experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
 
 
@@ -205,6 +229,26 @@ def main(H=None):
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
     imle, ema_imle = load_imle(H, logprint)
 
+    if H.use_comet and H.comet_api_key:
+        if(H.comet_experiment_key):
+            print("Resuming experiment")
+            experiment = ExistingExperiment(
+                api_key=H.comet_api_key,
+                previous_experiment=H.comet_experiment_key
+            )
+            experiment.log_parameters(H)
+
+        else:
+            experiment = Experiment(
+                api_key=H.comet_api_key,
+                project_name="adaptiveimle-ablation",
+                workspace="serchirag",
+            )
+            experiment.set_name(H.comet_name)
+            experiment.log_parameters(H)
+    else:
+        experiment = None
+
     if H.use_wandb:
         wandb.init(
             name=H.wandb_name,
@@ -214,8 +258,13 @@ def main(H=None):
         )
 
     os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
+    
 
     if H.mode == 'eval':
+        
+        os.makedirs(f'{H.save_dir}/eval', exist_ok=True)
+        print(H)
+
         with torch.no_grad():
             # Generating
             sampler = Sampler(H, len(data_train), preprocess_fn)
@@ -226,9 +275,21 @@ def main(H=None):
                     print(i * n_samp)
                 temp_latent_rnds.normal_()
                 tmp_snoise = [s[:n_samp].normal_() for s in sampler.snoise_tmp]
+                torch.save(temp_latent_rnds, f'{H.save_dir}/eval/temp_latent_rnds_{i}.pt')
+                torch.save(tmp_snoise, f'{H.save_dir}/eval/tmp_snoise_{i}.pt')
                 samp = sampler.sample(temp_latent_rnds, imle, tmp_snoise)
                 for j in range(n_samp):
-                    imageio.imwrite(f'{H.save_dir}/{i * n_samp + j}.png', samp[j])
+                    imageio.imwrite(f'{H.save_dir}/eval/{i * n_samp + j}.png', samp[j])
+
+    elif H.mode == 'eval_fid':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, len(data_train), preprocess_fn)
+        generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+        print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+        cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+        print("FID: ", cur_fid)
 
 
     elif H.mode == 'reconstruct':
@@ -266,7 +327,7 @@ def main(H=None):
 
 
     elif H.mode == 'train':
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint)
+        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'ppl':
         sampler = Sampler(H, H.subset_len, preprocess_fn)
