@@ -4,7 +4,7 @@ import imageio
 
 def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None, sn1=None, sn2=None):
     num_lin = 1
-    mb = 8
+    mb = 20
 
     batches = []
     # step = (-f_latent + s_latent) / num_lin

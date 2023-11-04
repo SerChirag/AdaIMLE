@@ -9,7 +9,11 @@ def generate_rnd(H, sampler, shape, ema_imle, fname, logprint):
     temp_latent_rnds = torch.randn([mb, H.latent_dim], dtype=torch.float32).cuda()
     for t in range(H.num_rows_visualize):
         temp_latent_rnds.normal_()
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+        if(H.use_snoise == True):
+            tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+        else:
+            tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
+        # tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
         out = ema_imle(temp_latent_rnds, tmp_snoise)
         batches.append(sampler.sample_from_out(out))
 

@@ -33,13 +33,22 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
     temp_latent_rnds = torch.randn([mb, H.latent_dim], dtype=torch.float32).cuda()
     for t in range(H.num_rows_visualize):
         temp_latent_rnds.normal_()
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+        if(H.use_snoise == True):
+            tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+        else:
+            tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
         batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    if(H.use_snoise == True):
+        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    else:
+        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
     batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    if(H.use_snoise == True):
+        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    else:
+        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
     batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
     tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
@@ -65,8 +74,13 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
         temp_latent_rnds = torch.randn([H.imle_batch, H.latent_dim], dtype=torch.float32).cuda()
         for i in range(0, n_samp // H.imle_batch):
             temp_latent_rnds.normal_()
-            tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
-            
+
+            if(H.use_snoise == True):
+                tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
+            else:
+                tmp_snoise = [s[:H.imle_batch] for s in sampler.neutral_snoise]
+
+            # tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
             # z_mean = torch.mean(temp_latent_rnds,axis=0)
             # snoise_mean = []
             # for j in tmp_snoise:

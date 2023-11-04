@@ -1,3 +1,5 @@
+from distutils.util import strtobool
+
 HPARAMS_REGISTRY = {}
 
 
@@ -103,7 +105,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
     
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
-    parser.add_argument('--use_splatter', type=bool, default=False)  # angle
+    parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
+    parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
+
+    parser.add_argument('--use_snoise', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
@@ -113,7 +118,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_wandb', type=int, default=0)
     parser.add_argument('--wandb_mode', type=str, default='online')
 
-    parser.add_argument('--use_comet', type=bool, default=False)
+    parser.add_argument('--use_comet', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--comet_name', type=str, default='AdaptiveIMLE')  # used in comet.ml
     parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
     parser.add_argument('--comet_experiment_key', type=str, default='')

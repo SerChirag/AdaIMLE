@@ -29,10 +29,16 @@ class Sampler:
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
         self.neutral_snoise = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
-        self.snoise_tmp = [torch.randn([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
-        self.selected_snoise = [torch.randn([sz, 1, s, s,], dtype=torch.float32) for s in self.res]
-        self.snoise_pool = [torch.randn([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
 
+        if(H.use_snoise == True):
+            self.snoise_tmp = [torch.randn([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            self.selected_snoise = [torch.randn([sz, 1, s, s,], dtype=torch.float32) for s in self.res]
+            self.snoise_pool = [torch.randn([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
+        else:
+            self.snoise_tmp = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            self.selected_snoise = [torch.zeros([sz, 1, s, s,], dtype=torch.float32) for s in self.res]
+            self.snoise_pool = [torch.zeros([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            
         self.selected_dists = torch.empty([sz], dtype=torch.float32).cuda()
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32).cuda()
@@ -150,7 +156,8 @@ class Sampler:
             nm = latents.shape[0]
             if snoise is None:
                 for i in range(len(self.res)):
-                    self.snoise_tmp[i].normal_()
+                    if(self.H.use_snoise == True):
+                        self.snoise_tmp[i].normal_()
                 snoise = [s[:nm] for s in self.snoise_tmp]
             px_z = gen(latents, snoise).permute(0, 2, 3, 1)
             xhat = (px_z + 1.0) * 127.5
@@ -211,7 +218,8 @@ class Sampler:
         for i in range(imle_pool_size // self.H.imle_db_size):
             self.temp_latent_rnds.normal_()
             for j in range(len(self.res)):
-                self.snoise_tmp[j].normal_()
+                if(self.H.use_snoise == True):
+                    self.snoise_tmp[j].normal_()
             for j in range(self.H.imle_db_size // self.H.imle_batch):
                 batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
                 cur_latents = self.temp_latent_rnds[batch_slice]
@@ -270,7 +278,8 @@ class Sampler:
         # self.init_projection(ds)
         self.pool_latents.normal_()
         for i in range(len(self.res)):
-            self.snoise_pool[i].normal_()
+            if(self.H.use_snoise == True):
+                self.snoise_pool[i].normal_()
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
