@@ -215,7 +215,7 @@ class Sampler:
         imle_pool_size = int(len(dataset) * factor)
         t1 = time.time()
         self.selected_dists_tmp[:] = self.selected_dists[:]
-        for i in range(imle_pool_size // self.H.imle_db_size):
+        for i in range((imle_pool_size // self.H.imle_db_size)+1):
             self.temp_latent_rnds.normal_()
             for j in range(len(self.res)):
                 if(self.H.use_snoise == True):
