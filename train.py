@@ -129,7 +129,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 updated_enough = last_updated >= H.imle_staleness
                 updated_too_much = last_updated >= H.imle_force_resample
                 in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
-                all_conditions = torch.logical_or(in_threshold, updated_too_much)
+
+                if(H.use_adaptive):
+                    all_conditions = torch.logical_or(in_threshold, updated_too_much)
+                else:
+                    all_conditions = updated_too_much
+                    
+                # all_conditions = torch.logical_or(in_threshold, updated_too_much)
                 to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
                 if (epoch == starting_epoch):
