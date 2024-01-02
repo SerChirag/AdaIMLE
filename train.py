@@ -238,8 +238,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
                     metrics['fid'] = cur_fid
                     metrics['best_fid'] = best_fid
-                    
-
+                
+                if (to_update.shape[0] != 0):
+                    metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
+                    metrics['std_loss_resample'] = torch.std(cur_dists).item()
+                    metrics['max_loss_resample'] = torch.max(cur_dists).item()
+                    metrics['min_loss_resample'] = torch.min(cur_dists).item()
+    
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
                 if H.use_wandb:
@@ -247,8 +252,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 
                 if experiment is not None:
                     experiment.log_metrics(metrics, epoch=epoch, step=iterate)
-
-
 
 def main(H=None):
     H_cur, logprint = set_up_hyperparams()
@@ -366,12 +369,15 @@ def main(H=None):
         calc_ppl_uniform(H, imle, sampler)
     
     elif H.mode == 'interpolate':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
         with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=H.subset_len):
+            for split_x in DataLoader(data_train, batch_size=subset_len):
                 split_x = split_x[0]
             viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
                                                                     H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
+            sampler = Sampler(H, subset_len, preprocess_fn)
             for i in range(H.num_images_to_generate):
                 random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp-{i}.png', logprint)
 
