@@ -108,150 +108,148 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     change_thresholds = torch.empty(subset_len).cuda()
     change_thresholds[:] = H.change_threshold
     best_fid = 100000
-
-
     epoch = starting_epoch - 1
-    for outer in range(H.num_epochs):
-        for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
-            split_x_tensor = split_x_tensor[0].contiguous()
-            split_x = TensorDataset(split_x_tensor)
-            sampler.init_projection(split_x_tensor)
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
-            print('Outer batch - {}'.format(split_ind, len(split_x)))
+    for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
+        split_x_tensor = split_x_tensor[0].contiguous()
+        split_x = TensorDataset(split_x_tensor)
+        sampler.init_projection(split_x_tensor)
+        viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
-            while True:
-                epoch += 1
-                last_updated[:] = last_updated + 1
+        print('Outer batch - {}'.format(split_ind, len(split_x)))
 
-                sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
-                dists_in_threshold = sampler.selected_dists < change_thresholds
-                updated_enough = last_updated >= H.imle_staleness
-                updated_too_much = last_updated >= H.imle_force_resample
-                in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
+        while (epoch < H.num_epochs):
+            epoch += 1
+            last_updated[:] = last_updated + 1
 
-                if(H.use_adaptive):
-                    all_conditions = torch.logical_or(in_threshold, updated_too_much)
-                else:
-                    all_conditions = updated_too_much
-                    
-                # all_conditions = torch.logical_or(in_threshold, updated_too_much)
-                to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
+            sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
+            dists_in_threshold = sampler.selected_dists < change_thresholds
+            updated_enough = last_updated >= H.imle_staleness
+            updated_too_much = last_updated >= H.imle_force_resample
+            in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
 
-                if (epoch == starting_epoch):
-                    if os.path.isfile(str(H.restore_latent_path)):
-                        latents = torch.load(H.restore_latent_path)
-                        sampler.selected_latents[:] = latents[:]
-                        for x in DataLoader(split_x, batch_size=H.num_images_visualize, pin_memory=True):
-                            break
-                        batch_slice = slice(0, x[0].size()[0])
-                        latents = sampler.selected_latents[batch_slice]
-                        with torch.no_grad():
-                            snoise = [s[batch_slice] for s in sampler.selected_snoise]
-                            generate_for_NN(sampler, x[0], latents, snoise, viz_batch_original.shape, imle,
-                                f'{H.save_dir}/NN-samples_{outer}-{split_ind}-imle.png', logprint)
-                        print('loaded latest latents')
+            if(H.use_adaptive):
+                all_conditions = torch.logical_or(in_threshold, updated_too_much)
+            else:
+                all_conditions = updated_too_much
+                
+            # all_conditions = torch.logical_or(in_threshold, updated_too_much)
+            to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
-                    if os.path.isfile(str(H.restore_latent_path)):
-                        threshold = torch.load(H.restore_threshold_path)
-                        change_thresholds[:] = threshold[:]
-                        print('loaded thresholds', torch.mean(change_thresholds))
-                    else:
-                        to_update = sampler.entire_ds
-
-
-                change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
-
-                sampler.imle_sample_force(split_x_tensor, imle, to_update)
-
-                to_update = to_update.cpu()
-                last_updated[to_update] = 0
-                times_updated[to_update] = times_updated[to_update] + 1
-
-                save_latents_latest(H, split_ind, sampler.selected_latents)
-                save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
-
-                if to_update.shape[0] >= H.num_images_visualize + 8:
-                    latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
+            if (epoch == starting_epoch):
+                if os.path.isfile(str(H.restore_latent_path)):
+                    latents = torch.load(H.restore_latent_path)
+                    sampler.selected_latents[:] = latents[:]
+                    for x in DataLoader(split_x, batch_size=H.num_images_visualize, pin_memory=True):
+                        break
+                    batch_slice = slice(0, x[0].size()[0])
+                    latents = sampler.selected_latents[batch_slice]
                     with torch.no_grad():
-                        generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
-                                        [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
-                                        viz_batch_original.shape, imle,
-                                        f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
+                        snoise = [s[batch_slice] for s in sampler.selected_snoise]
+                        generate_for_NN(sampler, x[0], latents, snoise, viz_batch_original.shape, imle,
+                            f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
+                    print('loaded latest latents')
 
-                
+                if os.path.isfile(str(H.restore_latent_path)):
+                    threshold = torch.load(H.restore_threshold_path)
+                    change_thresholds[:] = threshold[:]
+                    print('loaded thresholds', torch.mean(change_thresholds))
+                else:
+                    to_update = sampler.entire_ds
 
-                comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-                data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True)
-                for cur, indices in data_loader:
-                    x = cur[0]
-                    latents = cur[1][0]
-                    _, target = preprocess_fn(x)
-                    cur_snoise = [s[indices] for s in sampler.selected_snoise]
-                    stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
-                    stats.append(stat)
-                    scheduler.step()
 
-                    if iterate % H.iters_per_images == 0:
-                        with torch.no_grad():
-                            generate_images_initial(H, sampler, viz_batch_original,
-                                                    sampler.selected_latents[0: H.num_images_visualize],
-                                                    [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
-                                                    viz_batch_original.shape, imle, ema_imle,
-                                                    f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
+            change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
 
-                    iterate += 1
-                    if iterate % H.iters_per_save == 0:
-                        fp = os.path.join(H.save_dir, 'latest')
-                        logprint(f'Saving model@ {iterate} to {fp}')
-                        save_model(fp, imle, ema_imle, optimizer, H)
-                        save_latents_latest(H, split_ind, sampler.selected_latents)
-                        save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
+            sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
-                    if iterate % H.iters_per_ckpt == 0:
-                        save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, H)
-                        save_latents(H, iterate, split_ind, sampler.selected_latents)
-                        save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
-                        save_snoise(H, iterate, sampler.selected_snoise)
+            to_update = to_update.cpu()
+            last_updated[to_update] = 0
+            times_updated[to_update] = times_updated[to_update] + 1
 
-                cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
-                cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
-                torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                        
-                metrics = {
-                    'mean_loss': torch.mean(cur_dists).item(),
-                    'std_loss': torch.std(cur_dists).item(),
-                    'max_loss': torch.max(cur_dists).item(),
-                    'min_loss': torch.min(cur_dists).item(),
-                }
+            save_latents_latest(H, split_ind, sampler.selected_latents)
+            save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-                if epoch % H.fid_freq == 0:
-                    generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
-                    print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-                    cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
-                    if cur_fid < best_fid:
-                        best_fid = cur_fid
-                        # save models
-                        fp = os.path.join(H.save_dir, 'best_fid')
-                        logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                        save_model(fp, imle, ema_imle, optimizer, H)
+            if to_update.shape[0] >= H.num_images_visualize + 8:
+                latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
+                with torch.no_grad():
+                    generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
+                                    [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
+                                    viz_batch_original.shape, imle,
+                                    f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
-                    metrics['fid'] = cur_fid
-                    metrics['best_fid'] = best_fid
-                
-                if (to_update.shape[0] != 0):
-                    metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
-                    metrics['std_loss_resample'] = torch.std(cur_dists).item()
-                    metrics['max_loss_resample'] = torch.max(cur_dists).item()
-                    metrics['min_loss_resample'] = torch.min(cur_dists).item()
-    
-                logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+            
 
-                if H.use_wandb:
-                    wandb.log(metrics, step=iterate)
-                
-                if experiment is not None:
-                    experiment.log_metrics(metrics, epoch=epoch, step=iterate)
+            comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True)
+            for cur, indices in data_loader:
+                x = cur[0]
+                latents = cur[1][0]
+                _, target = preprocess_fn(x)
+                cur_snoise = [s[indices] for s in sampler.selected_snoise]
+                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                stats.append(stat)
+                scheduler.step()
+
+                if iterate % H.iters_per_images == 0:
+                    with torch.no_grad():
+                        generate_images_initial(H, sampler, viz_batch_original,
+                                                sampler.selected_latents[0: H.num_images_visualize],
+                                                [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
+                                                viz_batch_original.shape, imle, ema_imle,
+                                                f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
+
+                iterate += 1
+                if iterate % H.iters_per_save == 0:
+                    fp = os.path.join(H.save_dir, 'latest')
+                    logprint(f'Saving model@ {iterate} to {fp}')
+                    save_model(fp, imle, ema_imle, optimizer, H)
+                    save_latents_latest(H, split_ind, sampler.selected_latents)
+                    save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
+
+                if iterate % H.iters_per_ckpt == 0:
+                    save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, H)
+                    save_latents(H, iterate, split_ind, sampler.selected_latents)
+                    save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
+                    save_snoise(H, iterate, sampler.selected_snoise)
+
+            cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
+            cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
+            torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
+                    
+            metrics = {
+                'mean_loss': torch.mean(cur_dists).item(),
+                'std_loss': torch.std(cur_dists).item(),
+                'max_loss': torch.max(cur_dists).item(),
+                'min_loss': torch.min(cur_dists).item(),
+            }
+
+            if epoch % H.fid_freq == 0:
+                generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+                print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+                if cur_fid < best_fid:
+                    best_fid = cur_fid
+                    # save models
+                    fp = os.path.join(H.save_dir, 'best_fid')
+                    logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+                    save_model(fp, imle, ema_imle, optimizer, H)
+
+                metrics['fid'] = cur_fid
+                metrics['best_fid'] = best_fid
+            
+            if (to_update.shape[0] != 0):
+                metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
+                metrics['std_loss_resample'] = torch.std(cur_dists).item()
+                metrics['max_loss_resample'] = torch.max(cur_dists).item()
+                metrics['min_loss_resample'] = torch.min(cur_dists).item()
+
+            logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+
+            if H.use_wandb:
+                wandb.log(metrics, step=iterate)
+            
+            if experiment is not None:
+                experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
 def main(H=None):
     H_cur, logprint = set_up_hyperparams()
