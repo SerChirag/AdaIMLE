@@ -43,7 +43,11 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
         w = nn.functional.normalize(w,p=2,dim=-1)
         cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
-        cur_batch_latents = cur_batch_latents * norms.view(-1, 1)    
+        cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
+
+    elif(H.use_gaussian):
+        cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
+
     else:
         cur_batch_latents = latents
 
