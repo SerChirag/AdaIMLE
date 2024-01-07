@@ -254,6 +254,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
+            if epoch % 50 == 0:
+                with torch.no_grad():
+                    generate_images_initial(H, sampler, viz_batch_original,
+                                            sampler.selected_latents[0: H.num_images_visualize],
+                                            [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
+                                            viz_batch_original.shape, imle, ema_imle,
+                                            f'{H.save_dir}/latest.png', logprint, experiment)
+
+
             if H.use_wandb:
                 wandb.log(metrics, step=iterate)
             
