@@ -375,3 +375,5 @@ class Sampler:
             for param in gen.parameters():
                 param.requires_grad = True
         self.latent_lr = self.latent_lr * (1 - self.H.latent_decay)
+
+        print(f'Force resampling took {time.time() - t1}')
