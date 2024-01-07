@@ -10,3 +10,6 @@ experiments
 .datasets/
 datasets
 wandb
+results/
+vanilla-results/
+train-*.sh
