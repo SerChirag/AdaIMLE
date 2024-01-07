@@ -116,7 +116,7 @@ class AdaptiveInstanceNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super().__init__()
 
-        self.norm = nn.InstanceNorm2d(in_channel)
+        self.norm = nn.InstanceNorm2d(in_channel, eps=1e-2)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
         self.style.linear.bias.data[:in_channel] = 1

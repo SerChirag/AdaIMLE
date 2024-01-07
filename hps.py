@@ -108,7 +108,12 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
-    parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
+    
+    parser.add_argument('--use_gaussian', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
+    parser.add_argument('--gaussian_std', type=float, default=0.1)  # gaussian std
+    # parser.add_argument('--mode', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
+
+    # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
     parser.add_argument('--use_snoise', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
