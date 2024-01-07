@@ -66,7 +66,7 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)
     if(experiment):
-        experiment.log_image(fname)
+        experiment.log_image(fname, overwrite = True)
 
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 

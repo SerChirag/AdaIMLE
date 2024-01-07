@@ -144,7 +144,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True)
 
-            # start_time = time.time()
+            start_time = time.time()
 
             for cur, indices in data_loader:
                 x = cur[0]
@@ -177,7 +177,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
                     save_snoise(H, iterate, sampler.selected_snoise)
 
-            # print(f'Epoch {epoch} took {time.time() - start_time} seconds')
+            print(f'Epoch {epoch} took {time.time() - start_time} seconds')
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
