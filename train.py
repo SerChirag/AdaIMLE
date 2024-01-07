@@ -185,6 +185,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True)
+
+            start_time = time.time()
+
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
@@ -216,6 +219,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
                     save_snoise(H, iterate, sampler.selected_snoise)
 
+            print(f'Epoch {epoch} took {time.time() - start_time} seconds')
+            
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
             torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
@@ -227,7 +232,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'min_loss': torch.min(cur_dists).item(),
             }
 
-            if epoch % H.fid_freq == 0:
+            if (epoch > 0 and epoch % H.fid_freq == 0):
                 generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
