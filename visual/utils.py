@@ -23,6 +23,7 @@ def generate_for_NN(sampler, orig, initial, snoise, shape, ema_imle, fname, logp
 
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)
+    del nns
 
 
 def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_imle, fname, logprint, experiment=None):

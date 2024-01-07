@@ -37,7 +37,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         norms = torch.norm(latents,dim=1,p=2)
         normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
         
-        b = torch.normal(0,1,size=normalized_latents.shape)
+        b = torch.normal(0,1,size=normalized_latents.shape).cuda()
         b = nn.functional.normalize(b, dim=1)
 
         w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
@@ -50,28 +50,6 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
 
     else:
         cur_batch_latents = latents
-
-    # if(H.use_splatter_snoise and H.use_snoise):
-    #     for i in range(len(snoise)):
-    #         snoise_element_res = snoise[i].shape
-    #         snoise_element = torch.reshape(snoise[i], (snoise_element_res[0], -1))
-    #         if(i == 0):
-    #             snoise_element += torch.normal(0,0.005,size=snoise_element.shape)
-    #         else:
-    #             norms_snoise = torch.norm(snoise_element,dim=1,p=2)
-    #             normalized_snoise = nn.functional.normalize(snoise_element, dim=1, p=2)
-
-    #             b = torch.normal(0,1,size=normalized_snoise.shape)
-    #             b = nn.functional.normalize(b, dim=1)
-
-    #             w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_snoise),-1) * normalized_snoise
-    #             w = nn.functional.normalize(w,p=2,dim=-1)
-
-    #             snoise_element = torch.cos(H.angle_rad) * normalized_snoise + torch.sin(H.angle_rad) * w
-    #             snoise_element = snoise_element * norms_snoise.view(-1, 1)
-
-    #         snoise_element = torch.reshape(snoise_element, snoise_element_res)
-    #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
     loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
@@ -83,7 +61,6 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     stats = get_cpu_stats_over_ranks(dict(loss_nans=0, loss=loss))
     stats.update(skipped_updates=0, iter_time=time.time() - t0, grad_norm=0)
     return stats
-
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment = None):
     subset_len = len(data_train)
@@ -114,6 +91,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     best_fid = 100000
     epoch = starting_epoch - 1
 
+
     for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
         split_x_tensor = split_x_tensor[0].contiguous()
         split_x = TensorDataset(split_x_tensor)
@@ -124,21 +102,21 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         while (epoch < H.num_epochs):
             epoch += 1
-            last_updated[:] = last_updated + 1
+            # last_updated[:] = last_updated + 1
 
-            sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
-            dists_in_threshold = sampler.selected_dists < change_thresholds
-            updated_enough = last_updated >= H.imle_staleness
-            updated_too_much = last_updated >= H.imle_force_resample
-            in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
+            # sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
+            # dists_in_threshold = sampler.selected_dists < change_thresholds
+            # updated_enough = last_updated >= H.imle_staleness
+            # updated_too_much = last_updated >= H.imle_force_resample
+            # in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
 
-            if(H.use_adaptive):
-                all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            else:
-                all_conditions = updated_too_much
+            # if(H.use_adaptive):
+            #     all_conditions = torch.logical_or(in_threshold, updated_too_much)
+            # else:
+            #     all_conditions = updated_too_much
                 
-            # all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
+            # # all_conditions = torch.logical_or(in_threshold, updated_too_much)
+            # to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
             if (epoch == starting_epoch):
                 if os.path.isfile(str(H.restore_latent_path)):
@@ -161,30 +139,27 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 else:
                     to_update = sampler.entire_ds
 
-
-            change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
-
-            sampler.imle_sample_force(split_x_tensor, imle, to_update)
-
-            to_update = to_update.cpu()
-            last_updated[to_update] = 0
-            times_updated[to_update] = times_updated[to_update] + 1
+            # sampler.imle_sample_force(split_x_tensor, imle, to_update)
+            if(epoch % H.imle_force_resample == 0):
+            # torch.cuda.empty_cache()
+                sampler.imle_sample(split_x_tensor, imle)
+            # torch.cuda.empty_cache()
 
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-            if to_update.shape[0] >= H.num_images_visualize + 8:
+            if (epoch % H.imle_force_resample == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
                                     [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
-
-            
-
+                    # torch.cuda.empty_cache()
+        
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True)
+
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
@@ -227,7 +202,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'min_loss': torch.min(cur_dists).item(),
             }
 
-            if epoch % H.fid_freq == 0:
+            if (epoch > 0 and epoch % H.fid_freq == 0):
                 generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
