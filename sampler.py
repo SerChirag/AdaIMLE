@@ -12,7 +12,7 @@ from dciknn_cuda import DCI, MDCI
 from torch.optim import AdamW
 from helpers.utils import ZippedDataset
 from models import parse_layer_string
-
+from helpers.angle_sampler import Angle_Generator
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -101,8 +101,13 @@ class Sampler:
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
+        self.angle_generator = Angle_Generator(self.H.latent_dim)
+        self.max_sample_angle_rad = H.max_sample_angle_rad
+        self.min_sample_angle_rad = H.min_sample_angle_rad
+
         self.total_excluded = 0
         self.total_excluded_percentage = 0
+        self.dataset_size = sz
 
     def get_projected(self, inp, permute=True):
         if permute:
@@ -320,7 +325,30 @@ class Sampler:
                                                                                             self.selected_dists.mean(),
                                                                                             changed, (changed / len(
                 dataset)) * 100))
+        
+    def sample_angle(self, pool_slice):
 
+        random_indices = np.random.randint(0, self.dataset_size, size=pool_slice.shape[0])
+        random_z = self.selected_latents[random_indices]
+        
+        normalized_z = F.normalize(random_z, dim=1, p=2) 
+
+        b = F.normalize(pool_slice, dim=1, p=2)
+        norms = torch.norm(pool_slice,dim=1,p=2)
+
+        w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_z),-1) * normalized_z
+        w = F.normalize(w,p=2,dim=-1)
+        
+        angle_sampled = torch.from_numpy(self.angle_generator.return_samples(N=pool_slice.shape[0], 
+                                                            angle_low=self.min_sample_angle_rad, 
+                                                            angle_high=self.max_sample_angle_rad)) 
+        
+        angle_sampled = torch.unsqueeze(angle_sampled,-1)
+
+        new_z = torch.cos(angle_sampled) * normalized_z + torch.sin(angle_sampled) * w
+        new_z = new_z * norms.view(-1, 1)
+        return new_z
+        
     def resample_pool(self, gen, ds):
         # self.init_projection(ds)
         self.pool_latents.normal_()
@@ -330,7 +358,13 @@ class Sampler:
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
-            cur_latents = self.pool_latents[batch_slice]
+
+            if(self.H.use_angular_resample):
+                cur_latents = self.sample_angle(self.pool_latents[batch_slice])
+            
+            else:
+                cur_latents = self.pool_latents[batch_slice]
+
             cur_snosie = [s[batch_slice] for s in self.snoise_pool]
             with torch.no_grad():
                 if(self.H.search_type == 'lpips'):

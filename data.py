@@ -11,7 +11,8 @@ from sklearn.model_selection import train_test_split
 def set_up_data(H):
     
     H.angle_rad = torch.deg2rad(torch.tensor(H.angle))
-    H.resample_angle_rad = torch.deg2rad(torch.tensor(H.resample_angle))
+    H.max_sample_angle_rad = torch.deg2rad(torch.tensor(H.max_sample_angle))
+    H.min_sample_angle_rad = torch.deg2rad(torch.tensor(H.min_sample_angle))
 
     shift_loss = -127.5
     scale_loss = 1. / 127.5

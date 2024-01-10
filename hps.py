@@ -123,9 +123,11 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
-    parser.add_argument('--resample_angle', type=float, default=82.0)  # angle to splatter
     parser.add_argument('--eps_radius', type=float, default=0.1)  # angle to splatter
     parser.add_argument('--knn_ignore', type=int, default=5)  # whether to use spatial noise
+
+    parser.add_argument('--max_sample_angle', type=float, default=180)  # max angle used for sampling
+    parser.add_argument('--min_sample_angle', type=float, default=0)  # min angle used for sampling
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
