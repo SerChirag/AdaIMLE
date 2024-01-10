@@ -33,23 +33,23 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     t0 = time.time()
     imle.zero_grad()
 
-    if(H.use_splatter):
-        norms = torch.norm(latents,dim=1,p=2)
-        normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
+    # if(H.use_splatter):
+    #     norms = torch.norm(latents,dim=1,p=2)
+    #     normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
         
-        b = torch.normal(0,1,size=normalized_latents.shape)
-        b = nn.functional.normalize(b, dim=1)
+    #     b = torch.normal(0,1,size=normalized_latents.shape)
+    #     b = nn.functional.normalize(b, dim=1)
 
-        w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
-        w = nn.functional.normalize(w,p=2,dim=-1)
-        cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
-        cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
+    #     w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
+    #     w = nn.functional.normalize(w,p=2,dim=-1)
+    #     cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
+    #     cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
 
-    elif(H.use_gaussian):
-        cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
+    # elif(H.use_gaussian):
+    #     cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
 
-    else:
-        cur_batch_latents = latents
+    # else:
+    cur_batch_latents = latents
 
     # if(H.use_splatter_snoise and H.use_snoise):
     #     for i in range(len(snoise)):
@@ -222,7 +222,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
+            cur_dists_projected = torch.empty([subset_len], dtype=torch.float32).cuda()
+
             cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
+            cur_dists_projected[:] = sampler.calc_dists_existing_nn(split_x_tensor, imle, dists=cur_dists_projected)
+
             torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
                     
             metrics = {
@@ -230,6 +234,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'std_loss': torch.std(cur_dists).item(),
                 'max_loss': torch.max(cur_dists).item(),
                 'min_loss': torch.min(cur_dists).item(),
+                'mean_loss_nn': torch.mean(cur_dists_projected).item(),
+                'std_loss_nn': torch.std(cur_dists_projected).item(),
+                'max_loss_nn': torch.max(cur_dists_projected).item(),
+                'min_loss_nn': torch.min(cur_dists_projected).item(),
+                'total_excluded': sampler.total_excluded,
+                'total_excluded_percentage': sampler.total_excluded_percentage,
             }
 
             if (epoch > 0 and epoch % H.fid_freq == 0):

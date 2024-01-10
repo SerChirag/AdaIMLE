@@ -120,6 +120,13 @@ def add_imle_arguments(parser):
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
+    parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+
+    parser.add_argument('--resample_angle', type=float, default=82.0)  # angle to splatter
+    parser.add_argument('--eps_radius', type=float, default=0.1)  # angle to splatter
+    parser.add_argument('--knn_ignore', type=int, default=5)  # whether to use spatial noise
+
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--use_wandb', type=int, default=0)

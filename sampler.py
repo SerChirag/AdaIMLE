@@ -16,7 +16,7 @@ from models import parse_layer_string
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.pool_size = int(H.force_factor * sz)
+        self.pool_size = max(int(H.force_factor * sz), H.imle_db_size)
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
         self.H = H
@@ -97,6 +97,13 @@ class Sampler:
         self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32)
         self.snoise_pool_samples_proj = torch.empty([sz * H.snoise_factor, sum_dims], dtype=torch.float32)
 
+        self.knn_ignore = H.knn_ignore
+        self.ignore_radius = H.ignore_radius
+        self.resample_angle = H.resample_angle
+
+        self.total_excluded = 0
+        self.total_excluded_percentage = 0
+
     def get_projected(self, inp, permute=True):
         if permute:
             out, _ = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
@@ -172,6 +179,18 @@ class Sampler:
             xhat = xhat.detach().cpu().numpy()
             xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
             return xhat
+    
+    def calc_loss_projected(self, inp, tar):
+        inp_feat = self.get_projected(inp,False)
+        tar_feat = self.get_projected(tar,False)
+        res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
+        return res
+    
+    def calc_loss_l2(self, inp, tar):
+        inp_feat = self.get_l2_feature(inp,False)
+        tar_feat = self.get_l2_feature(tar,False)
+        res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
+        return res
 
     def calc_loss(self, inp, tar, use_mean=True):
         inp_feat, inp_shape = self.lpips_net(inp)
@@ -206,6 +225,34 @@ class Sampler:
             with torch.no_grad():
                 out = gen(cur_latents, cur_snoise)
                 dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
+                dists[batch_slice] = torch.squeeze(dist)
+        return dists
+    
+    def calc_dists_existing_nn(self, dataset_tensor, gen, dists=None, latents=None, to_update=None, snoise=None):
+        if dists is None:
+            dists = self.selected_dists
+        if latents is None:
+            latents = self.selected_latents
+        if snoise is None:
+            snoise = self.selected_snoise
+
+        if to_update is not None:
+            latents = latents[to_update]
+            dists = dists[to_update]
+            dataset_tensor = dataset_tensor[to_update]
+            snoise = [s[to_update] for s in snoise]
+
+        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
+            _, target = self.preprocess_fn(x)
+            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
+            cur_latents = latents[batch_slice]
+            cur_snoise = [s[batch_slice] for s in snoise]
+            with torch.no_grad():
+                out = gen(cur_latents, cur_snoise)
+                if(self.H.search_type == 'lpips'):
+                    dist = self.calc_loss_projected(target.permute(0, 3, 1, 2), out)
+                else:
+                    dist = self.calc_loss_l2(target.permute(0, 3, 1, 2), out)
                 dists[batch_slice] = torch.squeeze(dist)
         return dists
 
@@ -310,6 +357,44 @@ class Sampler:
         self.selected_dists_tmp[:] = np.inf
         self.sample_pool_usage[to_update] = True
 
+        ## removing samples too close
+
+        total_rejected = 0
+
+        if(self.H.use_eps_ignore):
+            with torch.no_grad():
+                for i in range(self.pool_size // self.H.imle_db_size):
+                    pool_slice = slice(i * self.H.imle_db_size, (i + 1) * self.H.imle_db_size)
+                    if not gen.module.dci_db:
+                        device_count = torch.cuda.device_count()
+                        gen.module.dci_db = MDCI(self.dci_dim, num_comp_indices=self.H.num_comp_indices,
+                                                    num_simp_indices=self.H.num_simp_indices, 
+                                                    devices=[i for i in range(device_count)])
+                    gen.module.dci_db.add(self.pool_samples_proj[pool_slice])
+                    pool_latents = self.pool_latents[pool_slice]
+                    snoise_pool = [b[pool_slice] for b in self.snoise_pool]
+
+                    rejected_flag = torch.zeros(self.H.imle_db_size, dtype=torch.bool)
+
+                    for ind, y in enumerate(DataLoader(TensorDataset(dataset[to_update]), batch_size=self.H.imle_batch)):
+                        _, target = self.preprocess_fn(y)
+                        batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + target.shape[0])
+                        indices = to_update[batch_slice]
+                        x = self.dataset_proj[indices]
+                        nearest_indices, dci_dists = gen.module.dci_db.query(x.float(), num_neighbours=self.H.knn_ignore)
+                        nearest_indices = nearest_indices.long()
+                        check = dci_dists < self.H.eps_radius 
+                        easy_samples_list = torch.unique(nearest_indices[check])
+                        self.pool_samples_proj[pool_slice][easy_samples_list] = torch.tensor(float('inf'))
+                        rejected_flag[easy_samples_list] = 1
+
+                    gen.module.dci_db.clear()
+                    
+                    total_rejected += rejected_flag.sum().item()
+        
+        self.total_excluded = total_rejected
+        self.total_excluded_percentage = (total_rejected * 1.0 / self.pool_size) * 100
+
         with torch.no_grad():
             for i in range(self.pool_size // self.H.imle_db_size):
                 pool_slice = slice(i * self.H.imle_db_size, (i + 1) * self.H.imle_db_size)
@@ -345,35 +430,5 @@ class Sampler:
 
                 if i % 100 == 0:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
-
-
-        if self.H.latent_epoch > 0:
-            for param in gen.parameters():
-                param.requires_grad = False
-        updatable_latents = self.selected_latents_tmp[to_update].clone().requires_grad_(True)
-        latent_optimizer = AdamW([updatable_latents], lr=self.latent_lr)
-        comb_dataset = ZippedDataset(TensorDataset(dataset[to_update]), TensorDataset(updatable_latents))
-
-        for gd_epoch in range(self.H.latent_epoch):
-            losses = []
-            for cur, _ in DataLoader(comb_dataset, batch_size=self.H.n_batch):
-                x = cur[0]
-                latents = cur[1][0]
-                _, target = self.preprocess_fn(x)
-                gen.zero_grad()
-                px_z = gen(latents)  # TODO fix this
-                loss = self.calc_loss(px_z, target.permute(0, 3, 1, 2))
-                loss.backward()
-                latent_optimizer.step()
-                updatable_latents.grad.zero_()
-
-                losses.append(loss.detach())
-            print('avg loss', gd_epoch, sum(losses) / len(losses))
-        self.selected_latents[to_update] = updatable_latents.detach().clone()
-
-        if self.H.latent_epoch > 0:
-            for param in gen.parameters():
-                param.requires_grad = True
-        self.latent_lr = self.latent_lr * (1 - self.H.latent_decay)
 
         print(f'Force resampling took {time.time() - t1}')
