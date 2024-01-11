@@ -72,7 +72,14 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     phi = 0.9
     with torch.no_grad():
         temp_latent_rnds = torch.randn([H.imle_batch, H.latent_dim], dtype=torch.float32).cuda()
-        for i in range(0, n_samp // H.imle_batch):
+        for i in range(0, n_samp, H.imle_batch):
+
+            if(i + H.imle_batch > n_samp):
+                batch_size = n_samp - i
+                print("batch size: ", batch_size)
+            else:
+                batch_size = H.imle_batch
+
             temp_latent_rnds.normal_()
 
             if(H.use_snoise == True):
@@ -94,6 +101,6 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             # samp = sampler.sample(trunc_latents_og, imle, snoise_trunc_og)
             samp = sampler.sample(temp_latent_rnds, imle, tmp_snoise)
 
-            for j in range(H.imle_batch):
-                imageio.imwrite(f'{H.save_dir}/{subdir}/{i * H.imle_batch + j}.png', samp[j])
+            for j in range(batch_size):
+                imageio.imwrite(f'{H.save_dir}/{subdir}/{i + j}.png', samp[j])
 
