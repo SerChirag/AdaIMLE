@@ -2,6 +2,20 @@ import torch
 from torch.utils.data import DataLoader
 import numpy as np
 import imageio
+import os
+import shutil
+
+
+def delete_content_of_dir(folder):
+    for filename in os.listdir(folder):
+        file_path = os.path.join(folder, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print('Failed to delete %s. Reason: %s' % (file_path, e))
 
 def get_sample_for_visualization(data, preprocess_fn, num, dataset):
     for x in DataLoader(data, batch_size=num):
@@ -68,6 +82,8 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
         experiment.log_image(fname, overwrite=True)
 
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
+
+    delete_content_of_dir(f'{H.save_dir}/{subdir}')
 
     phi = 0.9
     with torch.no_grad():
