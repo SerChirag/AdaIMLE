@@ -222,10 +222,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
-            cur_dists_projected = torch.empty([subset_len], dtype=torch.float32).cuda()
+            cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
+            cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
 
-            cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
-            cur_dists_projected[:] = sampler.calc_dists_existing_nn(split_x_tensor, imle, dists=cur_dists_projected)
+
+            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+                                                                                            dists=cur_dists,  
+                                                                                            dists_lpips=cur_dists_lpips,
+                                                                                            dists_l2=cur_dists_l2, 
+                                                                                            logging=True)
 
             torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
                     
@@ -234,10 +239,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'std_loss': torch.std(cur_dists).item(),
                 'max_loss': torch.max(cur_dists).item(),
                 'min_loss': torch.min(cur_dists).item(),
-                'mean_loss_nn': torch.mean(cur_dists_projected).item(),
-                'std_loss_nn': torch.std(cur_dists_projected).item(),
-                'max_loss_nn': torch.max(cur_dists_projected).item(),
-                'min_loss_nn': torch.min(cur_dists_projected).item(),
+                'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
+                'std_loss_lpips': torch.std(cur_dists_lpips).item(),
+                'max_loss_lpips': torch.max(cur_dists_lpips).item(),
+                'min_loss_lpips': torch.min(cur_dists_lpips).item(),
+                'mean_loss_l2': torch.mean(cur_dists_l2).item(),
+                'std_loss_l2': torch.std(cur_dists_l2).item(),
+                'max_loss_l2': torch.max(cur_dists_l2).item(),
+                'min_loss_l2': torch.min(cur_dists_l2).item(),
                 'total_excluded': sampler.total_excluded,
                 'total_excluded_percentage': sampler.total_excluded_percentage,
             }
@@ -386,6 +395,7 @@ def main(H=None):
 
 
     elif H.mode == 'train':
+        print(H)
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'ppl':

@@ -42,6 +42,13 @@ class Sampler:
         self.selected_dists = torch.empty([sz], dtype=torch.float32).cuda()
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32).cuda()
+
+        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32).cuda()
+        self.selected_dists_lpips[:] = np.inf
+
+        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32).cuda()
+        self.selected_dists_l2[:] = np.inf 
+
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
@@ -198,20 +205,36 @@ class Sampler:
         res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
         return res
 
-    def calc_loss(self, inp, tar, use_mean=True):
+    def calc_loss(self, inp, tar, use_mean=True, logging=False):
         inp_feat, inp_shape = self.lpips_net(inp)
         tar_feat, _ = self.lpips_net(tar)
         res = 0
         for i, g_feat in enumerate(inp_feat):
             res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
         if use_mean:
-            return self.H.lpips_coef * res.mean() + self.H.l2_coef * self.l2_loss(inp, tar).mean()
-        else:
-            return self.H.lpips_coef * res + self.H.l2_coef * torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+            l2_loss = self.l2_loss(inp, tar)
+            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+            if logging:
+                return loss, res.mean(), l2_loss.mean()
+            else:
+                return loss
 
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, latents=None, to_update=None, snoise=None):
+        else:
+            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+            loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
+            if logging:
+                return loss, res.mean(), l2_loss
+            else:
+                return loss
+
+
+    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
         if dists is None:
             dists = self.selected_dists
+        if dists_lpips is None:
+            dists_lpips = self.selected_dists_lpips
+        if dists_l2 is None:
+            dists_l2 = self.selected_dists_l2
         if latents is None:
             latents = self.selected_latents
         if snoise is None:
@@ -230,9 +253,19 @@ class Sampler:
             cur_snoise = [s[batch_slice] for s in snoise]
             with torch.no_grad():
                 out = gen(cur_latents, cur_snoise)
-                dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                dists[batch_slice] = torch.squeeze(dist)
-        return dists
+                if(logging):
+                    dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
+                    dists[batch_slice] = torch.squeeze(dist)
+                    dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
+                    dists_l2[batch_slice] = torch.squeeze(dist_l2)
+                else:
+                    dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
+                    dists[batch_slice] = torch.squeeze(dist)
+        
+        if(logging):
+            return dists, dists_lpips, dists_l2
+        else:
+            return dists
     
     def calc_dists_existing_nn(self, dataset_tensor, gen, dists=None, latents=None, to_update=None, snoise=None):
         if dists is None:
