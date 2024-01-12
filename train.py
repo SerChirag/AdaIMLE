@@ -343,7 +343,9 @@ def main(H=None):
         if subset_len == -1:
             subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
-        generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+        # generate_and_save(H, imle, sampler, 5000)
+
+        generate_and_save(H, imle, sampler, 5000)
         print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
         cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
         print("FID: ", cur_fid)
