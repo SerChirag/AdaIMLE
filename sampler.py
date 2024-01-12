@@ -108,6 +108,7 @@ class Sampler:
         self.total_excluded = 0
         self.total_excluded_percentage = 0
         self.dataset_size = sz
+        self.db_iter = 0
 
     def get_projected(self, inp, permute=True):
         if permute:
@@ -328,8 +329,11 @@ class Sampler:
         
     def sample_angle(self, pool_slice):
 
-        random_indices = np.random.randint(0, self.dataset_size, size=pool_slice.shape[0])
-        random_z = self.selected_latents[random_indices]
+        # indices = np.random.randint(0, self.dataset_size, size=pool_slice.shape[0])
+        indices = np.arange(self.db_iter, self.db_iter + pool_slice.shape[0]) % self.dataset_size
+        self.db_iter = (self.db_iter + pool_slice.shape[0]) % self.dataset_size
+
+        random_z = self.selected_latents[indices]
         
         normalized_z = F.normalize(random_z, dim=1, p=2) 
 
