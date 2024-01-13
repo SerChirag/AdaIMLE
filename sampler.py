@@ -1,5 +1,5 @@
 from curses import update_lines_cols
-from math import comb
+from math import comb, ceil
 import time
 
 import numpy as np
@@ -16,7 +16,7 @@ from helpers.angle_sampler import Angle_Generator
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.pool_size = max(int(H.force_factor * sz), H.imle_db_size)
+        self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
         self.H = H
