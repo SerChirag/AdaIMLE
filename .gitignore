@@ -26,3 +26,5 @@ cifar-5000.zip
 results/
 vanilla-results/
 interpolation/
+logs/
+new-snoise-*.sh
