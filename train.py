@@ -27,6 +27,7 @@ from visual.spatial_visual import spatial_vissual
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
+from helpers.improved_precision_recall import compute_prec_recall
 
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
@@ -488,6 +489,23 @@ def main(H=None):
                 sn1 = None
                 sn2 = None
                 random_interp(H, sampler, (0, 256, 256, 3), imle, f'test/interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
+
+    elif H.mode == 'prec_rec':
+        
+        os.makedirs(f'{H.save_dir}/prec_rec', exist_ok=True)
+
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, len(data_train), preprocess_fn)
+        # generate_and_save(H, imle, sampler, 5000)
+
+        print("Generating images")
+        generate_and_save(H, imle, sampler, 500, subdir='prec_rec')
+        print(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
+        precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
+        print("Precision: ", precision)
+        print("Recall: ", recall)
 
 
 if __name__ == "__main__":
