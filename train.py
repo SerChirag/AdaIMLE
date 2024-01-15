@@ -501,7 +501,7 @@ def main(H=None):
         # generate_and_save(H, imle, sampler, 5000)
 
         print("Generating images")
-        generate_and_save(H, imle, sampler, 500, subdir='prec_rec')
+        generate_and_save(H, imle, sampler, 1000, subdir='prec_rec')
         print(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
         precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
         print("Precision: ", precision)
