@@ -167,6 +167,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
+            if (to_update.shape[0] > 0):
+                print("Saving latents")
+                save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
+
+
             to_update = to_update.cpu()
             last_updated[to_update] = 0
             times_updated[to_update] = times_updated[to_update] + 1
@@ -185,7 +190,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             
 
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
 
             start_time = time.time()
 
@@ -241,7 +246,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                                                             dists_l2=cur_dists_l2, 
                                                                                             logging=True)
 
-            torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
+            # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
                     
             metrics = {
                 'mean_loss': torch.mean(cur_dists).item(),
