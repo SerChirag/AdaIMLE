@@ -215,7 +215,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 
                 stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
-                scheduler.step()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -240,6 +239,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
+            scheduler.step()
+
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
