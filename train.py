@@ -124,6 +124,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         print('Outer batch - {}'.format(split_ind, len(split_x)))
 
         while (epoch < H.num_epochs):
+
+            # if(epoch > 1 and optimizer.param_groups[0]['lr'] != H.lr2):
+            #     for param_group in optimizer.param_groups:
+            #         param_group['lr'] = H.lr2
+            #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
+
             epoch += 1
             last_updated[:] = last_updated + 1
 
@@ -266,6 +272,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             }
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
+                print("Learning rate: ", optimizer.param_groups[0]['lr'])
                 generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
@@ -275,9 +282,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     fp = os.path.join(H.save_dir, 'best_fid')
                     logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
                     save_model(fp, imle, ema_imle, optimizer, H)
+                
+                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
 
                 metrics['fid'] = cur_fid
                 metrics['best_fid'] = best_fid
+                metrics['precision'] = precision
+                metrics['recall'] = recall
+                
             
             if (to_update.shape[0] != 0):
                 metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
