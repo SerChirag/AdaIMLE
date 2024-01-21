@@ -124,7 +124,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         print('Outer batch - {}'.format(split_ind, len(split_x)))
 
         while (epoch < H.num_epochs):
-
+            
             # if(epoch > 1 and optimizer.param_groups[0]['lr'] != H.lr2):
             #     for param_group in optimizer.param_groups:
             #         param_group['lr'] = H.lr2
@@ -193,8 +193,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
-            
-
+        
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
 
@@ -207,14 +206,18 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 
                 # if(H.use_snoise):
                 cur_snoise = [s[indices] for s in sampler.selected_snoise]
+
                 for i in range(len(H.res)):
                     cur_snoise[i].zero_()
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                
                 stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
+
+                if(iterate <= H.warmup_iters):
+                    # print("Warmup iteration: ", iterate)
+                    scheduler.step()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -228,18 +231,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 if iterate % H.iters_per_save == 0:
                     fp = os.path.join(H.save_dir, 'latest')
                     logprint(f'Saving model@ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
                     save_latents_latest(H, split_ind, sampler.selected_latents)
                     save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
                 if iterate % H.iters_per_ckpt == 0:
-                    save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, H)
+                    save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
                     save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
-            scheduler.step()
+
+            if(iterate > H.warmup_iters):
+                scheduler.step()
 
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
@@ -282,7 +287,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     # save models
                     fp = os.path.join(H.save_dir, 'best_fid')
                     logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
                 
                 precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
 

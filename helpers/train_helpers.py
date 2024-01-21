@@ -25,10 +25,11 @@ def update_ema(imle, ema_imle, ema_rate):
         p2.data.add_(p1.data * (1 - ema_rate))
 
 
-def save_model(path, imle, ema_imle, optimizer, H):
+def save_model(path, imle, ema_imle, optimizer, scheduler, H):
     torch.save(imle.state_dict(), f'{path}-model.th')
     torch.save(ema_imle.state_dict(), f'{path}-model-ema.th')
     torch.save(optimizer.state_dict(), f'{path}-opt.th')
+    torch.save(scheduler.state_dict(), f'{path}-sched.th')
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
     subprocess.check_output(['cp', from_log, to_log])
@@ -171,6 +172,9 @@ def load_opt(H, imle, logprint):
     if H.restore_optimizer_path:
         optimizer.load_state_dict(
             torch.load(distributed_maybe_download(H.restore_optimizer_path, H.local_rank, H.mpi_size), map_location='cpu'))
+    if H.restore_scheduler_path:
+        scheduler.load_state_dict(
+            torch.load(distributed_maybe_download(H.restore_scheduler_path, H.local_rank, H.mpi_size), map_location='cpu'))
     if H.restore_log_path:
         cur_eval_loss, iterate, starting_epoch = restore_log(H.restore_log_path, H.local_rank, H.mpi_size)
     else:
