@@ -30,3 +30,4 @@ logs/
 new-snoise-*.sh
 new-vanilla-results/
 imports/
+no-noise-*.sh
