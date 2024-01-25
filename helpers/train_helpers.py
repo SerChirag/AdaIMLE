@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from models import IMLE
 from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR, StepLR, SequentialLR
+from training.networks import Generator
 
 
 def update_ema(imle, ema_imle, ema_rate):
@@ -133,6 +134,36 @@ def restore_log(path, local_rank, mpi_size):
     starting_epoch = max([z['epoch'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
     iterate = max([z['step'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
     return cur_eval_loss, iterate, starting_epoch
+
+
+def load_Generator(H, logprint):
+    # vae = VAE(H)
+    vae = Generator(H.latent_dim, 0, H.latent_dim, H.image_size, 3)
+    if H.restore_path:
+        logprint(f'Restoring vae from {H.restore_path}')
+        restore_params(vae, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+
+    # ema_vae = VAE(H)
+    ema_vae = Generator(H.latent_dim, 0, H.latent_dim, H.image_size, 3)
+    if H.restore_ema_path:
+        logprint(f'Restoring ema vae from {H.restore_ema_path}')
+        restore_params(ema_vae, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+    else:
+        ema_vae.load_state_dict(vae.state_dict())
+    ema_vae.requires_grad_(False)
+
+    ema_vae = ema_vae.cuda()
+
+    vae = vae.cuda()
+    vae = torch.nn.DataParallel(vae)
+
+    if len(list(vae.named_parameters())) != len(list(vae.parameters())):
+        raise ValueError('Some params are not named. Please name all params.')
+    total_params = 0
+    for name, p in vae.named_parameters():
+        total_params += np.prod(p.shape)
+    logprint(total_params=total_params, readable=f'{total_params:,}')
+    return vae, ema_vae
 
 
 def load_imle(H, logprint):
