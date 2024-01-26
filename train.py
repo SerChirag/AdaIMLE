@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
-from helpers.train_helpers import (load_imle, load_opt, save_latents,
+from helpers.train_helpers import (load_imle, load_opt, load_stylegan, save_latents,
                                    save_latents_latest, save_model,
                                    save_snoise, set_up_hyperparams, update_ema)
 from helpers.utils import ZippedDataset, get_cpu_stats_over_ranks
@@ -325,7 +325,9 @@ def main(H=None):
     if not H:
         H = H_cur
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
-    imle, ema_imle = load_imle(H, logprint)
+    # imle, ema_imle = load_imle(H, logprint)
+    imle, ema_imle = load_stylegan(H, logprint)
+
 
     if H.use_comet and H.comet_api_key:
         if(H.comet_experiment_key):

@@ -136,7 +136,7 @@ def restore_log(path, local_rank, mpi_size):
     return cur_eval_loss, iterate, starting_epoch
 
 
-def load_Generator(H, logprint):
+def load_stylegan(H, logprint):
     # vae = VAE(H)
     vae = Generator(H.latent_dim, 0, H.latent_dim, H.image_size, 3)
     if H.restore_path:
