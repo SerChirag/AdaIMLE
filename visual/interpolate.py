@@ -4,15 +4,19 @@ import imageio
 
 def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None, sn1=None, sn2=None):
     num_lin = 1
-    mb = 20
+    mb = 8
 
     batches = []
     # step = (-f_latent + s_latent) / num_lin
     for t in range(num_lin):
         f_latent = torch.randn([1, H.latent_dim], dtype=torch.float32).cuda()
         s_latent = torch.randn([1, H.latent_dim], dtype=torch.float32).cuda()
-        f_snoise = [torch.randn([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
-        s_snoise = [torch.randn([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
+        if(H.use_snoise):
+            f_snoise = [torch.randn([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
+            s_snoise = [torch.randn([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
+        else:
+            f_snoise = [torch.zeros([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
+            s_snoise = [torch.zeros([1, 1, s, s], dtype=torch.float32).cuda() for s in sampler.res]
         if lat1 is not None:
             print('loading from input')
             f_latent = lat1
