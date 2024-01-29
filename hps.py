@@ -122,6 +122,10 @@ def add_imle_arguments(parser):
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    
+    parser.add_argument('--use_mixup', default=False, type=lambda x: bool(strtobool(x)))  # whether to use mixup
+    parser.add_argument('--mixup_alpha', type=float, default=0.2)  # mixup alpha to use
+
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search

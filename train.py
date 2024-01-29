@@ -3,6 +3,7 @@ import time
 
 from comet_ml import Experiment, ExistingExperiment
 import imageio
+import numpy as np
 import torch
 import wandb
 import torch.nn as nn
@@ -28,7 +29,7 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
-
+from torch.distributions import Beta
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
     t0 = time.time()
@@ -114,6 +115,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     change_thresholds[:] = H.change_threshold
     best_fid = 100000
     epoch = starting_epoch - 1
+    beta = Beta(H.mixup_alpha, H.mixup_alpha)
 
     for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
         split_x_tensor = split_x_tensor[0].contiguous()
@@ -209,6 +211,16 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
                 for i in range(len(H.res)):
                     cur_snoise[i].zero_()
+
+                if(H.use_mixup):
+                    alpha = 0.2
+                    coefficients = beta.rsample([target.shape[0], 1,])
+                    coefficients_binary = coefficients > 0.5
+                    coefficients_binary = coefficients_binary.unsqueeze(2).unsqueeze(3).cuda()
+                    index = torch.randperm(target.shape[0])
+                    latents = coefficients * latents + (1 - coefficients) * latents[index]
+                    target = coefficients_binary * target + torch.logical_not(coefficients_binary) * target[index]
+
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
