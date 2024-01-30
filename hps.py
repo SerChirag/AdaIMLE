@@ -121,6 +121,9 @@ def add_imle_arguments(parser):
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
+    parser.add_argument('--use_bidirection', default=False, type=lambda x: bool(strtobool(x)))  # whether to use bidirection search
+    parser.add_argument('--bidirection_frequency', type=int, default=15)  # when to resample
+
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search

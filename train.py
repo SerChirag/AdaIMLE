@@ -199,6 +199,27 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             start_time = time.time()
 
+            if(H.use_bidirection and epoch % H.bidirection_frequency == 0 and epoch > 0):
+                sampler.imle_reverse_sample(split_x_tensor, imle)
+                reverse_dataset = ZippedDataset(TensorDataset(split_x_tensor[sampler.reverse_nns]), TensorDataset(sampler.reverse_latent))
+                reverse_data_loader = DataLoader(reverse_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
+
+                for cur, indices in reverse_data_loader:
+                    x = cur[0]
+                    latents = cur[1][0]
+                    _, target = preprocess_fn(x)
+                    
+                    # if(H.use_snoise):
+                    cur_snoise = [s[indices] for s in sampler.reverse_snoise]
+
+                    for i in range(len(H.res)):
+                        cur_snoise[i].zero_()
+                    # else:
+                    #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
+
+                    stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+
+
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
@@ -275,6 +296,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'min_loss_l2': torch.min(cur_dists_l2).item(),
                 'total_excluded': sampler.total_excluded,
                 'total_excluded_percentage': sampler.total_excluded_percentage,
+                'unique_reverse_nns': torch.unique(sampler.reverse_nns).shape[0],
             }
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
