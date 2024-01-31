@@ -8,16 +8,18 @@ import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
 
 from models import parse_layer_string
-
+import numpy as np
 
 def set_up_data(H):
     
     H.angle_rad = torch.deg2rad(torch.tensor(H.angle))
     H.max_sample_angle_rad = torch.deg2rad(torch.tensor(H.max_sample_angle))
     H.min_sample_angle_rad = torch.deg2rad(torch.tensor(H.min_sample_angle))
-    blocks = parse_layer_string(H.dec_blocks)
-    H.block_res = [s[0] for s in blocks]
-    H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+    # blocks = parse_layer_string(H.dec_blocks)
+    # # H.block_res = [s[0] for s in blocks]
+    # # H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+    img_resolution_log2 = int(np.log2(H.image_size))
+    H.block_resolutions = [2 ** i for i in range(2, img_resolution_log2 + 1)]
 
     shift_loss = -127.5
     scale_loss = 1. / 127.5

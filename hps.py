@@ -110,7 +110,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
     
-    parser.add_argument('--use_adaptive', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
+    parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
+
+    parser.add_argument('--use_bidirection', default=False, type=lambda x: bool(strtobool(x)))  # whether to use bidirection search
+    parser.add_argument('--bidirection_frequency', type=int, default=15)  # when to resample
 
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter

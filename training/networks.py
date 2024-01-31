@@ -409,14 +409,19 @@ class SynthesisBlock(torch.nn.Module):
         if img is not None:
             misc.assert_shape(img, [None, self.img_channels, self.resolution // 2, self.resolution // 2])
             img = upfirdn2d.upsample2d(img, self.resample_filter)
+        
+        y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
+        y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+        inter_img = img.add_(y) if img is not None else y
+
         if self.is_last or self.architecture == 'skip':
-            y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
-            y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-            img = img.add_(y) if img is not None else y
+            # y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
+            # y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+            img = inter_img
 
         assert x.dtype == dtype
         assert img is None or img.dtype == torch.float32
-        return x, img
+        return x, img, inter_img
 
 #----------------------------------------------------------------------------
 
@@ -454,7 +459,7 @@ class SynthesisNetwork(torch.nn.Module):
                 self.num_ws += block.num_torgb
             setattr(self, f'b{res}', block)
 
-    def forward(self, ws, **block_kwargs):
+    def forward(self, ws, train = False, **block_kwargs):
         block_ws = []
         with torch.autograd.profiler.record_function('split_ws'):
             misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
@@ -465,11 +470,17 @@ class SynthesisNetwork(torch.nn.Module):
                 block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
                 w_idx += block.num_conv
 
-        x = img = None
+        x = img = inter_img = None
+        inter_img_list = []
         for res, cur_ws in zip(self.block_resolutions, block_ws):
             block = getattr(self, f'b{res}')
-            x, img = block(x, img, cur_ws, **block_kwargs)
-        return img
+            x, img, inter_img = block(x, img, cur_ws, **block_kwargs)
+            inter_img_list.append(inter_img)
+        
+        if(train):
+            return inter_img_list
+        else:
+            return img
 
 #----------------------------------------------------------------------------
 
@@ -495,9 +506,9 @@ class Generator(torch.nn.Module):
         self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
         self.dci_db = None
 
-    def forward(self, z, snoise=None, c=0, truncation_psi=1, truncation_cutoff=None, input_is_w=False, **synthesis_kwargs):
+    def forward(self, z, snoise=None, c=0, truncation_psi=1, truncation_cutoff=None, input_is_w=False, train=False, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        img = self.synthesis(ws, **synthesis_kwargs)
+        img = self.synthesis(ws, train, **synthesis_kwargs)
         return img
 
 #----------------------------------------------------------------------------
