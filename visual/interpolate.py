@@ -4,7 +4,7 @@ import imageio
 
 def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None, sn1=None, sn2=None):
     num_lin = 1
-    mb = 8
+    mb = 20
 
     batches = []
     # step = (-f_latent + s_latent) / num_lin
@@ -24,15 +24,20 @@ def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None
         # if sn1 is not None:
         #     f_snoise = sn1
         #     s_snoise = sn2
-        f_latent = imle.module.decoder.mapping_network(f_latent)[0]
-        s_latent = imle.module.decoder.mapping_network(s_latent)[0]
+        # f_latent = imle.module.decoder.mapping_network(f_latent)[0]
+        # s_latent = imle.module.decoder.mapping_network(s_latent)[0]
         sample_w = torch.cat([torch.lerp(f_latent, s_latent, v) for v in torch.linspace(0, 1, mb).cuda()], dim=0)
         snoise = [torch.cat([f_snoise[i] for v in torch.linspace(0, 1, mb).cuda()], dim=0) for i in range(len(f_snoise))]
 
+        if(not H.use_snoise):
+            for i in range(len(H.res)):
+                snoise[i].zero_()
         # for i in range(len(snoise)):
         #     snoise[i][:] = f_snoise[i][0]
 
-        out = imle(sample_w, spatial_noise=snoise, input_is_w=True)
+        # out = imle(sample_w, spatial_noise=snoise, input_is_w=True)
+        out = imle(sample_w, spatial_noise=snoise)
+       
         batches.append(sampler.sample_from_out(out))
 
     n_rows = len(batches)
