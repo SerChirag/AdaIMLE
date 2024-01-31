@@ -20,15 +20,13 @@ def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None
         # if sn1 is not None:
         #     f_snoise = sn1
         #     s_snoise = sn2
-        f_latent = imle.module.decoder.mapping_network(f_latent)[0]
-        s_latent = imle.module.decoder.mapping_network(s_latent)[0]
+
         sample_w = torch.cat([torch.lerp(f_latent, s_latent, v) for v in torch.linspace(0, 1, mb).cuda()], dim=0)
-        snoise = [torch.cat([f_snoise[i] for v in torch.linspace(0, 1, mb).cuda()], dim=0) for i in range(len(f_snoise))]
 
         # for i in range(len(snoise)):
         #     snoise[i][:] = f_snoise[i][0]
-
-        out = imle(sample_w, spatial_noise=snoise, input_is_w=True)
+        print(sample_w.shape)
+        out = imle(sample_w)
         batches.append(sampler.sample_from_out(out))
 
     n_rows = len(batches)
