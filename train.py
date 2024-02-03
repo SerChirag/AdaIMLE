@@ -78,8 +78,8 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     
     px_z = imle(cur_batch_latents, snoise, train = True)
     loss = 0
-    for res in range(len(H.block_resolutions)-1):
-        loss += F.mse_loss(px_z[res], targets[res])
+    # for res in range(len(H.block_resolutions)-1):
+    #     loss += F.mse_loss(px_z[res], targets[res])
     loss += loss_fn(px_z[-1], targets[-1])
     loss.backward()
     optimizer.step()
@@ -216,8 +216,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     target = target.permute(0, 3, 1, 2)
 
                     target_array = []
-                    for res in range(len(H.block_resolutions)-1):
-                        target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
+                    # for res in range(len(H.block_resolutions)-1):
+                    #     target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
                     target_array.append(target.clone())
                     
                     
