@@ -76,7 +76,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise_element = torch.reshape(snoise_element, snoise_element_res)
     #         snoise[i] = snoise_element
     
-    px_z = imle(cur_batch_latents, snoise, train = True)
+    px_z = imle(cur_batch_latents, snoise)
     loss = 0
     # for res in range(len(H.block_resolutions)-1):
     #     loss += F.mse_loss(px_z[res], targets[res])
