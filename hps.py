@@ -128,6 +128,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--use_eps_ignore_advanced', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--randomness_angular', type=float, default=0.0)  # whether to use splatter
 
 

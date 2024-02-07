@@ -173,9 +173,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
-            if (to_update.shape[0] > 0):
-                print("Saving latents")
-                save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
+            # if (to_update.shape[0] > 0):
+            #     print("Saving latents")
+            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
 
 
             to_update = to_update.cpu()
@@ -195,7 +195,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False, num_workers=8, persistent_workers=True)
 
             start_time = time.time()
 
