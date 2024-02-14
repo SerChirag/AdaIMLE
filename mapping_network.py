@@ -84,7 +84,7 @@ class MappingNetowrk(nn.Module):
     ):
         styles = []
 
-        input = normalize_2nd_moment(input)
+        # input = normalize_2nd_moment(input)
 
         if type(input) not in (list, tuple):
             input = [input]
