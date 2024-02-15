@@ -110,6 +110,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
     
+    parser.add_argument('--nn_proj_dim', type=int, default=40)  # projection dimension for nearest neighbour search
+
     parser.add_argument('--use_adaptive', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter

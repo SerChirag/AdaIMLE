@@ -78,7 +78,8 @@ class Sampler:
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
-            sum_dims = H.proj_dim
+            self.nn_l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.nn_proj_dim), p=2, dim=1).cuda()
+            sum_dims = H.nn_proj_dim
 
         else:
 
@@ -130,12 +131,15 @@ class Sampler:
         lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
         return lpips_feat.cuda()
     
-    def get_l2_feature(self, inp, permute=True):
+    def get_l2_feature(self, inp, permute=True, is_search=False):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        interpolated = torch.mm(interpolated, self.l2_projection)
+        if(is_search):
+            interpolated = torch.mm(interpolated, self.nn_l2_projection)
+        else:
+            interpolated = torch.mm(interpolated, self.l2_projection)
         interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated.cuda()
     
@@ -167,7 +171,7 @@ class Sampler:
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1])
             elif(self.H.search_type == 'l2'):
-                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1])
+                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1], is_search=True)
             else:
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1])
 
@@ -351,7 +355,7 @@ class Sampler:
                     if(self.H.search_type == 'lpips'):
                         self.temp_samples_proj[batch_slice] = self.get_projected(self.temp_samples[batch_slice], False)
                     elif(self.H.search_type == 'l2'):
-                        self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False)
+                        self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False, is_search=True)
                     else:
                         self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
 
@@ -443,7 +447,7 @@ class Sampler:
                 if(self.H.search_type == 'lpips'):
                     self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
                 elif(self.H.search_type == 'l2'):
-                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
+                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False, is_search=True)
                 else:
                     self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
 
