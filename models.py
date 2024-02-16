@@ -113,12 +113,13 @@ class Decoder(nn.Module):
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
 
-    def forward(self, latent_code, spatial_noise, input_is_w=False):
+    def forward(self, latent_code, spatial_noise, input_is_w=False, train=False):
         if not input_is_w:
             w = self.mapping_network(latent_code)[0]
         else:
             w = latent_code
         
+        targets = []
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
         if spatial_noise:
             res_to_noise = {x.shape[3]: x for x in spatial_noise}
@@ -127,10 +128,15 @@ class Decoder(nn.Module):
             if block.base <= self.H.max_hierarchy:
                 noise = res_to_noise[block.base]
             x = block(x, w, noise)
-        x = self.resnet(x)
-        x = self.gain * x + self.bias
-        return x
+            if(block.mixin is not None):
+                intermediate = self.resnet(x)
+                intermediate = self.gain * intermediate + self.bias
+                targets.append(intermediate)
 
+        if(train):
+            return targets
+        else:
+            return targets[-1]
 
 class IMLE(nn.Module):
     def __init__(self, H):
@@ -138,6 +144,6 @@ class IMLE(nn.Module):
         self.dci_db = None
         self.decoder = Decoder(H)
 
-    def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w)
+    def forward(self, latents, spatial_noise=None, input_is_w=False, train=False):
+        return self.decoder.forward(latents, spatial_noise, input_is_w, train)
 

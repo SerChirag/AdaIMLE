@@ -19,6 +19,9 @@ def set_up_data(H):
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
 
+    img_resolution_log2 = int(np.log2(H.image_size))
+    H.block_resolutions = [2 ** i for i in range(2, img_resolution_log2 + 1)]
+
     shift_loss = -127.5
     scale_loss = 1. / 127.5
     if H.dataset == 'imagenet32':

@@ -28,6 +28,8 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
+from torchvision.transforms.functional import resize
+import torch.nn.functional as F
 
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
@@ -74,8 +76,11 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise_element = torch.reshape(snoise_element, snoise_element_res)
     #         snoise[i] = snoise_element
     
-    px_z = imle(cur_batch_latents, snoise)
-    loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+    px_z = imle(cur_batch_latents, snoise, train = True)
+    loss = 0
+    for res in range(len(H.block_resolutions)-1):
+        loss += F.mse_loss(px_z[res], targets[res])
+    loss += loss_fn(px_z[-1], targets[-1])
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -203,6 +208,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
+                target = target.permute(0, 3, 1, 2)
+
+                target_array = []
+                for res in range(len(H.block_resolutions)-1):
+                    target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
+                target_array.append(target.clone())
                 
                 # if(H.use_snoise):
                 cur_snoise = [s[indices] for s in sampler.selected_snoise]
@@ -212,7 +223,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                stat = training_step_imle(H, target.shape[0], target_array, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
