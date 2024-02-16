@@ -279,7 +279,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
                 print("Learning rate: ", optimizer.param_groups[0]['lr'])
-                generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+                generate_and_save(H, imle, sampler, min(5000,subset_len * H.fid_factor))
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
                 if cur_fid < best_fid:
