@@ -109,9 +109,23 @@ class Decoder(nn.Module):
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
+
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+
+        # resnet = []
+        # gain = []
+        # bias = []
+
+        # for res in range(len(self.resolutions)-1):
+        #     resnet.append(get_1x1(self.widths[self.resolutions[res]], H.image_channels))
+        #     gain.append(nn.Parameter(torch.ones(1, H.image_channels, 1, 1)))
+        #     bias.append(nn.Parameter(torch.zeros(1, H.image_channels, 1, 1)))
+
+        # self.resnet = nn.ModuleList(resnet)
+        # self.gain = nn.ParameterList(gain)
+        # self.bias = nn.ParameterList(bias)
 
     def forward(self, latent_code, spatial_noise, input_is_w=False, train=False):
         if not input_is_w:
@@ -120,6 +134,8 @@ class Decoder(nn.Module):
             w = latent_code
         
         targets = []
+        # layer = 0
+        
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
         if spatial_noise:
             res_to_noise = {x.shape[3]: x for x in spatial_noise}
@@ -129,9 +145,13 @@ class Decoder(nn.Module):
                 noise = res_to_noise[block.base]
             x = block(x, w, noise)
             if(block.mixin is not None):
+                # intermediate = self.resnet[layer](x)
+                # intermediate = self.gain[layer] * intermediate + self.bias[layer]
                 intermediate = self.resnet(x)
                 intermediate = self.gain * intermediate + self.bias
+
                 targets.append(intermediate)
+                # layer += 1
 
         if(train):
             return targets
