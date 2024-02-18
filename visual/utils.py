@@ -45,7 +45,7 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
     batches = [orig[:mb], sampler.sample(initial, imle, snoise)]
 
     temp_latent_rnds = torch.randn([mb, H.latent_dim], dtype=torch.float32).cuda()
-    for t in range(H.num_rows_visualize):
+    for t in range(H.num_rows_visualize + 4):
         temp_latent_rnds.normal_()
         if(H.use_snoise == True):
             tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
@@ -53,24 +53,24 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
             tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
         batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    if(H.use_snoise == True):
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
-    else:
-        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
+    # if(H.use_snoise == True):
+    #     tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    # else:
+    #     tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
+    # batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    if(H.use_snoise == True):
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
-    else:
-        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
+    # if(H.use_snoise == True):
+    #     tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
+    # else:
+    #     tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
+    # batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
+    # tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
+    # batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
-    tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    temp_latent_rnds.normal_()
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
+    # tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
+    # temp_latent_rnds.normal_()
+    # batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
