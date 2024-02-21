@@ -28,16 +28,16 @@ class Sampler:
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
-        self.neutral_snoise = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+        # self.neutral_snoise = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
 
         if(H.use_snoise == True):
-            self.snoise_tmp = [torch.randn([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            # self.snoise_tmp = [torch.randn([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
             self.selected_snoise = [torch.randn([sz, 1, s, s,], dtype=torch.float32) for s in self.res]
-            self.snoise_pool = [torch.randn([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            # self.snoise_pool = [torch.randn([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
         else:
-            self.snoise_tmp = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            # self.snoise_tmp = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
             self.selected_snoise = [torch.zeros([sz, 1, s, s,], dtype=torch.float32) for s in self.res]
-            self.snoise_pool = [torch.zeros([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
+            # self.snoise_pool = [torch.zeros([self.pool_size, 1, s, s], dtype=torch.float32) for s in self.res]
             
         self.selected_dists = torch.empty([sz], dtype=torch.float32).cuda()
         self.selected_dists[:] = np.inf
@@ -102,7 +102,7 @@ class Sampler:
         self.temp_samples_proj = torch.empty([self.H.imle_db_size, sum_dims], dtype=torch.float32).cuda()
         self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32)
         self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32)
-        self.snoise_pool_samples_proj = torch.empty([sz * H.snoise_factor, sum_dims], dtype=torch.float32)
+        # self.snoise_pool_samples_proj = torch.empty([sz * H.snoise_factor, sum_dims], dtype=torch.float32)
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -174,11 +174,11 @@ class Sampler:
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
             nm = latents.shape[0]
-            if snoise is None:
-                for i in range(len(self.res)):
-                    if(self.H.use_snoise == True):
-                        self.snoise_tmp[i].normal_()
-                snoise = [s[:nm] for s in self.snoise_tmp]
+            # if snoise is None:
+            #     for i in range(len(self.res)):
+            #         if(self.H.use_snoise == True):
+            #             self.snoise_tmp[i].normal_()
+            #     snoise = [s[:nm] for s in self.snoise_tmp]
             px_z = gen(latents, snoise).permute(0, 2, 3, 1)
             xhat = (px_z + 1.0) * 127.5
             xhat = xhat.detach().cpu().numpy()
@@ -273,22 +273,22 @@ class Sampler:
             dists_l2 = self.selected_dists_l2
         if latents is None:
             latents = self.selected_latents
-        if snoise is None:
-            snoise = self.selected_snoise
+        # if snoise is None:
+        #     snoise = self.selected_snoise
 
         if to_update is not None:
             latents = latents[to_update]
             dists = dists[to_update]
             dataset_tensor = dataset_tensor[to_update]
-            snoise = [s[to_update] for s in snoise]
+            # snoise = [s[to_update] for s in snoise]
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
             _, target = self.preprocess_fn(x)
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
             cur_latents = latents[batch_slice]
-            cur_snoise = [s[batch_slice] for s in snoise]
+            # cur_snoise = [s[batch_slice] for s in snoise]
             with torch.no_grad():
-                out = gen(cur_latents, cur_snoise)
+                out = gen(cur_latents)
                 if(logging):
                     dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
                     dists[batch_slice] = torch.squeeze(dist)
@@ -308,22 +308,22 @@ class Sampler:
             dists = self.selected_dists
         if latents is None:
             latents = self.selected_latents
-        if snoise is None:
-            snoise = self.selected_snoise
+        # if snoise is None:
+        #     snoise = self.selected_snoise
 
         if to_update is not None:
             latents = latents[to_update]
             dists = dists[to_update]
             dataset_tensor = dataset_tensor[to_update]
-            snoise = [s[to_update] for s in snoise]
+            # snoise = [s[to_update] for s in snoise]
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
             _, target = self.preprocess_fn(x)
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
             cur_latents = latents[batch_slice]
-            cur_snoise = [s[batch_slice] for s in snoise]
+            # cur_snoise = [s[batch_slice] for s in snoise]
             with torch.no_grad():
-                out = gen(cur_latents, cur_snoise)
+                out = gen(cur_latents)
                 if(self.H.search_type == 'lpips'):
                     dist = self.calc_loss_projected(target.permute(0, 3, 1, 2), out)
                 else:
@@ -339,15 +339,15 @@ class Sampler:
         self.selected_dists_tmp[:] = self.selected_dists[:]
         for i in range((imle_pool_size // self.H.imle_db_size)+1):
             self.temp_latent_rnds.normal_()
-            for j in range(len(self.res)):
-                if(self.H.use_snoise == True):
-                    self.snoise_tmp[j].normal_()
+            # for j in range(len(self.res)):
+            #     if(self.H.use_snoise == True):
+            #         self.snoise_tmp[j].normal_()
             for j in range(self.H.imle_db_size // self.H.imle_batch):
                 batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
                 cur_latents = self.temp_latent_rnds[batch_slice]
-                cur_snoise = [x[batch_slice] for x in self.snoise_tmp]
+                # cur_snoise = [x[batch_slice] for x in self.snoise_tmp]
                 with torch.no_grad():
-                    self.temp_samples[batch_slice] = gen(cur_latents, cur_snoise)
+                    self.temp_samples[batch_slice] = gen(cur_latents)
                     if(self.H.search_type == 'lpips'):
                         self.temp_samples_proj[batch_slice] = self.get_projected(self.temp_samples[batch_slice], False)
                     elif(self.H.search_type == 'l2'):
@@ -382,8 +382,8 @@ class Sampler:
                 to_update = torch.squeeze(to_update)
                 self.selected_dists[ind * self.H.imle_batch + to_update] = actual_selected_dists[to_update].clone()
                 self.selected_latents[ind * self.H.imle_batch + to_update] = self.temp_latent_rnds[nearest_indices[to_update]].clone()
-                for k in range(len(self.res)):
-                    self.selected_snoise[k][ind * self.H.imle_batch + to_update] = self.snoise_tmp[k][nearest_indices[to_update]].clone()
+                # for k in range(len(self.res)):
+                #     self.selected_snoise[k][ind * self.H.imle_batch + to_update] = self.snoise_tmp[k][nearest_indices[to_update]].clone()
 
                 del cur_batch_data_flat
 
@@ -425,9 +425,9 @@ class Sampler:
     def resample_pool(self, gen, ds):
         # self.init_projection(ds)
         self.pool_latents.normal_()
-        for i in range(len(self.res)):
-            if(self.H.use_snoise == True):
-                self.snoise_pool[i].normal_()
+        # for i in range(len(self.res)):
+        #     if(self.H.use_snoise == True):
+        #         self.snoise_pool[i].normal_()
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
@@ -438,14 +438,14 @@ class Sampler:
             else:
                 cur_latents = self.pool_latents[batch_slice]
 
-            cur_snosie = [s[batch_slice] for s in self.snoise_pool]
+            # cur_snosie = [s[batch_slice] for s in self.snoise_pool]
             with torch.no_grad():
                 if(self.H.search_type == 'lpips'):
-                    self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
+                    self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents), False)
                 elif(self.H.search_type == 'l2'):
-                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
+                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents), False)
                 else:
-                    self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
+                    self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents), False)
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         if to_update is None:
@@ -479,7 +479,7 @@ class Sampler:
                                                     devices=[i for i in range(device_count)])
                     gen.module.dci_db.add(self.pool_samples_proj[pool_slice])
                     pool_latents = self.pool_latents[pool_slice]
-                    snoise_pool = [b[pool_slice] for b in self.snoise_pool]
+                    # snoise_pool = [b[pool_slice] for b in self.snoise_pool]
 
                     rejected_flag = torch.zeros(self.H.imle_db_size, dtype=torch.bool)
 
@@ -511,7 +511,7 @@ class Sampler:
                                                 num_simp_indices=self.H.num_simp_indices, devices=[i for i in range(device_count)])
                 gen.module.dci_db.add(self.pool_samples_proj[pool_slice])
                 pool_latents = self.pool_latents[pool_slice]
-                snoise_pool = [b[pool_slice] for b in self.snoise_pool]
+                # snoise_pool = [b[pool_slice] for b in self.snoise_pool]
 
                 t0 = time.time()
                 for ind, y in enumerate(DataLoader(TensorDataset(dataset[to_update]), batch_size=self.H.imle_batch)):
@@ -530,8 +530,8 @@ class Sampler:
 
                     self.selected_dists_tmp[global_need_update] = dci_dists[need_update].clone()
                     self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.latent_dim))
-                    for j in range(len(self.res)):
-                        self.selected_snoise[j][global_need_update] = snoise_pool[j][nearest_indices[need_update]].clone()
+                    # for j in range(len(self.res)):
+                    #     self.selected_snoise[j][global_need_update] = snoise_pool[j][nearest_indices[need_update]].clone()
 
                 gen.module.dci_db.clear()
 

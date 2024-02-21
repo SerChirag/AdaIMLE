@@ -29,7 +29,7 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 def generate_for_NN(sampler, orig, initial, snoise, shape, ema_imle, fname, logprint):
     mb = shape[0]
     initial = initial[:mb].cuda()
-    nns = sampler.sample(initial, ema_imle, snoise)
+    nns = sampler.sample(initial, ema_imle)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -42,35 +42,12 @@ def generate_for_NN(sampler, orig, initial, snoise, shape, ema_imle, fname, logp
 def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_imle, fname, logprint, experiment=None):
     mb = shape[0]
     initial = initial[:mb]
-    batches = [orig[:mb], sampler.sample(initial, imle, snoise)]
+    batches = [orig[:mb], sampler.sample(initial, imle)]
 
     temp_latent_rnds = torch.randn([mb, H.latent_dim], dtype=torch.float32).cuda()
     for t in range(H.num_rows_visualize):
         temp_latent_rnds.normal_()
-        if(H.use_snoise == True):
-            tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
-        else:
-            tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-        batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
-
-    if(H.use_snoise == True):
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
-    else:
-        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
-
-    if(H.use_snoise == True):
-        tmp_snoise = [s[:mb].normal_() for s in sampler.snoise_tmp]
-    else:
-        tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
-
-    tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
-
-    tmp_snoise = [s[:mb] for s in sampler.neutral_snoise]
-    temp_latent_rnds.normal_()
-    batches.append(sampler.sample(temp_latent_rnds, imle, tmp_snoise))
+        batches.append(sampler.sample(temp_latent_rnds, imle))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -98,10 +75,10 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 
             temp_latent_rnds.normal_()
 
-            if(H.use_snoise == True):
-                tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
-            else:
-                tmp_snoise = [s[:H.imle_batch] for s in sampler.neutral_snoise]
+            # if(H.use_snoise == True):
+            #     tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
+            # else:
+            #     tmp_snoise = [s[:H.imle_batch] for s in sampler.neutral_snoise]
 
             # tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
             # z_mean = torch.mean(temp_latent_rnds,axis=0)
@@ -115,7 +92,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             #     snoise_trunc_og.append(tmp_snoise[j] * phi + snoise_mean[j] * (1 - phi))
 
             # samp = sampler.sample(trunc_latents_og, imle, snoise_trunc_og)
-            samp = sampler.sample(temp_latent_rnds, imle, tmp_snoise)
+            samp = sampler.sample(temp_latent_rnds, imle)
 
             for j in range(batch_size):
                 imageio.imwrite(f'{H.save_dir}/{subdir}/{i + j}.png', samp[j])
