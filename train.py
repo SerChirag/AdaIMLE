@@ -161,8 +161,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     batch_slice = slice(0, x[0].size()[0])
                     latents = sampler.selected_latents[batch_slice]
                     with torch.no_grad():
-                        snoise = [s[batch_slice] for s in sampler.selected_snoise]
-                        generate_for_NN(sampler, x[0], latents, snoise, viz_batch_original.shape, imle,
+                        # snoise = [s[batch_slice] for s in sampler.selected_snoise]
+                        generate_for_NN(sampler, x[0], latents, None, viz_batch_original.shape, imle,
                             f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
                     print('loaded latest latents')
 
@@ -194,7 +194,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
-                                    [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
+                                    None,
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
@@ -216,14 +216,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 target_array.append(target.clone())
                 
                 # if(H.use_snoise):
-                cur_snoise = [s[indices] for s in sampler.selected_snoise]
+                # cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                for i in range(len(H.res)):
-                    cur_snoise[i].zero_()
+                # for i in range(len(H.res)):
+                #     cur_snoise[i].zero_()
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target_array, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                stat = training_step_imle(H, target.shape[0], target_array, latents, None, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
@@ -234,7 +234,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     with torch.no_grad():
                         generate_images_initial(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
-                                                [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
+                                                None ,
                                                 viz_batch_original.shape, imle, ema_imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
 
@@ -250,7 +250,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
-                    save_snoise(H, iterate, sampler.selected_snoise)
+                    # save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
@@ -320,7 +320,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 with torch.no_grad():
                     generate_images_initial(H, sampler, viz_batch_original,
                                             sampler.selected_latents[0: H.num_images_visualize],
-                                            [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
+                                            None,
                                             viz_batch_original.shape, imle, ema_imle,
                                             f'{H.save_dir}/latest.png', logprint, experiment)
 
