@@ -45,7 +45,7 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
     batches = [orig[:mb], sampler.sample(initial, imle)]
 
     temp_latent_rnds = torch.randn([mb, H.latent_dim], dtype=torch.float32).cuda()
-    for t in range(H.num_rows_visualize):
+    for t in range(H.num_rows_visualize + 4):
         temp_latent_rnds.normal_()
         batches.append(sampler.sample(temp_latent_rnds, imle))
 
