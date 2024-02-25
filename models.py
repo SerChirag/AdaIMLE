@@ -84,9 +84,8 @@ class DecBlock(nn.Module):
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base // self.mixin)
-        if self.base <= self.H.max_hierarchy:
-            x = self.noise(x, spatial_noise)
+            if(self.base // self.mixin > 1):
+                x = F.interpolate(x, scale_factor=self.base // self.mixin)
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
@@ -134,24 +133,29 @@ class Decoder(nn.Module):
             w = latent_code
         
         targets = []
-        # layer = 0
+        layer = 0
         
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
-        if spatial_noise:
-            res_to_noise = {x.shape[3]: x for x in spatial_noise}
+        last_image = None
+
         for idx, block in enumerate(self.dec_blocks):
-            noise = None
-            if block.base <= self.H.max_hierarchy:
-                noise = res_to_noise[block.base]
-            x = block(x, w, noise)
+
             if(block.mixin is not None):
                 # intermediate = self.resnet[layer](x)
                 # intermediate = self.gain[layer] * intermediate + self.bias[layer]
                 intermediate = self.resnet(x)
                 intermediate = self.gain * intermediate + self.bias
 
-                targets.append(intermediate)
-                # layer += 1
+                if(last_image is not None):
+                    intermediate = intermediate + last_image
+                    targets.append(intermediate)
+
+                intermediate = F.interpolate(intermediate, scale_factor=block.base // block.mixin)
+                last_image = intermediate
+
+                layer += 1
+
+            x = block(x, w, None)
 
         if(train):
             return targets
@@ -165,5 +169,5 @@ class IMLE(nn.Module):
         self.decoder = Decoder(H)
 
     def forward(self, latents, spatial_noise=None, input_is_w=False, train=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w, train)
+        return self.decoder.forward(latents, None, input_is_w, train)
 
