@@ -207,8 +207,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # if(H.use_snoise):
                 cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                for i in range(len(H.res)):
-                    cur_snoise[i].zero_()
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
