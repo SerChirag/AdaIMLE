@@ -27,29 +27,30 @@ from visual.spatial_visual import spatial_vissual
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
+from helpers.improved_precision_recall import compute_prec_recall
 
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
     t0 = time.time()
     imle.zero_grad()
 
-    if(H.use_splatter):
-        norms = torch.norm(latents,dim=1,p=2)
-        normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
+    # if(H.use_splatter):
+    #     norms = torch.norm(latents,dim=1,p=2)
+    #     normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
         
-        b = torch.normal(0,1,size=normalized_latents.shape).cuda()
-        b = nn.functional.normalize(b, dim=1)
+    #     b = torch.normal(0,1,size=normalized_latents.shape)
+    #     b = nn.functional.normalize(b, dim=1)
 
-        w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
-        w = nn.functional.normalize(w,p=2,dim=-1)
-        cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
-        cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
+    #     w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
+    #     w = nn.functional.normalize(w,p=2,dim=-1)
+    #     cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
+    #     cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
 
-    elif(H.use_gaussian):
-        cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
+    # elif(H.use_gaussian):
+    #     cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
 
-    else:
-        cur_batch_latents = latents
+    # else:
+    cur_batch_latents = latents
     
     px_z = imle(cur_batch_latents, snoise)
     loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
@@ -101,6 +102,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         print('Outer batch - {}'.format(split_ind, len(split_x)))
 
         while (epoch < H.num_epochs):
+            
+            # if(epoch > 1 and optimizer.param_groups[0]['lr'] != H.lr2):
+            #     for param_group in optimizer.param_groups:
+            #         param_group['lr'] = H.lr2
+            #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
+
             epoch += 1
 
             if (epoch == starting_epoch):
@@ -112,8 +119,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     batch_slice = slice(0, x[0].size()[0])
                     latents = sampler.selected_latents[batch_slice]
                     with torch.no_grad():
-                        snoise = [s[batch_slice] for s in sampler.selected_snoise]
-                        generate_for_NN(sampler, x[0], latents, snoise, viz_batch_original.shape, imle,
+                        generate_for_NN(sampler, x[0], latents, None, viz_batch_original.shape, imle,
                             f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
                     print('loaded latest latents')
 
@@ -124,10 +130,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 else:
                     to_update = sampler.entire_ds
 
-            if (epoch % H.imle_force_resample == 0):
-                # torch.cuda.empty_cache()
+
+            change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
+
+
+            # sampler.imle_sample_force(split_x_tensor, imle, to_update)
+
+            if (to_update.shape[0] > 0):
                 sampler.imle_sample(split_x_tensor, imle)
-                # torch.cuda.empty_cache()
+            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
+
+
+            to_update = to_update.cpu()
+            last_updated[to_update] = 0
+            times_updated[to_update] = times_updated[to_update] + 1
 
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
@@ -136,24 +152,35 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
-                                    [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
+                                    None,
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                     # torch.cuda.empty_cache()
         
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False, num_workers=4, persistent_workers=False)
 
-            # start_time = time.time()
+            start_time = time.time()
 
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
-                cur_snoise = [s[indices] for s in sampler.selected_snoise]
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                
+                # if(H.use_snoise):
+                # cur_snoise = [s[indices] for s in sampler.selected_snoise]
+
+                # for i in range(len(H.res)):
+                #     cur_snoise[i].zero_()
+                # else:
+                #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
+
+                stat = training_step_imle(H, target.shape[0], target, None, None, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
-                scheduler.step()
+
+                if(iterate <= H.warmup_iters):
+                    # print("Warmup iteration: ", iterate)
+                    scheduler.step()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -167,31 +194,55 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 if iterate % H.iters_per_save == 0:
                     fp = os.path.join(H.save_dir, 'latest')
                     logprint(f'Saving model@ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
                     save_latents_latest(H, split_ind, sampler.selected_latents)
                     save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
                 if iterate % H.iters_per_ckpt == 0:
-                    save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, H)
+                    save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
-                    save_snoise(H, iterate, sampler.selected_snoise)
+                    # save_snoise(H, iterate, sampler.selected_snoise)
 
-            # print(f'Epoch {epoch} took {time.time() - start_time} seconds')
+            print(f'Epoch {epoch} took {time.time() - start_time} seconds')
+
+            if(iterate > H.warmup_iters):
+                scheduler.step()
+
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
-            cur_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=cur_dists)
-            torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
+            cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
+            cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
+
+
+            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+                                                                                            dists=cur_dists,  
+                                                                                            dists_lpips=cur_dists_lpips,
+                                                                                            dists_l2=cur_dists_l2, 
+                                                                                            logging=True)
+
+            # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
                     
             metrics = {
                 'mean_loss': torch.mean(cur_dists).item(),
                 'std_loss': torch.std(cur_dists).item(),
                 'max_loss': torch.max(cur_dists).item(),
                 'min_loss': torch.min(cur_dists).item(),
+                'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
+                'std_loss_lpips': torch.std(cur_dists_lpips).item(),
+                'max_loss_lpips': torch.max(cur_dists_lpips).item(),
+                'min_loss_lpips': torch.min(cur_dists_lpips).item(),
+                'mean_loss_l2': torch.mean(cur_dists_l2).item(),
+                'std_loss_l2': torch.std(cur_dists_l2).item(),
+                'max_loss_l2': torch.max(cur_dists_l2).item(),
+                'min_loss_l2': torch.min(cur_dists_l2).item(),
+                'total_excluded': sampler.total_excluded,
+                'total_excluded_percentage': sampler.total_excluded_percentage,
             }
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
-                generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+                print("Learning rate: ", optimizer.param_groups[0]['lr'])
+                generate_and_save(H, imle, sampler, min(5000,subset_len * H.fid_factor))
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
                 if cur_fid < best_fid:
@@ -199,10 +250,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     # save models
                     fp = os.path.join(H.save_dir, 'best_fid')
                     logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
+                
+                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
 
                 metrics['fid'] = cur_fid
                 metrics['best_fid'] = best_fid
+                metrics['precision'] = precision
+                metrics['recall'] = recall
+                
             
             if (to_update.shape[0] != 0):
                 metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
@@ -216,7 +272,16 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 with torch.no_grad():
                     generate_images_initial(H, sampler, viz_batch_original,
                                             sampler.selected_latents[0: H.num_images_visualize],
-                                            [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
+                                            None,
+                                            viz_batch_original.shape, imle, ema_imle,
+                                            f'{H.save_dir}/latest.png', logprint, experiment)
+
+
+            if epoch % 50 == 0:
+                with torch.no_grad():
+                    generate_images_initial(H, sampler, viz_batch_original,
+                                            sampler.selected_latents[0: H.num_images_visualize],
+                                            None,
                                             viz_batch_original.shape, imle, ema_imle,
                                             f'{H.save_dir}/latest.png', logprint, experiment)
 
@@ -290,7 +355,9 @@ def main(H=None):
         if subset_len == -1:
             subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
-        generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+        # generate_and_save(H, imle, sampler, 5000)
+
+        generate_and_save(H, imle, sampler, 5000)
         print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
         cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
         print("FID: ", cur_fid)
@@ -331,6 +398,7 @@ def main(H=None):
 
 
     elif H.mode == 'train':
+        print(H)
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'ppl':
@@ -415,6 +483,23 @@ def main(H=None):
                 sn1 = None
                 sn2 = None
                 random_interp(H, sampler, (0, 256, 256, 3), imle, f'test/interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
+
+    elif H.mode == 'prec_rec':
+        
+        os.makedirs(f'{H.save_dir}/prec_rec', exist_ok=True)
+
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, len(data_train), preprocess_fn)
+        # generate_and_save(H, imle, sampler, 5000)
+
+        print("Generating images")
+        generate_and_save(H, imle, sampler, 1000, subdir='prec_rec')
+        print(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
+        precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
+        print("Precision: ", precision)
+        print("Recall: ", recall)
 
 
 if __name__ == "__main__":

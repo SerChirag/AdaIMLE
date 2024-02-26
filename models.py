@@ -85,8 +85,8 @@ class DecBlock(nn.Module):
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base // self.mixin)
-        if self.base <= self.H.max_hierarchy:
-            x = self.noise(x, spatial_noise)
+        # if self.base <= self.H.max_hierarchy:
+        #     x = self.noise(x, spatial_noise)
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
@@ -120,13 +120,11 @@ class Decoder(nn.Module):
             w = latent_code
         
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
-        if spatial_noise:
-            res_to_noise = {x.shape[3]: x for x in spatial_noise}
+        # if spatial_noise:
+        #     res_to_noise = {x.shape[3]: x for x in spatial_noise}
         for idx, block in enumerate(self.dec_blocks):
-            noise = None
-            if block.base <= self.H.max_hierarchy:
-                noise = res_to_noise[block.base]
-            x = block(x, w, noise)
+            
+            x = block(x, w, None)
         x = self.resnet(x)
         x = self.gain * x + self.bias
         return x
@@ -139,5 +137,5 @@ class IMLE(nn.Module):
         self.decoder = Decoder(H)
 
     def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w)
+        return self.decoder.forward(latents, None, input_is_w)
 

@@ -19,7 +19,7 @@ fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
-fewshot.warmup_iters = 100
+fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
@@ -55,12 +55,18 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_ema_path', type=str, default=None)  # restore ema from checkpoint
     parser.add_argument('--restore_log_path', type=str, default=None)  # restore log from checkpoint
     parser.add_argument('--restore_optimizer_path', type=str, default=None)  # restore optimizer from checkpoint
+    parser.add_argument('--restore_scheduler_path', type=str, default=None)  # restore optimizer from scheduler
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
     parser.add_argument('--warmup_iters', type=float, default=0)  # number of iterations for warmup for scheduler
+    parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
+    parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
+
 
     parser.add_argument('--lr', type=float, default=0.00015)  # learning rate
+    parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate
+
     parser.add_argument('--wd', type=float, default=0.00)  # weight decay
     parser.add_argument('--num_epochs', type=int, default=10000)  # number of epochs
     parser.add_argument('--n_batch', type=int, default=4)  # batch size
@@ -115,10 +121,22 @@ def add_imle_arguments(parser):
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
-    parser.add_argument('--use_snoise', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
+
+    parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    # parser.add_argument('--use_eps_ignore_advanced', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--randomness_angular', type=float, default=0.0)  # whether to use splatter
+
+
+    parser.add_argument('--eps_radius', type=float, default=0.1)  # angle to splatter
+    parser.add_argument('--knn_ignore', type=int, default=5)  # whether to use spatial noise
+
+    parser.add_argument('--max_sample_angle', type=float, default=180.0)  # max angle used for sampling
+    parser.add_argument('--min_sample_angle', type=float, default=0.0)  # min angle used for sampling
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
