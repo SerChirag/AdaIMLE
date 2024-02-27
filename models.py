@@ -148,7 +148,8 @@ class Decoder(nn.Module):
 
                 if(last_image is not None):
                     intermediate = intermediate + last_image
-                    targets.append(intermediate)
+                    if(intermediate.shape[-1] >= 32):
+                        targets.append(intermediate)
 
                 intermediate = F.interpolate(intermediate, scale_factor=block.base // block.mixin)
                 last_image = intermediate
