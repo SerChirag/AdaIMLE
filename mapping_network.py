@@ -146,4 +146,4 @@ class NoiseInjection(nn.Module):
         self.weight = nn.Parameter(torch.randn(1, channel, 1, 1))
 
     def forward(self, image, spatial_noise):
-        return image + self.weight * spatial_noise
+        return image 
