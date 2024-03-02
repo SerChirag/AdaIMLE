@@ -84,39 +84,16 @@ def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 
     delete_content_of_dir(f'{H.save_dir}/{subdir}')
-
-    phi = 0.9
+    
     with torch.no_grad():
         temp_latent_rnds = torch.randn([H.imle_batch, H.latent_dim], dtype=torch.float32).cuda()
-        for i in range(0, n_samp, H.imle_batch):
-
-            if(i + H.imle_batch > n_samp):
-                batch_size = n_samp - i
-                print("batch size: ", batch_size)
-            else:
-                batch_size = H.imle_batch
+        for i in range(0, (n_samp // H.imle_batch)+1):
+            
+            batch_size = min(H.imle_batch, n_samp-i*H.imle_batch)
 
             temp_latent_rnds.normal_()
-
-            if(H.use_snoise == True):
-                tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
-            else:
-                tmp_snoise = [s[:H.imle_batch] for s in sampler.neutral_snoise]
-
-            # tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
-            # z_mean = torch.mean(temp_latent_rnds,axis=0)
-            # snoise_mean = []
-            # for j in tmp_snoise:
-            #     snoise_mean.append(torch.unsqueeze(torch.mean(j,axis=0),0))
-
-            # trunc_latents_og = temp_latent_rnds * phi + z_mean * (1 - phi)
-            # snoise_trunc_og = []
-            # for j in range(len(tmp_snoise)):
-            #     snoise_trunc_og.append(tmp_snoise[j] * phi + snoise_mean[j] * (1 - phi))
-
-            # samp = sampler.sample(trunc_latents_og, imle, snoise_trunc_og)
+            tmp_snoise = [s[:H.imle_batch].normal_() for s in sampler.snoise_tmp]
             samp = sampler.sample(temp_latent_rnds, imle, tmp_snoise)
 
             for j in range(batch_size):
-                imageio.imwrite(f'{H.save_dir}/{subdir}/{i + j}.png', samp[j])
-
+                imageio.imwrite(f'{H.save_dir}/{subdir}/{i * H.imle_batch + j}.png', samp[j])
