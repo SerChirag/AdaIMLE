@@ -499,19 +499,22 @@ def main(H=None):
             generate_sample_nn(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/rnd2.png', logprint, preprocess_fn)
 
     elif H.mode == 'backtrack_interpolate':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
         with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=H.subset_len):
+            for split_x in DataLoader(data_train, batch_size=subset_len):
                 split_x = split_x[0]
             viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
                                                                     H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
+            sampler = Sampler(H, subset_len, preprocess_fn)
             latents = torch.tensor(torch.load(f'{H.restore_latent_path}'), requires_grad=True, dtype=torch.float32, device='cuda')
             for i in range(latents.shape[0] - 1):
                 lat0 = latents[i:i+1]
                 lat1 = latents[i+1:i+2]
                 sn1 = None
                 sn2 = None
-                random_interp(H, sampler, (0, 256, 256, 3), imle, f'test/interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
+                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/back-interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
 
     elif H.mode == 'prec_rec':
         
