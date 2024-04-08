@@ -8,6 +8,7 @@ import wandb
 import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
+import torch.nn.functional as F
 
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
@@ -75,7 +76,17 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
-    loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+    px_z_64 = F.interpolate(px_z, scale_factor = 0.25)
+    px_z_128 = F.interpolate(px_z, scale_factor = 0.5)
+
+    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25)
+    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5)
+
+    loss_64 = loss_fn(px_z_64, targets_64)
+    loss_128 = loss_fn(px_z_128, targets_128)
+    loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+
+    loss = loss_64 + loss_128 + loss_256
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -185,7 +196,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-            if to_update.shape[0] >= H.num_images_visualize + 8:
+            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
@@ -431,11 +442,17 @@ def main(H=None):
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'ppl':
-        sampler = Sampler(H, H.subset_len, preprocess_fn)
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, subset_len, preprocess_fn)
         calc_ppl(H, imle, sampler)
 
     elif H.mode == 'ppl_uniform':
-        sampler = Sampler(H, H.subset_len, preprocess_fn)
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, subset_len, preprocess_fn)
         calc_ppl_uniform(H, imle, sampler)
     
     elif H.mode == 'interpolate':
