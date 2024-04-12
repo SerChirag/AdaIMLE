@@ -22,6 +22,7 @@ from sampler import Sampler
 from visual.generate_rnd import generate_rnd
 from visual.generate_rnd_nn import generate_rnd_nn
 from visual.generate_sample_nn import generate_sample_nn
+from visual.generate_video import generate_video
 from visual.interpolate import random_interp
 from visual.nn_interplate import nn_interp
 from visual.spatial_visual import spatial_vissual
@@ -467,6 +468,18 @@ def main(H=None):
             sampler = Sampler(H, subset_len, preprocess_fn)
             for i in range(H.num_images_to_generate):
                 random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp-{i}.png', logprint)
+    
+    elif H.mode == 'generate_video':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        with torch.no_grad():
+            for split_x in DataLoader(data_train, batch_size=subset_len):
+                split_x = split_x[0]
+            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
+                                                                    H.num_images_visualize, H.dataset)
+            sampler = Sampler(H, subset_len, preprocess_fn)
+            generate_video(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/slerp.mp4', logprint)
 
     elif H.mode == 'spatial_visual':
         with torch.no_grad():
