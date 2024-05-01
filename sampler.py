@@ -82,7 +82,7 @@ class Sampler:
 
         else:
 
-            projection_dim = H.proj_dim // 2
+            projection_dim = H.proj_dim
             dims = [int(projection_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
                 sm = sum([dim.shape[1] for dim in out])
@@ -468,6 +468,8 @@ class Sampler:
 
         total_rejected = 0
 
+        # global_indices = torch.zeros(self.dataset_size, dtype=torch.long)
+
         if(self.H.use_eps_ignore):
             with torch.no_grad():
                 for i in range(self.pool_size // self.H.imle_db_size):
@@ -528,6 +530,8 @@ class Sampler:
                     need_update = need_update.cpu()
                     global_need_update = indices[need_update]
 
+                    # global_indices[global_need_update] = nearest_indices[need_update] + pool_slice.start
+
                     self.selected_dists_tmp[global_need_update] = dci_dists[need_update].clone()
                     self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.latent_dim))
                     for j in range(len(self.res)):
@@ -541,3 +545,6 @@ class Sampler:
         self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
 
         print(f'Force resampling took {time.time() - t1}')
+
+        # torch.save(global_indices, 'global_indices_lpips.pt')
+

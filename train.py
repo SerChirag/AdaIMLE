@@ -26,7 +26,8 @@ from visual.nn_interplate import nn_interp
 from visual.spatial_visual import spatial_vissual
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
-                          get_sample_for_visualization)
+                          get_sample_for_visualization, 
+                          generate_selected_images)
 from helpers.improved_precision_recall import compute_prec_recall
 
 
@@ -173,10 +174,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
-            # if (to_update.shape[0] > 0):
-            #     print("Saving latents")
-            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
-
+            if (to_update.shape[0] > 0):
+                os.makedirs(f'{H.save_dir}/selected', exist_ok=True)
+                generate_selected_images(H, sampler, imle)
 
             to_update = to_update.cpu()
             last_updated[to_update] = 0

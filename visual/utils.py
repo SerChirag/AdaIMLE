@@ -39,6 +39,16 @@ def generate_for_NN(sampler, orig, initial, snoise, shape, ema_imle, fname, logp
     imageio.imwrite(fname, im)
 
 
+def generate_selected_images(H, sampler, imle):
+    for i in range(0, sampler.selected_latents.shape[0], H.n_batch):
+        batch_slice = slice(i, i + H.n_batch)
+        temp_latent_rnds = sampler.selected_latents[batch_slice]
+        images = sampler.sample(temp_latent_rnds, imle, None)
+        for j in range(images.shape[0]):
+            imageio.imwrite(f'{H.save_dir}/selected/{i + j}.png', images[j])
+
+
+
 def generate_images_initial(H, sampler, orig, initial, snoise, shape, imle, ema_imle, fname, logprint, experiment=None):
     mb = shape[0]
     initial = initial[:mb]
