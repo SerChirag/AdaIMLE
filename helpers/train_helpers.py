@@ -1,4 +1,5 @@
 from pathlib import Path
+import random
 
 import torch
 import numpy as np
@@ -106,6 +107,7 @@ def set_up_hyperparams(s=None):
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
     torch.cuda.manual_seed(H.seed)
+    random.seed(H.seed)
     logprint('training model', H.desc, 'on', H.dataset)
     return H, logprint
 

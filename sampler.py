@@ -14,6 +14,19 @@ from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 
+def retain_top_n_values(matrix, n):
+    top_n_matrix = torch.zeros_like(matrix)
+    for i in range(matrix.size(0)):
+        row = matrix[i]
+        top_n_values, top_n_indices = torch.topk(row, n)
+        top_n_matrix[i, top_n_indices] = top_n_values
+    return top_n_matrix
+
+# Normalize the matrix across rows
+def normalize_rows(matrix):
+    row_sums = matrix.sum(dim=1, keepdim=True)
+    return matrix / row_sums
+
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
@@ -108,9 +121,9 @@ class Sampler:
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
-        self.angle_generator = Angle_Generator(self.H.latent_dim)
-        self.max_sample_angle_rad = H.max_sample_angle_rad
-        self.min_sample_angle_rad = H.min_sample_angle_rad
+        self.anchors = torch.load("./flowers_mixup/data_100_flowers.pt")
+        self.non_anchors = torch.load("./flowers_mixup/data_900_flowers.pt")
+        self.distance_matrix = normalize_rows(retain_top_n_values(torch.load("./flowers_mixup/distance_matrix_flowers.pt"),10)).cuda()
 
         self.total_excluded = 0
         self.total_excluded_percentage = 0
@@ -453,6 +466,7 @@ class Sampler:
         if to_update.shape[0] == 0:
             return
         
+        to_update = self.anchors
         to_update = to_update.cpu()
 
         t1 = time.time()
@@ -539,5 +553,6 @@ class Sampler:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
         
         self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
+        self.selected_dists[self.non_anchors] = self.distance_matrix @ self.selected_dists_tmp[to_update]
 
         print(f'Force resampling took {time.time() - t1}')
