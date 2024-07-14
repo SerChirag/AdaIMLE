@@ -90,6 +90,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     subset_len = len(data_train)
     if H.subset_len != -1:
         subset_len = H.subset_len
+        
     for data_train in DataLoader(data_train, batch_size=subset_len):
         data_train = TensorDataset(data_train[0])
         break
@@ -107,6 +108,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         subset_len = len(data_train)
 
     sampler = Sampler(H, subset_len, preprocess_fn)
+    sampler.get_distance_matrix(data_train.tensors[0])
 
     last_updated = torch.zeros(subset_len, dtype=torch.int16).cuda()
     times_updated = torch.zeros(subset_len, dtype=torch.int8).cuda()

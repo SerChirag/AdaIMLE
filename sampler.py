@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from LPNet import LPNet
+import lpips
+
 from dciknn_cuda import DCI, MDCI
 from torch.optim import AdamW
 from helpers.utils import ZippedDataset
@@ -121,14 +123,44 @@ class Sampler:
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
-        self.anchors = torch.load("./flowers_mixup/data_100_flowers.pt")
-        self.non_anchors = torch.load("./flowers_mixup/data_900_flowers.pt")
-        self.distance_matrix = normalize_rows(retain_top_n_values(torch.load("./flowers_mixup/distance_matrix_flowers.pt"),10)).cuda()
+        self.anchors = None
+        self.non_anchors = None
+        self.distance_matrix = None
 
         self.total_excluded = 0
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+
+    def get_distance_matrix(self, dataset_tensor):
+        dataset_tensor = dataset_tensor.permute(0, 3, 1, 2).float()
+        dataset_tensor = dataset_tensor.mul_(1./127.5).add_(-1)
+
+        np.random.seed(0)
+
+        array = np.arange(dataset_tensor.shape[0])
+        array_anchors = np.random.choice(array, self.H.mixup_anchors, replace=False)
+        array_anchors = np.sort(array_anchors)
+
+        # Create the array of 900 elements by excluding the elements in array_100
+        array_non_anchors =  np.setdiff1d(array, array_anchors)
+
+        self.anchors = torch.tensor(array_anchors)
+        self.non_anchors = torch.tensor(array_non_anchors)
+
+        data_anchors = dataset_tensor[array_anchors].cuda()
+        data_non_anchors = dataset_tensor[array_non_anchors].cuda()
+        self.distance_matrix = torch.zeros((array_non_anchors.shape[0], array_anchors.shape[0]))
+
+        loss_fn = lpips.LPIPS(net='alex').to('cuda')
+
+        for i in range(data_non_anchors.shape[0]):
+            repeated_data = data_non_anchors[i].repeat(data_anchors.shape[0], 1, 1, 1).cuda()
+            self.distance_matrix[i] = loss_fn(repeated_data, data_anchors).squeeze().cpu().detach()
+            if(i%100 == 0):
+                print(i)
+            
+        self.distance_matrix = normalize_rows(retain_top_n_values(self.distance_matrix, self.H.mixup_nn)).cuda()
 
     def get_projected(self, inp, permute=True):
         if permute:

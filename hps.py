@@ -148,6 +148,9 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
+    parser.add_argument('--mixup_anchors', type=int, default=100)  # whether to use tensorboard
+    parser.add_argument('--mixup_nn', type=int, default=10)  # tensorboard directory
+
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
     parser.add_argument("--batch", type=int, default=16, help="batch size for the models")
