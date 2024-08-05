@@ -160,7 +160,8 @@ class Sampler:
             if(i%100 == 0):
                 print(i)
             
-        self.distance_matrix = normalize_rows(retain_top_n_values(self.distance_matrix, self.H.mixup_nn)).cuda()
+        self.distance_matrix = normalize_rows(retain_top_n_values(self.distance_matrix, self.H.mixup_nn))
+        torch.save(self.distance_matrix, f'{self.H.save_dir}/distance_matrix_flowers.pt')
 
     def get_projected(self, inp, permute=True):
         if permute:
@@ -585,6 +586,6 @@ class Sampler:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
         
         self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
-        self.selected_dists[self.non_anchors] = self.distance_matrix @ self.selected_dists_tmp[to_update]
+        self.selected_latents[self.non_anchors] = self.distance_matrix @ self.selected_latents[to_update]
 
         print(f'Force resampling took {time.time() - t1}')
