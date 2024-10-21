@@ -32,7 +32,7 @@ from visual.utils import (generate_and_save, generate_for_NN,
 from helpers.improved_precision_recall import compute_prec_recall
 
 
-def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
+def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scale_factor = 1.0):
     t0 = time.time()
     imle.zero_grad()
 
@@ -77,17 +77,10 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
-    px_z_64 = F.interpolate(px_z, scale_factor = 0.25)
-    px_z_128 = F.interpolate(px_z, scale_factor = 0.5)
+    px_z_scaled = F.interpolate(px_z, scale_factor = scale_factor)
+    targets_scaled = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale_factor)
 
-    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25)
-    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5)
-
-    loss_64 = loss_fn(px_z_64, targets_64)
-    loss_128 = loss_fn(px_z_128, targets_128)
-    loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
-
-    loss = loss_64 + loss_128 + loss_256
+    loss = loss_fn(px_z_scaled, targets_scaled)
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -159,6 +152,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             # all_conditions = torch.logical_or(in_threshold, updated_too_much)
             to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
+            if(epoch > 1000) and (epoch % 100 == 0):
+                imle.module.increment_scale_factor()
+
             if (epoch == starting_epoch):
                 if os.path.isfile(str(H.restore_latent_path)):
                     latents = torch.load(H.restore_latent_path)
@@ -224,7 +220,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, scale_factor=imle.module.scale_factor)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):

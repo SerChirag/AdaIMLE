@@ -134,6 +134,10 @@ class IMLE(nn.Module):
         super().__init__()
         self.dci_db = None
         self.decoder = Decoder(H)
+        self.scale_factor = 0.125
+
+    def increment_scale_factor(self, increment = 0.02):
+        self.scale_factor = min(1.0, self.scale_factor + increment)
 
     def forward(self, latents, spatial_noise=None, input_is_w=False):
         return self.decoder.forward(latents, spatial_noise, input_is_w)
