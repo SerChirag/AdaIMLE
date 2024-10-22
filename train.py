@@ -325,7 +325,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if H.use_wandb:
                 wandb.log(metrics, step=iterate)
             
-            if iterate % 5 == 0 and experiment is not None:
+            if epoch % 5 == 0 and experiment is not None:
                 experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
 def main(H=None):
