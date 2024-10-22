@@ -77,8 +77,8 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
-    px_z_scaled = F.interpolate(px_z, scale_factor = scale_factor)
-    targets_scaled = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale_factor)
+    px_z_scaled = F.interpolate(px_z, scale_factor = scale_factor, antialias=True, mode='bilinear')
+    targets_scaled = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale_factor, antialias=True, mode='bilinear')
 
     loss = loss_fn(px_z_scaled, targets_scaled)
     loss.backward()
