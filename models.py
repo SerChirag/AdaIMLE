@@ -134,7 +134,8 @@ class IMLE(nn.Module):
         super().__init__()
         self.dci_db = None
         self.decoder = Decoder(H)
-        self.scale_factor = 0.125
+        self.register_buffer("scale_factor", torch.tensor([0.125]))
+
 
     def increment_scale_factor(self, increment = 0.02):
         self.scale_factor = min(1.0, self.scale_factor + increment)
