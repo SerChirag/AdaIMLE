@@ -283,6 +283,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'min_loss_l2': torch.min(cur_dists_l2).item(),
                 'total_excluded': sampler.total_excluded,
                 'total_excluded_percentage': sampler.total_excluded_percentage,
+                'scale_factor': imle.module.scale_factor.item(),
             }
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
