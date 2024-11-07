@@ -78,18 +78,22 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise_element = torch.reshape(snoise_element, snoise_element_res)
     #         snoise[i] = snoise_element
     
-    px_z = imle(cur_batch_latents, snoise, train = True)
-    px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bilinear')
-    px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bilinear')
+    px_z = imle(cur_batch_latents, snoise)
 
-    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bilinear')
-    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bilinear')
+    px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
+    px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
+    px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
 
+    targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
+    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
+    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
+
+    loss_32 = loss_fn(px_z_32, targets_32)
     loss_64 = loss_fn(px_z_64, targets_64)
     loss_128 = loss_fn(px_z_128, targets_128)
     loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
 
-    loss = loss_64 + loss_128 + loss_256
+    loss = loss_64 + loss_128 + loss_256 + loss_32
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -224,10 +228,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     _, target = preprocess_fn(x)
                     target = target.permute(0, 3, 1, 2)
 
-                    target_array = []
-                    for res in range(len(H.block_resolutions)-1):
-                        target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
-                    target_array.append(target.clone())
+                    # target_array = []
+                    # for res in range(len(H.block_resolutions)-1):
+                    #     target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
+                    # target_array.append(target.clone())
                     
                     
                     # if(H.use_snoise):
@@ -239,7 +243,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
                     # stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
-                    stat = training_step_imle(H, target.shape[0], target_array, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
+                    stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
 
 
             for cur, indices in data_loader:
