@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from LPNet import LPNet
-from dciknn_cuda import DCI, MDCI
+from knn_cuda import KNN
 from torch.optim import AdamW
 from helpers.utils import ZippedDataset
 from models import parse_layer_string
@@ -355,14 +355,9 @@ class Sampler:
                     else:
                         self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
 
-            if not gen.module.dci_db:
+            if not gen.module.knn_db:
                 device_count = torch.cuda.device_count()
-                gen.module.dci_db = MDCI(self.temp_samples_proj.shape[1], num_comp_indices=self.H.num_comp_indices,
-                                            num_simp_indices=self.H.num_simp_indices, devices=[i for i in range(device_count)], ts=device_count)
-
-                # gen.module.dci_db = DCI(self.temp_samples_proj.shape[1], num_comp_indices=self.H.num_comp_indices,
-                                            # num_simp_indices=self.H.num_simp_indices)
-            gen.module.dci_db.add(self.temp_samples_proj)
+                gen.module.knn_db = KNN(k=1, transpose_mode=True)
 
             t0 = time.time()
             for ind, y in enumerate(DataLoader(dataset, batch_size=self.H.imle_batch)):
@@ -370,6 +365,8 @@ class Sampler:
                 _, target = self.preprocess_fn(y)
                 x = self.dataset_proj[ind * self.H.imle_batch:ind * self.H.imle_batch + target.shape[0]]
                 cur_batch_data_flat = x.float()
+
+                _, nearest_indices = gen.module.dci_db.query(cur_batch_data_flat)
                 nearest_indices, _ = gen.module.dci_db.query(cur_batch_data_flat, num_neighbours=1)
                 nearest_indices = nearest_indices.long()[:, 0]
 
@@ -386,8 +383,6 @@ class Sampler:
                     self.selected_snoise[k][ind * self.H.imle_batch + to_update] = self.snoise_tmp[k][nearest_indices[to_update]].clone()
 
                 del cur_batch_data_flat
-
-            gen.module.dci_db.clear()
 
         # adding perturbation
         changed = torch.sum(self.selected_dists_tmp != self.selected_dists).item()
@@ -472,11 +467,10 @@ class Sampler:
             with torch.no_grad():
                 for i in range(self.pool_size // self.H.imle_db_size):
                     pool_slice = slice(i * self.H.imle_db_size, (i + 1) * self.H.imle_db_size)
-                    if not gen.module.dci_db:
+                    if not gen.module.knn_db:
                         device_count = torch.cuda.device_count()
-                        gen.module.dci_db = MDCI(self.dci_dim, num_comp_indices=self.H.num_comp_indices,
-                                                    num_simp_indices=self.H.num_simp_indices, 
-                                                    devices=[i for i in range(device_count)])
+                        gen.module.knn_db = KNN(k=1, transpose_mode=True)
+
                     gen.module.dci_db.add(self.pool_samples_proj[pool_slice])
                     pool_latents = self.pool_latents[pool_slice]
                     snoise_pool = [b[pool_slice] for b in self.snoise_pool]
@@ -494,8 +488,6 @@ class Sampler:
                         easy_samples_list = torch.unique(nearest_indices[check])
                         self.pool_samples_proj[pool_slice][easy_samples_list] = torch.tensor(float('inf'))
                         rejected_flag[easy_samples_list] = 1
-
-                    gen.module.dci_db.clear()
                     
                     total_rejected += rejected_flag.sum().item()
         
@@ -505,10 +497,9 @@ class Sampler:
         with torch.no_grad():
             for i in range(self.pool_size // self.H.imle_db_size):
                 pool_slice = slice(i * self.H.imle_db_size, (i + 1) * self.H.imle_db_size)
-                if not gen.module.dci_db:
+                if not gen.module.knn_db:
                     device_count = torch.cuda.device_count()
-                    gen.module.dci_db = MDCI(self.dci_dim, num_comp_indices=self.H.num_comp_indices,
-                                                num_simp_indices=self.H.num_simp_indices, devices=[i for i in range(device_count)])
+                    gen.module.dci_db = KNN(k=1, transpose_mode=True)
                 gen.module.dci_db.add(self.pool_samples_proj[pool_slice])
                 pool_latents = self.pool_latents[pool_slice]
                 snoise_pool = [b[pool_slice] for b in self.snoise_pool]
@@ -532,8 +523,6 @@ class Sampler:
                     self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.latent_dim))
                     for j in range(len(self.res)):
                         self.selected_snoise[j][global_need_update] = snoise_pool[j][nearest_indices[need_update]].clone()
-
-                gen.module.dci_db.clear()
 
                 if i % 100 == 0:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
