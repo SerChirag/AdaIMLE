@@ -8,6 +8,7 @@ import wandb
 import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
+import torch.nn.functional as F
 
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
@@ -21,6 +22,7 @@ from sampler import Sampler
 from visual.generate_rnd import generate_rnd
 from visual.generate_rnd_nn import generate_rnd_nn
 from visual.generate_sample_nn import generate_sample_nn
+from visual.generate_video import generate_video
 from visual.interpolate import random_interp
 from visual.nn_interplate import nn_interp
 from visual.spatial_visual import spatial_vissual
@@ -77,10 +79,17 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise, train = True)
-    loss = 0
-    for res in range(len(H.block_resolutions)-1):
-        loss += F.mse_loss(px_z[res], targets[res])
-    loss += loss_fn(px_z[-1], targets[-1])
+    px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bilinear')
+    px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bilinear')
+
+    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bilinear')
+    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bilinear')
+
+    loss_64 = loss_fn(px_z_64, targets_64)
+    loss_128 = loss_fn(px_z_128, targets_128)
+    loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+
+    loss = loss_64 + loss_128 + loss_256
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -178,9 +187,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
-            if (to_update.shape[0] > 0):
-                print("Saving latents")
-                save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
+            # if (to_update.shape[0] > 0):
+            #     print("Saving latents")
+            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
 
 
             to_update = to_update.cpu()
@@ -190,7 +199,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-            if to_update.shape[0] >= H.num_images_visualize + 8:
+            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
@@ -200,7 +209,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False, num_workers=4, persistent_workers=True)
 
             start_time = time.time()
 
@@ -319,7 +328,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
                 print("Learning rate: ", optimizer.param_groups[0]['lr'])
-                generate_and_save(H, imle, sampler, subset_len * H.fid_factor)
+                generate_and_save(H, imle, sampler, min(5000,subset_len * H.fid_factor))
                 print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
                 if cur_fid < best_fid:
@@ -357,7 +366,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if H.use_wandb:
                 wandb.log(metrics, step=iterate)
             
-            if experiment is not None:
+            if epoch % 5 == 0 and experiment is not None:
                 experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
 def main(H=None):
@@ -473,11 +482,17 @@ def main(H=None):
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'ppl':
-        sampler = Sampler(H, H.subset_len, preprocess_fn)
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, subset_len, preprocess_fn)
         calc_ppl(H, imle, sampler)
 
     elif H.mode == 'ppl_uniform':
-        sampler = Sampler(H, H.subset_len, preprocess_fn)
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, subset_len, preprocess_fn)
         calc_ppl_uniform(H, imle, sampler)
     
     elif H.mode == 'interpolate':
@@ -492,6 +507,18 @@ def main(H=None):
             sampler = Sampler(H, subset_len, preprocess_fn)
             for i in range(H.num_images_to_generate):
                 random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp-{i}.png', logprint)
+    
+    elif H.mode == 'generate_video':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        with torch.no_grad():
+            for split_x in DataLoader(data_train, batch_size=subset_len):
+                split_x = split_x[0]
+            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
+                                                                    H.num_images_visualize, H.dataset)
+            sampler = Sampler(H, subset_len, preprocess_fn)
+            generate_video(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/slerp.mp4', logprint)
 
     elif H.mode == 'spatial_visual':
         with torch.no_grad():
@@ -541,19 +568,22 @@ def main(H=None):
             generate_sample_nn(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/rnd2.png', logprint, preprocess_fn)
 
     elif H.mode == 'backtrack_interpolate':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
         with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=H.subset_len):
+            for split_x in DataLoader(data_train, batch_size=subset_len):
                 split_x = split_x[0]
             viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
                                                                     H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
+            sampler = Sampler(H, subset_len, preprocess_fn)
             latents = torch.tensor(torch.load(f'{H.restore_latent_path}'), requires_grad=True, dtype=torch.float32, device='cuda')
             for i in range(latents.shape[0] - 1):
                 lat0 = latents[i:i+1]
                 lat1 = latents[i+1:i+2]
                 sn1 = None
                 sn2 = None
-                random_interp(H, sampler, (0, 256, 256, 3), imle, f'test/interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
+                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/back-interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
 
     elif H.mode == 'prec_rec':
         

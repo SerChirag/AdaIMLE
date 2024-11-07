@@ -57,6 +57,9 @@ class EqualLinear(nn.Module):
     def forward(self, input):
         return self.linear(input)
 
+def normalize_2nd_moment(x, dim=1, eps=1e-8):
+    return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
+
 
 class MappingNetowrk(nn.Module):
     def __init__(self, code_dim=512, n_mlp=8):
@@ -80,6 +83,9 @@ class MappingNetowrk(nn.Module):
         mixing_range=(-1, -1),
     ):
         styles = []
+
+        # input = normalize_2nd_moment(input)
+
         if type(input) not in (list, tuple):
             input = [input]
 
@@ -140,4 +146,4 @@ class NoiseInjection(nn.Module):
         self.weight = nn.Parameter(torch.randn(1, channel, 1, 1))
 
     def forward(self, image, spatial_noise):
-        return image + self.weight * spatial_noise
+        return image 

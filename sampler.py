@@ -217,13 +217,46 @@ class Sampler:
         return res
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
+        # inp_feat, inp_shape = self.lpips_net(inp)
+        # tar_feat, _ = self.lpips_net(tar)
+        # res = 0
+        # for i, g_feat in enumerate(inp_feat):
+        #     res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
+        # if use_mean:
+        #     l2_loss = self.l2_loss(inp, tar)
+        #     loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+        #     if logging:
+        #         return loss, res.mean(), l2_loss.mean()
+        #     else:
+        #         return loss
+
+        # else:
+        #     l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+        #     loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
+        #     if logging:
+        #         return loss, res.mean(), l2_loss
+        #     else:
+        #         return loss
+
         inp_feat, inp_shape = self.lpips_net(inp)
         tar_feat, _ = self.lpips_net(tar)
-        res = 0
-        for i, g_feat in enumerate(inp_feat):
-            res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-        if use_mean:
-            l2_loss = self.l2_loss(inp, tar)
+
+        if use_mean:       
+            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+            # bool_mask = l2_loss < self.H.eps_radius
+            # print(bool_mask)
+            # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
+            #     l2_loss[bool_mask] = 0.0
+            res = 0
+        
+            for i, g_feat in enumerate(inp_feat):
+                lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+
+                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
+                #     lpips_feature_loss[bool_mask] = 0.0
+
+                res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
             if logging:
                 return loss, res.mean(), l2_loss.mean()
@@ -231,6 +264,9 @@ class Sampler:
                 return loss
 
         else:
+            res = 0
+            for i, g_feat in enumerate(inp_feat):
+                res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
             if logging:
