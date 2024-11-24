@@ -77,17 +77,29 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
-    px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bilinear')
-    px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bilinear')
+    # px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bilinear')
+    # px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bilinear')
+    # px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bilinear')
 
-    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bilinear')
-    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bilinear')
+    px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
+    px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
+    px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
 
+
+    # targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bilinear')
+    # targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bilinear')
+    # targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bilinear')
+
+    targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
+    targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
+    targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
+
+    loss_32 = loss_fn(px_z_32, targets_32)
     loss_64 = loss_fn(px_z_64, targets_64)
     loss_128 = loss_fn(px_z_128, targets_128)
     loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
 
-    loss = loss_64 + loss_128 + loss_256
+    loss = loss_32 + loss_64 + loss_128 + loss_256
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
