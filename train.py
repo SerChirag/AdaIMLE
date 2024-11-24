@@ -93,7 +93,11 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     loss_128 = loss_fn(px_z_128, targets_128)
     loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
 
-    loss = loss_64 + loss_128 + loss_256 + loss_32
+    loss = loss_256
+
+    if(H.use_multi_res):
+        loss += loss_32 + loss_64 + loss_128
+
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
@@ -217,45 +221,45 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             start_time = time.time()
 
-            if(H.use_bidirection and epoch % H.bidirection_frequency == 0 and epoch > 0):
-                sampler.imle_reverse_sample(split_x_tensor, imle)
-                reverse_dataset = ZippedDataset(TensorDataset(split_x_tensor[sampler.reverse_nns]), TensorDataset(sampler.reverse_latent))
-                reverse_data_loader = DataLoader(reverse_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
+            # if(H.use_bidirection and epoch % H.bidirection_frequency == 0 and epoch > 0):
+            #     sampler.imle_reverse_sample(split_x_tensor, imle)
+            #     reverse_dataset = ZippedDataset(TensorDataset(split_x_tensor[sampler.reverse_nns]), TensorDataset(sampler.reverse_latent))
+            #     reverse_data_loader = DataLoader(reverse_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False)
 
-                for cur, indices in reverse_data_loader:
-                    x = cur[0]
-                    latents = cur[1][0]
-                    _, target = preprocess_fn(x)
-                    target = target.permute(0, 3, 1, 2)
+            #     for cur, indices in reverse_data_loader:
+            #         x = cur[0]
+            #         latents = cur[1][0]
+            #         _, target = preprocess_fn(x)
+            #         target = target.permute(0, 3, 1, 2)
 
-                    # target_array = []
-                    # for res in range(len(H.block_resolutions)-1):
-                    #     target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
-                    # target_array.append(target.clone())
+            #         # target_array = []
+            #         # for res in range(len(H.block_resolutions)-1):
+            #         #     target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
+            #         # target_array.append(target.clone())
                     
                     
-                    # if(H.use_snoise):
-                    cur_snoise = [s[indices] for s in sampler.reverse_snoise]
+            #         # if(H.use_snoise):
+            #         cur_snoise = [s[indices] for s in sampler.reverse_snoise]
 
-                    # for i in range(len(H.res)):
-                    #     cur_snoise[i].zero_()
-                    # else:
-                    #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
+            #         # for i in range(len(H.res)):
+            #         #     cur_snoise[i].zero_()
+            #         # else:
+            #         #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                    # stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
-                    stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
+            #         # stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+            #         stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
 
 
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
-                target = target.permute(0, 3, 1, 2)
+                # target = target.permute(0, 3, 1, 2)
 
-                target_array = []
-                for res in range(len(H.block_resolutions)-1):
-                    target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
-                target_array.append(target.clone())
+                # target_array = []
+                # for res in range(len(H.block_resolutions)-1):
+                #     target_array.append(resize(target.clone(), size=(H.block_resolutions[res], H.block_resolutions[res]), antialias=True))
+                # target_array.append(target.clone())
                 
                 # if(H.use_snoise):
                 cur_snoise = [s[indices] for s in sampler.selected_snoise]
@@ -265,7 +269,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target_array, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
+                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.calc_loss_l2)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):

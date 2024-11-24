@@ -112,6 +112,8 @@ def add_imle_arguments(parser):
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
+    parser.add_argument('--use_multi_res', default=False, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+
     parser.add_argument('--use_bidirection', default=False, type=lambda x: bool(strtobool(x)))  # whether to use bidirection search
     parser.add_argument('--bidirection_frequency', type=int, default=15)  # when to resample
 
