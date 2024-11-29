@@ -37,6 +37,16 @@ def parse_args_and_update_hparams(H, parser, s=None):
         parser.set_defaults(**hps)
     H.update(parser.parse_args(s).__dict__)
 
+    try:
+        value = H['multi_res_scales']
+        list_value = value.split(',')
+        list_value_int = [float(x)*0.01 for x in list_value]
+        H['multi_res_scales'] = list_value_int
+    except:
+        pass
+
+    print(H)
+
 
 def add_imle_arguments(parser):
     parser.add_argument('--seed', type=int, default=0)
@@ -113,6 +123,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
     parser.add_argument('--use_multi_res', default=False, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--multi_res_scales', default='', type=str)  # extra multi-res dimension
 
     parser.add_argument('--use_bidirection', default=False, type=lambda x: bool(strtobool(x)))  # whether to use bidirection search
     parser.add_argument('--bidirection_frequency', type=int, default=15)  # when to resample
@@ -135,7 +146,6 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     # parser.add_argument('--use_eps_ignore_advanced', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--randomness_angular', type=float, default=0.0)  # whether to use splatter
-
 
     parser.add_argument('--eps_radius', type=float, default=0.1)  # angle to splatter
     parser.add_argument('--knn_ignore', type=int, default=5)  # whether to use spatial noise
