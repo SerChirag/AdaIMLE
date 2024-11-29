@@ -129,7 +129,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--gaussian_std', type=float, default=0.1)  # gaussian std
     # parser.add_argument('--mode', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
 
-    parser.add_argument('--use_multi_res', default=False, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--use_multi_res', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
     parser.add_argument('--multi_res_scales', default='', type=str)  # extra multi-res dimension
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
