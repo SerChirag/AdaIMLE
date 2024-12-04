@@ -26,3 +26,4 @@ cifar-5000.zip
 results/
 vanilla-results/
 interpolation/
+imle-env/*
