@@ -127,7 +127,7 @@ class Sampler:
             gen_feat.append(torch.mm(out[i], self.projections[i]))
             # TODO divide?
         lpips_feat = torch.cat(gen_feat, dim=1)
-        lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
+        # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
         return lpips_feat.cuda()
     
     def get_l2_feature(self, inp, permute=True):
