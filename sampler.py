@@ -79,6 +79,15 @@ class Sampler:
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
+        
+        elif(H.search_type == 'l2_stacked'):
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
+            interpolated = interpolated.reshape(interpolated.shape[0],-1)
+            interpolated_2 = F.interpolate(fake, scale_factor = 0.25, antialias=True, mode='bicubic')
+            interpolated_2 = interpolated_2.reshape(interpolated_2.shape[0],-1)
+            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim//2), p=2, dim=1).cuda()
+            self.l2_projection_2 = F.normalize(torch.randn(interpolated_2.shape[1], H.proj_dim//2), p=2, dim=1).cuda()
+            sum_dims = H.proj_dim
 
         else:
 
@@ -139,6 +148,24 @@ class Sampler:
         interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated.cuda()
     
+    def get_l2_feature_stacked(self, inp, permute=True):
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
+        interpolated_2 = F.interpolate(inp, scale_factor = 0.25, antialias=True, mode='bicubic')
+
+        interpolated = interpolated.reshape(interpolated.shape[0],-1)
+        interpolated_2 = interpolated_2.reshape(interpolated_2.shape[0],-1)
+
+        interpolated = torch.mm(interpolated, self.l2_projection)
+        interpolated_2 = torch.mm(interpolated_2, self.l2_projection_2)
+
+        interpolated = F.normalize(interpolated, p=2, dim=1)
+        interpolated_2 = F.normalize(interpolated_2, p=2, dim=1)
+        
+        interpolated_final = torch.cat([interpolated, interpolated_2], dim=1)
+        return interpolated_final.cuda()
+    
     def get_combined_feature(self, inp, permute=True):
         lpips_feat = self.get_projected(inp, permute)
         l2_feat = self.get_l2_feature(inp, permute)
@@ -168,6 +195,8 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1])
             elif(self.H.search_type == 'l2'):
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1])
+            elif(self.H.search_type == 'l2_stacked'):
+                self.dataset_proj[batch_slice] = self.get_l2_feature_stacked(self.preprocess_fn(x)[1])
             else:
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1])
 
@@ -352,6 +381,8 @@ class Sampler:
                         self.temp_samples_proj[batch_slice] = self.get_projected(self.temp_samples[batch_slice], False)
                     elif(self.H.search_type == 'l2'):
                         self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False)
+                    elif(self.H.search_type == 'l2_stacked'):
+                        self.temp_samples_proj[batch_slice] = self.get_l2_feature_stacked(self.temp_samples[batch_slice], False)
                     else:
                         self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
 
@@ -444,6 +475,8 @@ class Sampler:
                     self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
                 elif(self.H.search_type == 'l2'):
                     self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
+                elif(self.H.search_type == 'l2_stacked'):
+                    self.pool_samples_proj[batch_slice] = self.get_l2_feature_stacked(gen(cur_latents, cur_snosie), False)
                 else:
                     self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
 
