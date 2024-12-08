@@ -32,3 +32,9 @@ new-vanilla-results/
 imports/
 no-noise-*.sh
 imle-env/*
+backtrack/
+results-splatter/
+transfer/
+*.sh
+transfer-narval/*
+transfer_rebuttal/*
