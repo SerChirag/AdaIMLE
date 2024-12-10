@@ -68,8 +68,8 @@ class Sampler:
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
                 sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(len(out) - 1)]
-                dims.append(H.proj_dim - sum(dims))
+                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
+                dims.insert(0,H.proj_dim - sum(dims))
             for ind, feat in enumerate(out):
                 self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
             sum_dims = sum(dims)
@@ -119,12 +119,12 @@ class Sampler:
 
     def get_projected(self, inp, permute=True):
         if permute:
-            out, out_shape = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
+            out, _ = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
         else:
-            out, out_shape = self.lpips_net(inp.cuda())
+            out, _ = self.lpips_net(inp.cuda())
         gen_feat = []
         for i in range(len(out)):
-            gen_feat.append(torch.mm(out[i]/out_shape[i], self.projections[i]))
+            gen_feat.append(torch.mm(out[i], self.projections[i]))
             # TODO divide?
         lpips_feat = torch.cat(gen_feat, dim=1)
         # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
