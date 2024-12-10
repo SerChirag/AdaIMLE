@@ -23,6 +23,7 @@ class Sampler:
         self.latent_lr = H.latent_lr
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
+        self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
 
         blocks = parse_layer_string(H.dec_blocks)
@@ -538,6 +539,8 @@ class Sampler:
                 if i % 100 == 0:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
         
+
+        self.last_selected_latents[to_update] = self.selected_latents[to_update]
         self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
 
         print(f'Force resampling took {time.time() - t1}')
