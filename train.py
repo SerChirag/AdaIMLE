@@ -6,6 +6,7 @@ import imageio
 import torch
 import wandb
 import torch.nn as nn
+import numpy as np
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
@@ -36,59 +37,13 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     t0 = time.time()
     imle.zero_grad()
 
-    # if(H.use_splatter):
-    #     norms = torch.norm(latents,dim=1,p=2)
-    #     normalized_latents = nn.functional.normalize(latents, dim=1, p=2)
-        
-    #     b = torch.normal(0,1,size=normalized_latents.shape)
-    #     b = nn.functional.normalize(b, dim=1)
-
-    #     w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_latents),-1) * normalized_latents
-    #     w = nn.functional.normalize(w,p=2,dim=-1)
-    #     cur_batch_latents = torch.cos(H.angle_rad) * normalized_latents + torch.sin(H.angle_rad) * w
-    #     cur_batch_latents = cur_batch_latents * norms.view(-1, 1)   
-
-    # elif(H.use_gaussian):
-    #     cur_batch_latents = latents + torch.normal(0,H.gaussian_std,size=latents.shape)
-
-    # else:
     cur_batch_latents = latents
-
-    # if(H.use_splatter_snoise and H.use_snoise):
-    #     for i in range(len(snoise)):
-    #         snoise_element_res = snoise[i].shape
-    #         snoise_element = torch.reshape(snoise[i], (snoise_element_res[0], -1))
-    #         if(i == 0):
-    #             snoise_element += torch.normal(0,0.005,size=snoise_element.shape)
-    #         else:
-    #             norms_snoise = torch.norm(snoise_element,dim=1,p=2)
-    #             normalized_snoise = nn.functional.normalize(snoise_element, dim=1, p=2)
-
-    #             b = torch.normal(0,1,size=normalized_snoise.shape)
-    #             b = nn.functional.normalize(b, dim=1)
-
-    #             w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_snoise),-1) * normalized_snoise
-    #             w = nn.functional.normalize(w,p=2,dim=-1)
-
-    #             snoise_element = torch.cos(H.angle_rad) * normalized_snoise + torch.sin(H.angle_rad) * w
-    #             snoise_element = snoise_element * norms_snoise.view(-1, 1)
-
-    #         snoise_element = torch.reshape(snoise_element, snoise_element_res)
-    #         snoise[i] = snoise_element
     
     px_z = imle(cur_batch_latents, snoise)
-    # px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bilinear')
-    # px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bilinear')
-    # px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bilinear')
 
     px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
     px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
     px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
-
-
-    # targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bilinear')
-    # targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bilinear')
-    # targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bilinear')
 
     targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
     targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
@@ -102,6 +57,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     loss = loss_256
 
     for scale in H['multi_res_scales']:
+        scale = scale + np.random.uniform(-0.05, 0.05)
         px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
         targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
         loss_scale = loss_fn(px_z_scale, targets_scale)
@@ -111,7 +67,6 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         loss += loss_32 + loss_64 + loss_128
 
     loss.backward()
-    optimizer.step()
     if ema_imle is not None:
         update_ema(imle, ema_imle, H.ema_rate)
 
@@ -249,9 +204,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
 
-                if(iterate <= H.warmup_iters):
-                    # print("Warmup iteration: ", iterate)
-                    scheduler.step()
+                # if(iterate <= H.warmup_iters):
+                #     # print("Warmup iteration: ", iterate)
+                #     scheduler.step()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -278,9 +233,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
-            if(iterate > H.warmup_iters):
-                scheduler.step()
-
+            optimizer.step()
+            scheduler.step()
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
