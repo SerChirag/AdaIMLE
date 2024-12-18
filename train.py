@@ -35,7 +35,6 @@ from helpers.improved_precision_recall import compute_prec_recall
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
     t0 = time.time()
-    imle.zero_grad()
 
     cur_batch_latents = latents
     
@@ -57,7 +56,6 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     loss = loss_256
 
     for scale in H['multi_res_scales']:
-        scale = scale + np.random.uniform(-0.05, 0.05)
         px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
         targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
         loss_scale = loss_fn(px_z_scale, targets_scale)
@@ -157,15 +155,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 else:
                     to_update = sampler.entire_ds
 
-
             change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
-
-            # if (to_update.shape[0] > 0):
-            #     print("Saving latents")
-            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
-
 
             to_update = to_update.cpu()
             last_updated[to_update] = 0
@@ -235,7 +227,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             optimizer.step()
             scheduler.step()
-            
+            imle.zero_grad()
+
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
