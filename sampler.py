@@ -125,8 +125,8 @@ class Sampler:
             out, out_shape = self.lpips_net(inp.cuda())
         gen_feat = []
         for i in range(len(out)):
-            # gen_feat.append(torch.mm(out[i], self.projections[i]))
-            gen_feat.append(torch.mm(out[i]/out_shape[i], self.projections[i]))
+            gen_feat.append(torch.mm(out[i], self.projections[i]))
+            # gen_feat.append(torch.mm(out[i]/out_shape[i], self.projections[i]))
 
             # TODO divide?
         lpips_feat = torch.cat(gen_feat, dim=1)
@@ -247,6 +247,7 @@ class Sampler:
                 # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
                 #     lpips_feature_loss[bool_mask] = 0.0
 
+                # res += torch.sum(lpips_feature_loss, dim=1) 
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
