@@ -1,6 +1,7 @@
 from curses import update_lines_cols
 from math import comb, ceil
 import time
+import math
 
 import numpy as np
 import torch
@@ -207,26 +208,7 @@ class Sampler:
         return res
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
-        # inp_feat, inp_shape = self.lpips_net(inp)
-        # tar_feat, _ = self.lpips_net(tar)
-        # res = 0
-        # for i, g_feat in enumerate(inp_feat):
-        #     res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-        # if use_mean:
-        #     l2_loss = self.l2_loss(inp, tar)
-        #     loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
-        #     if logging:
-        #         return loss, res.mean(), l2_loss.mean()
-        #     else:
-        #         return loss
 
-        # else:
-        #     l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-        #     loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
-        #     if logging:
-        #         return loss, res.mean(), l2_loss
-        #     else:
-        #         return loss
 
         inp_feat, inp_shape = self.lpips_net(inp)
         tar_feat, _ = self.lpips_net(tar)
@@ -246,8 +228,11 @@ class Sampler:
                 #     lpips_feature_loss[bool_mask] = 0.0
 
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+            
+            c = 0.00054 * math.sqrt(math.prod(inp.shape[1:]))
+            huber_loss = (l2_loss + c * c).sqrt() - c
 
-            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * huber_loss.mean()
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
