@@ -232,6 +232,7 @@ class Sampler:
             c = 0.00054 * math.sqrt(math.prod(inp.shape[1:]))
             huber_loss = (l2_loss + c * c).sqrt() - c
 
+            # loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * huber_loss.mean()
             if logging:
                 return loss, res.mean(), l2_loss.mean()
