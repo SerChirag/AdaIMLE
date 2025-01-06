@@ -50,6 +50,12 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
             loss_scale = loss_fn(px_z_scale, targets_scale)
             loss += loss_scale
 
+        for scale in H['multi_res_scales']:
+            px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
+            targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
+            loss_scale = loss_fn(px_z_scale, targets_scale)
+            loss += loss_scale
+
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
