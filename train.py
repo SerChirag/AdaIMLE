@@ -43,14 +43,8 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
 
     if(H.use_multi_res):
-        step_size = 1 - 0.125 / (H['multi_res_scales'] * 1.0)
-        for scale in np.arange(0.125, 1.0, step_size):
-            px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
-            targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-            loss_scale = loss_fn(px_z_scale, targets_scale)
-            loss += loss_scale
-
-        for scale in H['multi_res_scales']:
+        random_scales = np.random.uniform(0.05, 1.0, H['multi_res_scales'])
+        for scale in random_scales:
             px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
             targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
             loss_scale = loss_fn(px_z_scale, targets_scale)
