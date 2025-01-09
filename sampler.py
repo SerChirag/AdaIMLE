@@ -265,7 +265,7 @@ class Sampler:
                 return loss
 
 
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
+    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False, scale=1.0):
         if dists is None:
             dists = self.selected_dists
         if dists_lpips is None:
@@ -285,18 +285,24 @@ class Sampler:
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
             _, target = self.preprocess_fn(x)
+            target = target.permute(0, 3, 1, 2)
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
             cur_latents = latents[batch_slice]
             cur_snoise = [s[batch_slice] for s in snoise]
             with torch.no_grad():
                 out = gen(cur_latents, cur_snoise)
+
+                if(scale != 1.0):
+                    out = F.interpolate(out, scale_factor = scale, antialias=True, mode='bicubic')
+                    target = F.interpolate(target, scale_factor = scale, antialias=True, mode='bicubic')
+
                 if(logging):
-                    dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
+                    dist, dist_lpips, dist_l2 = self.calc_loss(target, out, use_mean=False, logging=True)
                     dists[batch_slice] = torch.squeeze(dist)
                     dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
                     dists_l2[batch_slice] = torch.squeeze(dist_l2)
                 else:
-                    dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
+                    dist = self.calc_loss(target, out, use_mean=False)
                     dists[batch_slice] = torch.squeeze(dist)
         
         if(logging):

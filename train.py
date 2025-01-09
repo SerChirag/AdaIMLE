@@ -290,6 +290,32 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 metrics['std_loss_resample'] = torch.std(cur_dists).item()
                 metrics['max_loss_resample'] = torch.max(cur_dists).item()
                 metrics['min_loss_resample'] = torch.min(cur_dists).item()
+            
+            scales = [0.125, 0.25, 0.5]
+            for scale in scales:
+                cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
+                cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
+                cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
+
+
+                cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+                                                                                                dists=cur_dists,  
+                                                                                                dists_lpips=cur_dists_lpips,
+                                                                                                dists_l2=cur_dists_l2, 
+                                                                                                logging=True, scale=scale)
+                
+                metrics[f'mean_loss_{int(256*scale)}'] = torch.mean(cur_dists).item()
+                metrics[f'std_loss_{int(256*scale)}'] = torch.std(cur_dists).item()
+                metrics[f'max_loss_{int(256*scale)}'] = torch.max(cur_dists).item()
+                metrics[f'min_loss_{int(256*scale)}'] = torch.min(cur_dists).item()
+                metrics[f'mean_loss_lpips_{int(256*scale)}'] = torch.mean(cur_dists_lpips).item()
+                metrics[f'std_loss_lpips_{int(256*scale)}'] = torch.std(cur_dists_lpips).item()
+                metrics[f'max_loss_lpips_{int(256*scale)}'] = torch.max(cur_dists_lpips).item()
+                metrics[f'min_loss_lpips_{int(256*scale)}'] = torch.min(cur_dists_lpips).item()
+                metrics[f'mean_loss_l2_{int(256*scale)}'] = torch.mean(cur_dists_l2).item()
+                metrics[f'std_loss_l2_{int(256*scale)}'] = torch.std(cur_dists_l2).item()
+                metrics[f'max_loss_l2_{int(256*scale)}'] = torch.max(cur_dists_l2).item()
+                metrics[f'min_loss_l2_{int(256*scale)}'] = torch.min(cur_dists_l2).item()
 
             logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
