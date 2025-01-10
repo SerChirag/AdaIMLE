@@ -38,3 +38,6 @@ transfer/
 *.sh
 transfer-narval/*
 transfer_rebuttal/*
+flowers_compare-2/*
+flowers_compare/*
+
