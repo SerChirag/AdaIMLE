@@ -76,7 +76,7 @@ class Sampler:
             sum_dims = sum(dims)
 
         elif(H.search_type == 'l2'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -134,10 +134,10 @@ class Sampler:
     def get_l2_feature(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
         interpolated = torch.mm(interpolated, self.l2_projection)
-        interpolated = F.normalize(interpolated, p=2, dim=1)
+        # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated.cuda()
     
     def get_combined_feature(self, inp, permute=True):
