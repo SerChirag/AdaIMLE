@@ -62,10 +62,11 @@ class Sampler:
         self.l2_projection = None
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size).cuda()
-        out, shapes = self.lpips_net(fake)
-        sum_dims = 0
 
         if(H.search_type == 'lpips'):
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            out, shapes = self.lpips_net(fake)
+            sum_dims = 0
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
                 sm = sum([dim.shape[1] for dim in out])
@@ -92,7 +93,7 @@ class Sampler:
             for ind, feat in enumerate(out):
                 self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
 
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim // 2), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -119,10 +120,11 @@ class Sampler:
         self.db_iter = 0
 
     def get_projected(self, inp, permute=True):
-        if permute:
-            out, _ = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
-        else:
-            out, _ = self.lpips_net(inp.cuda())
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        out, _ = self.lpips_net(interpolated.cuda())
         gen_feat = []
         for i in range(len(out)):
             gen_feat.append(torch.mm(out[i], self.projections[i]))
