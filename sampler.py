@@ -210,15 +210,15 @@ class Sampler:
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
 
-        inp_feat, inp_shape = self.lpips_net(inp)
-        tar_feat, _ = self.lpips_net(tar)
-
         if use_mean:       
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             res = 0
 
             if only_l2:
                 return l2_loss.mean()
+
+            inp_feat, inp_shape = self.lpips_net(inp)
+            tar_feat, _ = self.lpips_net(tar)
         
             for i, g_feat in enumerate(inp_feat):
                 lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
@@ -235,6 +235,8 @@ class Sampler:
                 return loss
 
         else:
+            inp_feat, inp_shape = self.lpips_net(inp)
+            tar_feat, _ = self.lpips_net(tar)
             res = 0
             for i, g_feat in enumerate(inp_feat):
                 res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
