@@ -62,10 +62,11 @@ class Sampler:
         self.l2_projection = None
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size).cuda()
-        out, shapes = self.lpips_net(fake)
-        sum_dims = 0
 
         if(H.search_type == 'lpips'):
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            out, shapes = self.lpips_net(interpolated)
+            sum_dims = 0
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
                 sm = sum([dim.shape[1] for dim in out])
@@ -76,7 +77,7 @@ class Sampler:
             sum_dims = sum(dims)
 
         elif(H.search_type == 'l2'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -92,7 +93,7 @@ class Sampler:
             for ind, feat in enumerate(out):
                 self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
 
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample)
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim // 2), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -119,10 +120,11 @@ class Sampler:
         self.db_iter = 0
 
     def get_projected(self, inp, permute=True):
-        if permute:
-            out, _ = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
-        else:
-            out, _ = self.lpips_net(inp.cuda())
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        out, _ = self.lpips_net(interpolated.cuda())
         gen_feat = []
         for i in range(len(out)):
             gen_feat.append(torch.mm(out[i], self.projections[i]))
@@ -134,10 +136,10 @@ class Sampler:
     def get_l2_feature(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
         interpolated = torch.mm(interpolated, self.l2_projection)
-        interpolated = F.normalize(interpolated, p=2, dim=1)
+        # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated.cuda()
     
     def get_combined_feature(self, inp, permute=True):
@@ -206,38 +208,17 @@ class Sampler:
         res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
         return res
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
-        # inp_feat, inp_shape = self.lpips_net(inp)
-        # tar_feat, _ = self.lpips_net(tar)
-        # res = 0
-        # for i, g_feat in enumerate(inp_feat):
-        #     res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-        # if use_mean:
-        #     l2_loss = self.l2_loss(inp, tar)
-        #     loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
-        #     if logging:
-        #         return loss, res.mean(), l2_loss.mean()
-        #     else:
-        #         return loss
-
-        # else:
-        #     l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-        #     loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
-        #     if logging:
-        #         return loss, res.mean(), l2_loss
-        #     else:
-        #         return loss
+    def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
 
         inp_feat, inp_shape = self.lpips_net(inp)
         tar_feat, _ = self.lpips_net(tar)
 
         if use_mean:       
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-            # bool_mask = l2_loss < self.H.eps_radius
-            # print(bool_mask)
-            # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-            #     l2_loss[bool_mask] = 0.0
             res = 0
+
+            if only_l2:
+                return l2_loss.mean()
         
             for i, g_feat in enumerate(inp_feat):
                 lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
