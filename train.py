@@ -63,6 +63,8 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
 
     if(H.use_multi_res):
         loss += loss_32 + loss_64 + loss_128
+    
+    loss /= H.gradient_acc_step
 
     loss.backward()
     if ema_imle is not None:
@@ -180,7 +182,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             start_time = time.time()
 
-            for cur, indices in data_loader:
+            for batch_indices, (cur, indices) in enumerate(data_loader):
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
@@ -196,9 +198,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
                 stats.append(stat)
 
-                # if(iterate <= H.warmup_iters):
-                #     # print("Warmup iteration: ", iterate)
-                #     scheduler.step()
+                if (batch_indices + 1) % H.gradient_acc_step == 0 or (batch_indices + 1) == len(data_loader):
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -224,10 +227,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
-
-            optimizer.step()
-            scheduler.step()
-            imle.zero_grad()
 
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
             cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()

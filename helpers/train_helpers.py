@@ -167,7 +167,8 @@ def load_opt(H, imle, logprint):
     optimizer = AdamW(imle.parameters(), weight_decay=H.wd, lr=H.lr, betas=(H.adam_beta1, H.adam_beta2))
     scheduler1 = LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
     scheduler2 = StepLR(optimizer, step_size=H.lr_decay_iters, gamma=H.lr_decay_rate)
-    scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
+    # scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
+    scheduler = scheduler1
 
     if H.restore_optimizer_path:
         optimizer.load_state_dict(
