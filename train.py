@@ -101,9 +101,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     sampler = Sampler(H, subset_len, preprocess_fn)
 
-    last_updated = torch.zeros(subset_len, dtype=torch.int16).cuda()
-    times_updated = torch.zeros(subset_len, dtype=torch.int8).cuda()
-    change_thresholds = torch.empty(subset_len).cuda()
+    last_updated = torch.zeros(subset_len, dtype=torch.int16)
+    times_updated = torch.zeros(subset_len, dtype=torch.int8)
+    change_thresholds = torch.empty(subset_len)
     change_thresholds[:] = H.change_threshold
     best_fid = 100000
     epoch = starting_epoch - 1
