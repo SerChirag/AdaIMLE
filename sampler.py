@@ -13,6 +13,7 @@ from torch.optim import AdamW
 from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
+from knn_cuda import KNN
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -60,6 +61,8 @@ class Sampler:
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
         self.l2_projection = None
+
+        self.knn = KNN(k=1, transpose_mode=True)
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size).cuda()
 
@@ -247,7 +250,6 @@ class Sampler:
             else:
                 return loss
 
-
     def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
         if dists is None:
             dists = self.selected_dists
@@ -341,6 +343,7 @@ class Sampler:
 
             if not gen.module.dci_db:
                 device_count = torch.cuda.device_count()
+
                 gen.module.dci_db = MDCI(self.temp_samples_proj.shape[1], num_comp_indices=self.H.num_comp_indices,
                                             num_simp_indices=self.H.num_simp_indices, devices=[i for i in range(device_count)], ts=device_count)
 
@@ -370,8 +373,6 @@ class Sampler:
                     self.selected_snoise[k][ind * self.H.imle_batch + to_update] = self.snoise_tmp[k][nearest_indices[to_update]].clone()
 
                 del cur_batch_data_flat
-
-            gen.module.dci_db.clear()
 
         # adding perturbation
         changed = torch.sum(self.selected_dists_tmp != self.selected_dists).item()
@@ -473,6 +474,9 @@ class Sampler:
                         indices = to_update[batch_slice]
                         x = self.dataset_proj[indices]
                         nearest_indices, dci_dists = gen.module.dci_db.query(x.float(), num_neighbours=self.H.knn_ignore)
+                        
+                        dist, indx = self.knn(self.pool_samples_proj[pool_slice], x.float())  # 32 x 50 x 10
+
                         nearest_indices = nearest_indices.long()
                         check = dci_dists < self.H.eps_radius 
                         easy_samples_list = torch.unique(nearest_indices[check])
