@@ -56,7 +56,10 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         for scale in random_scales:
             px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
             targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-            loss_scale = loss_fn(px_z_scale, targets_scale)
+            if(px_z_scale.shape[2] < 32):
+                loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
+            else:
+                loss_scale = loss_fn(px_z_scale, targets_scale)
             loss += loss_scale
 
     loss.backward()
@@ -91,9 +94,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     sampler = Sampler(H, subset_len, preprocess_fn)
 
-    last_updated = torch.zeros(subset_len, dtype=torch.int16).cuda()
-    times_updated = torch.zeros(subset_len, dtype=torch.int8).cuda()
-    change_thresholds = torch.empty(subset_len).cuda()
+    last_updated = torch.zeros(subset_len, dtype=torch.int16)
+    times_updated = torch.zeros(subset_len, dtype=torch.int8)
+    change_thresholds = torch.empty(subset_len)
     change_thresholds[:] = H.change_threshold
     best_fid = 100000
     epoch = starting_epoch - 1
@@ -178,7 +181,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False, num_workers=4, persistent_workers=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True, num_workers=4, persistent_workers=True)
 
             start_time = time.time()
 
