@@ -40,28 +40,17 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     cur_batch_latents = latents
     
     px_z = imle(cur_batch_latents, snoise)
-    loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
-
-    # if(H.use_multi_res):
-    #     step_size = 1 - 0.125 / (H['multi_res_scales'] * 1.0)
-    #     for scale in np.arange(0.125, 1.0, step_size):
-    #         print("Scale: ", scale)
-    #         px_z_scale = 
-    #         targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-    #         loss_scale = loss_fn(F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic'), targets_scale)
-    #         loss += loss_scale
+    loss = loss_fn(px_z, targets.permute(0, 3, 1, 2), only_l2 = True)
 
     if(H.use_multi_res):
-        random_scales = np.random.uniform(0.125, 1.0, H['multi_res_scales'])
+        random_scales = np.random.uniform(0.03, 1.0, H['multi_res_scales'])
         for scale in random_scales:
             px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
             targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-            if(px_z_scale.shape[2] < 32):
-                loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
-            else:
-                loss_scale = loss_fn(px_z_scale, targets_scale)
+            loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
             loss += loss_scale
 
+    loss /= H['multi_res_scales'] + 1
     loss.backward()
     optimizer.step()
     if ema_imle is not None:
