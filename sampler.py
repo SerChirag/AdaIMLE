@@ -16,6 +16,7 @@ from knn_cuda import KNN
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
+        self.scaler = torch.cuda.amp.GradScaler(enabled=False)
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
