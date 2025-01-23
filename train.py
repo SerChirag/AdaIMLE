@@ -41,7 +41,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
 
     px_z = imle(cur_batch_latents, snoise)
 
-    with autocast(enabled=False):  # Enable mixed precision
+    with autocast():  # Enable mixed precision
 
         loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
         loss = loss_256
