@@ -16,7 +16,7 @@ from knn_cuda import KNN
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.scaler = torch.cuda.amp.GradScaler(enabled=False)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=True)
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
@@ -404,6 +404,7 @@ class Sampler:
         
     def resample_pool(self, gen, ds):
         # self.init_projection(ds)
+        gen.eval()
         self.pool_latents.normal_()
         for i in range(len(self.res)):
             if(self.H.use_snoise == True):
@@ -411,7 +412,6 @@ class Sampler:
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
-
             if(self.H.use_angular_resample):
                 cur_latents = self.sample_angle(self.pool_latents[batch_slice])
             
@@ -420,12 +420,15 @@ class Sampler:
 
             cur_snosie = [s[batch_slice] for s in self.snoise_pool]
             with torch.no_grad():
-                if(self.H.search_type == 'lpips'):
-                    self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
-                elif(self.H.search_type == 'l2'):
-                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
-                else:
-                    self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
+                with torch.cuda.amp.autocast():
+                    if(self.H.search_type == 'lpips'):
+                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
+                    elif(self.H.search_type == 'l2'):
+                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
+                    else:
+                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
+            
+        gen.train()
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         if to_update is None:
