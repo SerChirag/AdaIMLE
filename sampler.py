@@ -240,12 +240,13 @@ class Sampler:
             res = 0
         
             for i, g_feat in enumerate(inp_feat):
-                lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+                if(i == 4):
+                    lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
 
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
+                    # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
+                    #     lpips_feature_loss[bool_mask] = 0.0
 
-                res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+                    res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
             if logging:
