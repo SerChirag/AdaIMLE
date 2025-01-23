@@ -241,8 +241,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
+            
             if(iterate > H.warmup_iters):
                 scheduler.step()
+
+            for param_group in optimizer.param_groups:
+                for p in param_group['params']:
+                    if p in optimizer.state:
+                        optimizer.state.pop(p)
 
             
             cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
