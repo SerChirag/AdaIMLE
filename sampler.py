@@ -126,8 +126,7 @@ class Sampler:
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
         out = self.lpips_net(interpolated.cuda())
-        out = interpolated.reshape(out.shape[0],-1)
-        out = torch.mm(out, self.l2_projection)
+        out = torch.mm(out, self.projections)
         
         return out.cuda()
     
