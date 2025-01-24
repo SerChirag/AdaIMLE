@@ -420,12 +420,13 @@ class Sampler:
 
             cur_snosie = [s[batch_slice] for s in self.snoise_pool]
             with torch.no_grad():
-                if(self.H.search_type == 'lpips'):
-                    self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
-                elif(self.H.search_type == 'l2'):
-                    self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
-                else:
-                    self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
+                with torch.cuda.amp.autocast():
+                    if(self.H.search_type == 'lpips'):
+                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
+                    elif(self.H.search_type == 'l2'):
+                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
+                    else:
+                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         if to_update is None:
