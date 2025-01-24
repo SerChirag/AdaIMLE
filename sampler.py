@@ -13,6 +13,8 @@ from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
+from torchvision.models import vgg16
+
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -58,8 +60,11 @@ class Sampler:
         self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
         self.sample_pool_usage = torch.ones([sz], dtype=torch.bool)
 
-        self.projections = []
-        self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
+        self.projections = None
+        vgg16_instance = vgg16(pretrained=True)
+        vgg16_instance.classifier = torch.nn.Sequential(*vgg16_instance.classifier[:-2])
+
+        self.lpips_net = vgg16_instance.cuda()
         self.l2_projection = None
 
         self.knn = KNN(k=1, transpose_mode=True)
@@ -68,16 +73,10 @@ class Sampler:
 
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            out, shapes = self.lpips_net(interpolated)
-            sum_dims = 0
-            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
-                dims.insert(0,H.proj_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
-            sum_dims = sum(dims)
+            fake_feat = self.lpips_net(interpolated)
+            feat = torch.flatten(fake_feat, start_dim=1)
+            self.projections = torch.nn.functional.normalize(torch.randn(feat.shape[1], H.proj_dim), p=2, dim=1).cuda()
+            sum_dims = H.proj_dim
 
         elif(H.search_type == 'l2'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
@@ -126,14 +125,11 @@ class Sampler:
             inp = inp.permute(0, 3, 1, 2)
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out, _ = self.lpips_net(interpolated.cuda())
-        gen_feat = []
-        for i in range(len(out)):
-            gen_feat.append(torch.mm(out[i], self.projections[i]))
-            # TODO divide?
-        lpips_feat = torch.cat(gen_feat, dim=1)
-        # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
-        return lpips_feat.cuda()
+        out = self.lpips_net(interpolated.cuda())
+        out = interpolated.reshape(out.shape[0],-1)
+        out = torch.mm(out, self.l2_projection)
+        
+        return out.cuda()
     
     def get_l2_feature(self, inp, permute=True):
         if(permute):
@@ -164,8 +160,6 @@ class Sampler:
         # return gen_feat + interpolated.cuda()
 
     def init_projection(self, dataset):
-        for proj_mat in self.projections:
-            proj_mat[:] = F.normalize(torch.randn(proj_mat.shape), p=2, dim=1)
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset), batch_size=self.H.n_batch)):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
@@ -214,29 +208,21 @@ class Sampler:
             if only_l2:
                 return l2_loss.mean()
 
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
+            inp_feat = self.lpips_net(inp)
+            tar_feat = self.lpips_net(tar)
         
-            for i, g_feat in enumerate(inp_feat):
-                lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
-
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
-
-                res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
-
-            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+            lpips_feature_loss = (inp_feat - tar_feat) ** 2
+            loss = self.H.lpips_coef * lpips_feature_loss.mean() + self.H.l2_coef * l2_loss.mean()
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
                 return loss
 
         else:
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
+            inp_feat = self.lpips_net(inp)
+            tar_feat = self.lpips_net(tar)
             res = 0
-            for i, g_feat in enumerate(inp_feat):
-                res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
+            res = torch.mean((inp_feat - tar_feat) ** 2, dim=[1])
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
             if logging:
