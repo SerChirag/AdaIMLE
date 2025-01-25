@@ -125,7 +125,7 @@ class Sampler:
             inp = inp.permute(0, 3, 1, 2)
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out = self.lpips_net(interpolated.cuda())
+        out = self.lpips_net(interpolated.cuda()).detach()
         out = torch.mm(out, self.projections)
         
         return out.cuda()
