@@ -465,8 +465,8 @@ class Sampler:
                     x = self.dataset_proj[indices]
 
                     nearest_dist , nearest_indices = self.knn(torch.unsqueeze(self.pool_samples_proj[pool_slice],0), torch.unsqueeze(x,0))  # 32 x 50 x 10
-                    nearest_indices = torch.squeeze(nearest_indices).cpu()
-                    nearest_dist = torch.squeeze(nearest_dist).cpu()
+                    nearest_indices = torch.squeeze(nearest_indices, dim=[0,2]).cpu()
+                    nearest_dist = torch.squeeze(nearest_dist, dim=[0,2]).cpu()
 
                     need_update = nearest_dist < self.selected_dists_tmp[indices]
                     need_update = need_update.cpu()
