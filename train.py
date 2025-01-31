@@ -31,36 +31,39 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
+from torch.cuda.amp import autocast
 
 
-def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn):
+def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler):
     t0 = time.time()
     imle.zero_grad()
 
     cur_batch_latents = latents
     
     px_z = imle(cur_batch_latents, snoise)
-    loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+    loss_number = 1
 
-    # if(H.use_multi_res):
-    #     step_size = 1 - 0.125 / (H['multi_res_scales'] * 1.0)
-    #     for scale in np.arange(0.125, 1.0, step_size):
-    #         print("Scale: ", scale)
-    #         px_z_scale = 
-    #         targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-    #         loss_scale = loss_fn(F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic'), targets_scale)
-    #         loss += loss_scale
+    with autocast():  # Enable mixed precision
 
-    if(H.use_multi_res):
-        random_scales = np.random.uniform(0.125, 1.0, H['multi_res_scales'])
-        for scale in random_scales:
-            px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
-            targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-            loss_scale = loss_fn(px_z_scale, targets_scale)
-            loss += loss_scale
+        loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss = loss_256
 
-    loss.backward()
-    optimizer.step()
+        if(H.use_multi_res):
+            random_scales = np.random.uniform(0.125, 1.0, H['multi_res_scales'])
+            for scale in random_scales:
+                loss_number += 1
+                px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
+                targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
+                if(px_z_scale.shape[2] < 32):
+                    loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
+                else:
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
+                loss += loss_scale
+                
+    loss = loss / loss_number
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()  
     if ema_imle is not None:
         update_ema(imle, ema_imle, H.ema_rate)
 
@@ -91,9 +94,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     sampler = Sampler(H, subset_len, preprocess_fn)
 
-    last_updated = torch.zeros(subset_len, dtype=torch.int16).cuda()
-    times_updated = torch.zeros(subset_len, dtype=torch.int8).cuda()
-    change_thresholds = torch.empty(subset_len).cuda()
+    last_updated = torch.zeros(subset_len, dtype=torch.int16)
+    times_updated = torch.zeros(subset_len, dtype=torch.int8)
+    change_thresholds = torch.empty(subset_len)
     change_thresholds[:] = H.change_threshold
     best_fid = 100000
     epoch = starting_epoch - 1
@@ -178,7 +181,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=False, num_workers=4, persistent_workers=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True, num_workers=4, persistent_workers=True)
 
             start_time = time.time()
 
@@ -195,7 +198,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss)
+                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
