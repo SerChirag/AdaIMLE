@@ -122,14 +122,15 @@ class Sampler:
         self.db_iter = 0
 
     def get_projected(self, inp, permute=True):
-        if(permute):
-            inp = inp.permute(0, 3, 1, 2)
-        
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out, _ = self.lpips_net(interpolated.cuda())
+        if permute:
+            out, out_shape = self.lpips_net(inp.permute(0, 3, 1, 2).cuda())
+        else:
+            out, out_shape = self.lpips_net(inp.cuda())
         gen_feat = []
         for i in range(len(out)):
-            gen_feat.append(torch.mm(out[i], self.projections[i]))
+            # gen_feat.append(torch.mm(out[i], self.projections[i]))
+            gen_feat.append(torch.mm(out[i]/out_shape[i], self.projections[i]))
+
             # TODO divide?
         lpips_feat = torch.cat(gen_feat, dim=1)
         # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
