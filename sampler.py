@@ -69,6 +69,8 @@ class Sampler:
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             out, shapes = self.lpips_net(interpolated)
+            out = out[:-2]
+            shapes = shapes[:-2]
             sum_dims = 0
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
@@ -127,6 +129,7 @@ class Sampler:
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
         out, _ = self.lpips_net(interpolated.cuda())
+        out = out[:-2]
         gen_feat = []
         for i in range(len(out)):
             gen_feat.append(torch.mm(out[i], self.projections[i]))
