@@ -13,6 +13,7 @@ from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
+from kornia.filters import GaussianBlur2d
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -26,6 +27,8 @@ class Sampler:
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
+
+        self.gauss_blur = GaussianBlur2d((11, 11), (7.5, 7.5))
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
@@ -68,6 +71,7 @@ class Sampler:
 
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            interpolated = self.gauss_blur(interpolated)
             out, shapes = self.lpips_net(interpolated)
             sum_dims = 0
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
@@ -81,6 +85,7 @@ class Sampler:
 
         elif(H.search_type == 'l2'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            interpolated = self.gauss_blur(interpolated)
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -126,6 +131,7 @@ class Sampler:
             inp = inp.permute(0, 3, 1, 2)
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        interpolated = self.gauss_blur(interpolated)
         out, _ = self.lpips_net(interpolated.cuda())
         gen_feat = []
         for i in range(len(out)):
