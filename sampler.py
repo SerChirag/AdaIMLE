@@ -28,7 +28,7 @@ class Sampler:
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
 
-        self.gauss_blur = GaussianBlur2d((11, 11), (7.5, 7.5))
+        self.gauss_blur = GaussianBlur2d((H.search_blur_kernel, H.search_blur_kernel), (H.search_blur_sigma, H.search_blur_sigma))
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
