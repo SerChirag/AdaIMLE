@@ -61,7 +61,10 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
             loss_32 = loss_fn(px_z_32, targets_32)
             loss_64 = loss_fn(px_z_64, targets_64)
             loss_128 = loss_fn(px_z_128, targets_128)
+            
             loss += loss_16 + loss_32 + loss_64 + loss_128
+
+            # loss += loss_16 * 1/
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
