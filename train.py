@@ -34,7 +34,7 @@ from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
 
 
-def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler, random_scales):
     t0 = time.time()
     imle.zero_grad()
 
@@ -49,7 +49,6 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         loss = loss_256
 
         if(H.use_multi_res):
-            random_scales = np.random.uniform(0.03, 1.0, H['multi_res_scales'])
             for scale in random_scales:
                 loss_number += 1
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
@@ -185,6 +184,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             start_time = time.time()
 
+    
+            random_scales_low = np.random.uniform(0.03, 0.125, H['multi_res_scales']//3)
+            random_scales_high = np.random.uniform(0.125, 1.0, H['multi_res_scales'] - H['multi_res_scales']//3)
+            random_scales = np.concatenate([random_scales_low,random_scales_high])
+
             for cur, indices in data_loader:
                 x = cur[0]
                 latents = cur[1][0]
@@ -198,7 +202,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 # else:
                 #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
+                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler, random_scales)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
