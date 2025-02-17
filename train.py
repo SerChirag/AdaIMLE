@@ -47,15 +47,15 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
         loss = loss_256
 
         if(H.use_multi_res):
-            px_z_16 = F.interpolate(px_z, scale_factor = 0.0625, antialias=True, mode='bicubic')
-            px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
-            px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
-            px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
+            px_z_16 = F.interpolate(px_z, scale_factor = 0.0625 , mode='area')
+            px_z_32 = F.interpolate(px_z, scale_factor = 0.125 , mode='area')
+            px_z_64 = F.interpolate(px_z, scale_factor = 0.25 , mode='area')
+            px_z_128 = F.interpolate(px_z, scale_factor = 0.5 , mode='area')
 
-            targets_16 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.0625, antialias=True, mode='bicubic')
-            targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
-            targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
-            targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
+            targets_16 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.0625, mode='area')
+            targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125 , mode='area')
+            targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25 , mode='area')
+            targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5 , mode='area')
 
             loss_16 = loss_fn(px_z_16, targets_16, only_l2 = True)
             loss_32 = loss_fn(px_z_32, targets_32)
@@ -64,8 +64,8 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
             loss += loss_16 + loss_32 + loss_64 + loss_128
 
             for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
+                px_z_scale = F.interpolate(px_z, scale_factor = scale , mode='area')
+                targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale , mode='area')
                 if(px_z_scale.shape[2] < 32):
                     loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
                 else:

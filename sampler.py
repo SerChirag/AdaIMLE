@@ -67,7 +67,7 @@ class Sampler:
         fake = torch.zeros(1, 3, H.image_size, H.image_size).cuda()
 
         if(H.search_type == 'lpips'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample,   mode='area')
             out, shapes = self.lpips_net(interpolated)
             sum_dims = 0
             dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
@@ -80,7 +80,7 @@ class Sampler:
             sum_dims = sum(dims)
 
         elif(H.search_type == 'l2'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample,   mode='area')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -96,7 +96,7 @@ class Sampler:
             for ind, feat in enumerate(out):
                 self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
 
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample,   mode='area')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim // 2), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
@@ -125,7 +125,7 @@ class Sampler:
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample,   mode='area')
         out, _ = self.lpips_net(interpolated.cuda())
         gen_feat = []
         for i in range(len(out)):
@@ -138,7 +138,7 @@ class Sampler:
     def get_l2_feature(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample,   mode='area')
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
         interpolated = torch.mm(interpolated, self.l2_projection)
         # interpolated = F.normalize(interpolated, p=2, dim=1)
