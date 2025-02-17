@@ -164,9 +164,6 @@ class Sampler:
         # return gen_feat + interpolated.cuda()
 
     def init_projection(self, dataset):
-        for proj_mat in self.projections:
-            proj_mat[:] = F.normalize(torch.randn(proj_mat.shape), p=2, dim=1)
-
         for ind, x in enumerate(DataLoader(TensorDataset(dataset), batch_size=self.H.n_batch)):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
@@ -429,10 +426,7 @@ class Sampler:
                         self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
 
     def imle_sample_force(self, dataset, gen, to_update=None):
-        if to_update is None:
-            to_update = self.entire_ds
-        if to_update.shape[0] == 0:
-            return
+        to_update = self.entire_ds
         
         to_update = to_update.cpu()
 

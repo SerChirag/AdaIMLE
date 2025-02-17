@@ -31,6 +31,7 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
+from torchvision.transforms import v2
 
 
 def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler):
@@ -83,6 +84,12 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     return stats
 
 
+transforms = v2.Compose([
+    # v2.CenterCrop(size=(224, 224)),
+    v2.RandomResizedCrop(size=(256, 256), scale=(0.7,1.0), ratio=(0.95, 1.05), antialias=True),
+    v2.RandomHorizontalFlip(p=0.5),
+])
+
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment = None):
     subset_len = len(data_train)
     if H.subset_len != -1:
@@ -114,35 +121,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=subset_len, pin_memory=True)):
         split_x_tensor = split_x_tensor[0].contiguous()
-        split_x = TensorDataset(split_x_tensor)
-        sampler.init_projection(split_x_tensor)
+        transformed_x = transforms(split_x_tensor.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        split_x = TensorDataset(transformed_x)
+        sampler.init_projection(transformed_x)
         viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
-
         print('Outer batch - {}'.format(split_ind, len(split_x)))
 
         while (epoch < H.num_epochs):
-            
-            # if(epoch > 1 and optimizer.param_groups[0]['lr'] != H.lr2):
-            #     for param_group in optimizer.param_groups:
-            #         param_group['lr'] = H.lr2
-            #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
-
+        
             epoch += 1
-            last_updated[:] = last_updated + 1
-
-            sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
-            dists_in_threshold = sampler.selected_dists < change_thresholds
-            updated_enough = last_updated >= H.imle_staleness
-            updated_too_much = last_updated >= H.imle_force_resample
-            in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
-
-            if(H.use_adaptive):
-                all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            else:
-                all_conditions = updated_too_much
-                
-            # all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
 
             if (epoch == starting_epoch):
                 if os.path.isfile(str(H.restore_latent_path)):
@@ -168,16 +155,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
 
-            sampler.imle_sample_force(split_x_tensor, imle, to_update)
-
-            # if (to_update.shape[0] > 0):
-            #     print("Saving latents")
-            #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
-
-
-            to_update = to_update.cpu()
-            last_updated[to_update] = 0
-            times_updated[to_update] = times_updated[to_update] + 1
+            if(epoch % H.imle_force_resample == 0):
+                transformed_x = transforms(split_x_tensor.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+                sampler.init_projection(transformed_x)
+                sampler.imle_sample_force(transformed_x, imle, to_update)
 
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
@@ -185,12 +166,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
-                    generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
+                    generate_for_NN(sampler, transformed_x[to_update[:H.num_images_visualize]], latents,
                                     [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
-        
+
+            split_x = TensorDataset(transformed_x)
+
             comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True, num_workers=4, persistent_workers=True)
 
@@ -250,7 +233,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
 
 
-            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+            start_time = time.time()
+            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(transformed_x, imle, 
                                                                                             dists=cur_dists,  
                                                                                             dists_lpips=cur_dists_lpips,
                                                                                             dists_l2=cur_dists_l2, 
@@ -274,6 +258,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'total_excluded': sampler.total_excluded,
                 'total_excluded_percentage': sampler.total_excluded_percentage,
             }
+
+            print(f'Metric calc on epoch {epoch} took {time.time() - start_time} seconds')
+
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
                 print("Learning rate: ", optimizer.param_groups[0]['lr'])
