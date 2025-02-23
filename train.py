@@ -130,19 +130,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             epoch += 1
             last_updated[:] = last_updated + 1
 
-            sampler.selected_dists[:] = sampler.calc_dists_existing(split_x_tensor, imle, dists=sampler.selected_dists)
-            dists_in_threshold = sampler.selected_dists < change_thresholds
-            updated_enough = last_updated >= H.imle_staleness
             updated_too_much = last_updated >= H.imle_force_resample
-            in_threshold = torch.logical_and(dists_in_threshold, updated_enough)
-
-            if(H.use_adaptive):
-                all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            else:
-                all_conditions = updated_too_much
                 
             # all_conditions = torch.logical_or(in_threshold, updated_too_much)
-            to_update = torch.nonzero(all_conditions, as_tuple=False).squeeze(1)
+            to_update = torch.nonzero(updated_too_much, as_tuple=False).squeeze(1)
 
             if (epoch == starting_epoch):
                 if os.path.isfile(str(H.restore_latent_path)):
@@ -244,36 +235,45 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if(iterate > H.warmup_iters):
                 scheduler.step()
 
-            
-            cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
-            cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
-            cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
+            if epoch % 5 == 0:
+                
+                cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
+                cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
+                cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
 
 
-            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
-                                                                                            dists=cur_dists,  
-                                                                                            dists_lpips=cur_dists_lpips,
-                                                                                            dists_l2=cur_dists_l2, 
-                                                                                            logging=True)
+                cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+                                                                                                dists=cur_dists,  
+                                                                                                dists_lpips=cur_dists_lpips,
+                                                                                                dists_l2=cur_dists_l2, 
+                                                                                                logging=True)
 
-            # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                    
-            metrics = {
-                'mean_loss': torch.mean(cur_dists).item(),
-                'std_loss': torch.std(cur_dists).item(),
-                'max_loss': torch.max(cur_dists).item(),
-                'min_loss': torch.min(cur_dists).item(),
-                'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-                'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-                'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-                'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-                'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-                'std_loss_l2': torch.std(cur_dists_l2).item(),
-                'max_loss_l2': torch.max(cur_dists_l2).item(),
-                'min_loss_l2': torch.min(cur_dists_l2).item(),
-                'total_excluded': sampler.total_excluded,
-                'total_excluded_percentage': sampler.total_excluded_percentage,
-            }
+                # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
+                        
+                metrics = {
+                    'mean_loss': torch.mean(cur_dists).item(),
+                    'std_loss': torch.std(cur_dists).item(),
+                    'max_loss': torch.max(cur_dists).item(),
+                    'min_loss': torch.min(cur_dists).item(),
+                    'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
+                    'std_loss_lpips': torch.std(cur_dists_lpips).item(),
+                    'max_loss_lpips': torch.max(cur_dists_lpips).item(),
+                    'min_loss_lpips': torch.min(cur_dists_lpips).item(),
+                    'mean_loss_l2': torch.mean(cur_dists_l2).item(),
+                    'std_loss_l2': torch.std(cur_dists_l2).item(),
+                    'max_loss_l2': torch.max(cur_dists_l2).item(),
+                    'min_loss_l2': torch.min(cur_dists_l2).item(),
+                    'total_excluded': sampler.total_excluded,
+                    'total_excluded_percentage': sampler.total_excluded_percentage,
+                }
+                
+                if (to_update.shape[0] != 0):
+                    metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
+                    metrics['std_loss_resample'] = torch.std(cur_dists).item()
+                    metrics['max_loss_resample'] = torch.max(cur_dists).item()
+                    metrics['min_loss_resample'] = torch.min(cur_dists).item()
+
+                logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
             if (epoch > 0 and epoch % H.fid_freq == 0):
                 print("Learning rate: ", optimizer.param_groups[0]['lr'])
@@ -295,13 +295,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 metrics['recall'] = recall
                 
             
-            if (to_update.shape[0] != 0):
-                metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
-                metrics['std_loss_resample'] = torch.std(cur_dists).item()
-                metrics['max_loss_resample'] = torch.max(cur_dists).item()
-                metrics['min_loss_resample'] = torch.min(cur_dists).item()
-
-            logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+            
 
             if epoch % 50 == 0:
                 with torch.no_grad():
