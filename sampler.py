@@ -405,9 +405,7 @@ class Sampler:
     def resample_pool(self, gen, ds):
         # self.init_projection(ds)
         self.pool_latents.normal_()
-        for i in range(len(self.res)):
-            if(self.H.use_snoise == True):
-                self.snoise_pool[i].normal_()
+        gen.eval()
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
@@ -427,6 +425,8 @@ class Sampler:
                         self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
                     else:
                         self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, cur_snosie), False)
+
+        gen.train()
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         if to_update is None:

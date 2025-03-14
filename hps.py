@@ -97,7 +97,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--imle_staleness', type=int, default=7)  # imle staleness, i.e., number of iterations to wait before considering the thresholds, tau_i
     parser.add_argument('--imle_batch', type=int, default=32)  # imle batch size used for sampling
     parser.add_argument('--subset_len', type=int, default=-1)  # subset length for training -- random subset of the dataset. -1 means full dataset
-    parser.add_argument('--latent_dim', type=int, default=1024)  # latent code dimension
+    parser.add_argument('--latent_dim', type=int, default=4096)  # latent code dimension
     parser.add_argument('--imle_perturb_coef', type=float, default=0.001)  # imle perturbation coefficient to avoid same latent codes
     parser.add_argument('--lpips_net', type=str, default='vgg')  # lpips network type
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
