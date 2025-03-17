@@ -7,6 +7,7 @@ from helpers.imle_helpers import get_1x1, get_3x3, draw_gaussian_diag_samples, g
 from collections import defaultdict
 import numpy as np
 import itertools
+from diffusers import AutoencoderKL
 from dit import DiT_S_2
 
 
@@ -135,8 +136,18 @@ class IMLE(nn.Module):
         super().__init__()
         self.dci_db = None
         # self.decoder = Decoder(H)
-        self.decoder = DiT_S_2()
+        vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
+        self.decoder = vae.decoder
 
-    def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w)
+    def forward(self, x, spatial_noise=None, input_is_w=False):
+        batch, flattened_size = x.shape
+        channels = 4
+        height = width = int((flattened_size // channels) ** 0.5)  # Calculate spatial dimensions
+
+        # Ensure compatibility
+        assert flattened_size == channels * height * width, "Flattened size must be divisible by channels"
+
+        # Reshape cur_latents
+        x = x.view(batch, channels, height, width)
+        return self.decoder.forward(x)
 
