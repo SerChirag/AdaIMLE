@@ -159,7 +159,9 @@ def load_imle(H, logprint):
     total_params = 0
     for name, p in imle.named_parameters():
         total_params += np.prod(p.shape)
+    trainable_params = sum(p.numel() for p in imle.parameters() if p.requires_grad)
     logprint(total_params=total_params, readable=f'{total_params:,}')
+    logprint(trainable_params=trainable_params, readable=f'{trainable_params:,}')
     return imle, ema_imle
 
 

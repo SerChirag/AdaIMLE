@@ -14,7 +14,6 @@ import torch.nn as nn
 import numpy as np
 import math
 from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
-from diffusers.models import AutoencoderKL
 
 def modulate(x, shift, scale):
     return x * scale + shift
@@ -107,7 +106,6 @@ class DiT(nn.Module):
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
-        self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").to(self.device)
 
         self.initialize_weights()
 
@@ -176,9 +174,8 @@ class DiT(nn.Module):
 
         x = self.unpatchify(x)  # Convert back to spatial format (N, out_channels, H, W)
         # # Decode the latent points to images
-        decoded_images = self.vae.decode(x / 0.18215).sample
-
-        return decoded_images
+        x = x / 0.18215
+        return x
 
 
 #################################################################################
