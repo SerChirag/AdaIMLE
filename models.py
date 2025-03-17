@@ -131,6 +131,11 @@ class Decoder(nn.Module):
         return x
 
 
+def reset_weights(model):
+    for layer in model.modules():
+        if hasattr(layer, "reset_parameters"):
+            layer.reset_parameters()
+
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
@@ -138,6 +143,9 @@ class IMLE(nn.Module):
         # self.decoder = Decoder(H)
         vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema")
         self.decoder = vae.decoder
+
+        if(H.reset_diffuser_weights):
+            reset_weights(self.decoder)
 
     def forward(self, x, spatial_noise=None, input_is_w=False):
         batch, flattened_size = x.shape
