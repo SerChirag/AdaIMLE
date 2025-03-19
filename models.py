@@ -8,7 +8,6 @@ from collections import defaultdict
 import numpy as np
 import itertools
 from dit import DiT_S_2, DiT_L_2
-from diffusers.models import AutoencoderKL
 
 
 class Block(nn.Module):
@@ -136,11 +135,8 @@ class IMLE(nn.Module):
         super().__init__()
         self.dci_db = None
         # self.decoder = Decoder(H)
-        self.decoder = DiT_L_2()
-        self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema")
-        for param in self.vae.parameters():
-            param.requires_grad = False
+        self.dit = DiT_L_2()
 
     def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.vae.decode(self.decoder.forward(latents, spatial_noise, input_is_w)).sample
-
+        return self.dit.forward(latents)
+    

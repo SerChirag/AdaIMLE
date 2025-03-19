@@ -174,7 +174,7 @@ class DiT(nn.Module):
 
         x = self.unpatchify(x)  # Convert back to spatial format (N, out_channels, H, W)
         # # Decode the latent points to images
-        x = x / 0.18215
+        # x = x / 0.18215
         return x
 
 

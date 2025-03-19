@@ -32,44 +32,39 @@ from visual.utils import (generate_and_save, generate_for_NN,
 from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
 
+l2_loss = nn.MSELoss()
 
-def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     t0 = time.time()
     imle.zero_grad()
 
     cur_batch_latents = latents
 
-    px_z = imle(cur_batch_latents, snoise)
+    px_z = imle(cur_batch_latents)
 
     with autocast():  # Enable mixed precision
 
-        loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_256 = l2_loss(px_z, targets)
         loss = loss_256
 
         if(H.use_multi_res):
-            px_z_16 = F.interpolate(px_z, scale_factor = 0.0625, antialias=True, mode='bicubic')
             px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
             px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
             px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            targets_16 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.0625, antialias=True, mode='bicubic')
-            targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
-            targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
-            targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
+            targets_32 = F.interpolate(targets, scale_factor = 0.125, antialias=True, mode='bicubic')
+            targets_64 = F.interpolate(targets, scale_factor = 0.25, antialias=True, mode='bicubic')
+            targets_128 = F.interpolate(targets, scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            loss_16 = loss_fn(px_z_16, targets_16, only_l2 = True)
-            loss_32 = loss_fn(px_z_32, targets_32)
-            loss_64 = loss_fn(px_z_64, targets_64)
-            loss_128 = loss_fn(px_z_128, targets_128)
-            loss += loss_16 + loss_32 + loss_64 + loss_128
+            loss_32 = l2_loss(px_z_32, targets_32)
+            loss_64 = l2_loss(px_z_64, targets_64)
+            loss_128 = l2_loss(px_z_128, targets_128)
+            loss += loss_32 + loss_64 + loss_128
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
-                if(px_z_scale.shape[2] < 32):
-                    loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
-                else:
-                    loss_scale = loss_fn(px_z_scale, targets_scale)
+                targets_scale = F.interpolate(targets, scale_factor = scale, antialias=True, mode='bicubic')
+                loss_scale = l2_loss(px_z_scale, targets_scale)
                 loss += loss_scale
 
     scaler.scale(loss).backward()
@@ -122,11 +117,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         while (epoch < H.num_epochs):
             
-            # if(epoch > 1 and optimizer.param_groups[0]['lr'] != H.lr2):
-            #     for param_group in optimizer.param_groups:
-            #         param_group['lr'] = H.lr2
-            #     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
-
             epoch += 1
             last_updated[:] = last_updated + 1
 
@@ -191,16 +181,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
-                
-                # if(H.use_snoise):
-                cur_snoise = [s[indices] for s in sampler.selected_snoise]
 
-                for i in range(len(H.res)):
-                    cur_snoise[i].zero_()
-                # else:
-                #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
+                target_latent = sampler.encode(target.permute(0, 3, 1, 2)).detach()
 
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
+                stat = training_step_imle(H, target_latent.shape[0], target_latent, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
@@ -499,33 +483,6 @@ def main(H=None):
                                                                     H.num_images_visualize, H.dataset)
             sampler = Sampler(H, H.subset_len, preprocess_fn)
             nn_interp(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}', logprint, preprocess_fn)
-
-    elif H.mode == 'generate_sample_nn':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=len(data_train)):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            generate_sample_nn(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/rnd2.png', logprint, preprocess_fn)
-
-    elif H.mode == 'backtrack_interpolate':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, subset_len, preprocess_fn)
-            latents = torch.tensor(torch.load(f'{H.restore_latent_path}'), requires_grad=True, dtype=torch.float32, device='cuda')
-            for i in range(latents.shape[0] - 1):
-                lat0 = latents[i:i+1]
-                lat1 = latents[i+1:i+2]
-                sn1 = None
-                sn2 = None
-                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/back-interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
 
     elif H.mode == 'prec_rec':
         

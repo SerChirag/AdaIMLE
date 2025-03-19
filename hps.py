@@ -100,7 +100,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--latent_dim', type=int, default=4096)  # latent code dimension
     parser.add_argument('--imle_perturb_coef', type=float, default=0.001)  # imle perturbation coefficient to avoid same latent codes
     parser.add_argument('--lpips_net', type=str, default='vgg')  # lpips network type
-    parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
+    parser.add_argument('--proj_dim', type=int, default=4096)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient

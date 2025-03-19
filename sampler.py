@@ -13,6 +13,8 @@ from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
+from diffusers.models import AutoencoderKL
+
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -31,6 +33,11 @@ class Sampler:
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
         self.neutral_snoise = [torch.zeros([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
+
+        self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").cuda()
+        for param in self.vae.parameters():
+            param.requires_grad = False
+
 
         if(H.use_snoise == True):
             self.snoise_tmp = [torch.randn([self.H.imle_db_size, 1, s, s], dtype=torch.float32) for s in self.res]
@@ -58,7 +65,6 @@ class Sampler:
         self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
         self.sample_pool_usage = torch.ones([sz], dtype=torch.bool)
 
-        self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
         self.l2_projection = None
 
@@ -68,37 +74,14 @@ class Sampler:
 
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            out, shapes = self.lpips_net(interpolated)
-            sum_dims = 0
-            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
-                dims.insert(0,H.proj_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
-            sum_dims = sum(dims)
+            out = self.encode(interpolated).reshape(interpolated.shape[0],-1)
+            self.l2_projection = F.normalize(torch.randn(out.shape[1], H.proj_dim), p=2, dim=1).cuda()
+            sum_dims = H.proj_dim
 
         elif(H.search_type == 'l2'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
-            sum_dims = H.proj_dim
-
-        else:
-
-            projection_dim = H.proj_dim // 2
-            dims = [int(projection_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (projection_dim / sm)) for feat_ind in range(len(out) - 1)]
-                dims.append(projection_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
-
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim // 2), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
 
         self.dci_dim = sum_dims
@@ -112,28 +95,31 @@ class Sampler:
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
-        self.angle_generator = Angle_Generator(self.H.latent_dim)
-        self.max_sample_angle_rad = H.max_sample_angle_rad
-        self.min_sample_angle_rad = H.min_sample_angle_rad
-
         self.total_excluded = 0
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+    
+    def encode(self, image):
+        return self.vae.encode(image).latent_dist.sample().mul_(self.vae.config.scaling_factor)
+
+    def forward_decoder(self, latents):
+        return self.vae.decode(latents/self.vae.config.scaling_factor).sample
 
     def get_projected(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out, _ = self.lpips_net(interpolated.cuda())
-        gen_feat = []
-        for i in range(len(out)):
-            gen_feat.append(torch.mm(out[i], self.projections[i]))
-            # TODO divide?
-        lpips_feat = torch.cat(gen_feat, dim=1)
-        # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
-        return lpips_feat.cuda()
+        out = self.encode(interpolated.cuda()).reshape(interpolated.shape[0],-1).detach()
+        out = torch.mm(out, self.l2_projection)
+        # interpolated = F.normalize(interpolated, p=2, dim=1)
+        return out.cuda()
+
+    def get_flattened(self, inp, permute=True):
+        out = torch.mm(inp.reshape(inp.shape[0],-1), self.l2_projection)
+        # interpolated = F.normalize(interpolated, p=2, dim=1)
+        return out.cuda()
     
     def get_l2_feature(self, inp, permute=True):
         if(permute):
@@ -148,24 +134,8 @@ class Sampler:
         lpips_feat = self.get_projected(inp, permute)
         l2_feat = self.get_l2_feature(inp, permute)
         return torch.cat([lpips_feat, l2_feat], dim=1)
-        # return torch.cat([lpips_feat, l2_feat], dim=1)
-        # if(permute):
-        #     inp = inp.permute(0, 3, 1, 2)
-
-        # out, _ = self.lpips_net(inp.cuda())
-        # gen_feat = []
-        # for i in range(len(out)):
-        #     gen_feat.append(torch.mm(out[i], self.projections[i]))
-        #     # TODO divide?
-        # gen_feat = torch.cat(gen_feat, dim=1)
-        # interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
-        # interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        # interpolated = torch.mm(interpolated, self.l2_projection)
-        # return gen_feat + interpolated.cuda()
 
     def init_projection(self, dataset):
-        for proj_mat in self.projections:
-            proj_mat[:] = F.normalize(torch.randn(proj_mat.shape), p=2, dim=1)
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset), batch_size=self.H.n_batch)):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
@@ -179,7 +149,8 @@ class Sampler:
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
             nm = latents.shape[0]
-            px_z = gen(latents, snoise).permute(0, 2, 3, 1)
+            out = gen(latents, snoise)
+            px_z = self.forward_decoder(out).permute(0, 2, 3, 1)
             xhat = (px_z + 1.0) * 127.5
             xhat = xhat.detach().cpu().numpy()
             xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
@@ -219,10 +190,6 @@ class Sampler:
         
             for i, g_feat in enumerate(inp_feat):
                 lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
-
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
-
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
@@ -268,9 +235,11 @@ class Sampler:
             cur_latents = latents[batch_slice]
             cur_snoise = [s[batch_slice] for s in snoise]
             with torch.no_grad():
-                out = gen(cur_latents, cur_snoise)
+                out = torch.from_numpy(self.sample(cur_latents, gen)).cuda()
+                _, out = self.preprocess_fn([out])
+
                 if(logging):
-                    dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
+                    dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out.permute(0, 3, 1, 2), use_mean=False, logging=True)
                     dists[batch_slice] = torch.squeeze(dist)
                     dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
                     dists_l2[batch_slice] = torch.squeeze(dist_l2)
@@ -375,33 +344,7 @@ class Sampler:
                                                                                             self.selected_dists.mean(),
                                                                                             changed, (changed / len(
                 dataset)) * 100))
-        
-    def sample_angle(self, pool_slice):
-
-        # indices = np.random.randint(0, self.dataset_size, size=pool_slice.shape[0])
-        indices = np.arange(self.db_iter, self.db_iter + pool_slice.shape[0]) % self.dataset_size
-        self.db_iter = (self.db_iter + pool_slice.shape[0]) % self.dataset_size
-
-        random_z = self.selected_latents[indices]
-        
-        normalized_z = F.normalize(random_z, dim=1, p=2) 
-
-        b = F.normalize(pool_slice, dim=1, p=2)
-        norms = torch.norm(pool_slice,dim=1,p=2)
-
-        w = b - torch.unsqueeze(torch.einsum('ij,ij->i',b,normalized_z),-1) * normalized_z
-        w = F.normalize(w,p=2,dim=-1)
-        
-        angle_sampled = torch.from_numpy(self.angle_generator.return_samples(N=pool_slice.shape[0], 
-                                                            angle_low=self.min_sample_angle_rad, 
-                                                            angle_high=self.max_sample_angle_rad)) 
-        
-        angle_sampled = torch.unsqueeze(angle_sampled,-1)
-
-        new_z = torch.cos(angle_sampled) * normalized_z + torch.sin(angle_sampled) * w
-        new_z = new_z * norms.view(-1, 1)
-        return new_z
-        
+      
     def resample_pool(self, gen, ds):
         # self.init_projection(ds)
         self.pool_latents.normal_()
@@ -420,7 +363,7 @@ class Sampler:
             with torch.no_grad():
                 with torch.cuda.amp.autocast():
                     if(self.H.search_type == 'lpips'):
-                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, cur_snosie), False)
+                        self.pool_samples_proj[batch_slice] = self.get_flattened(gen(cur_latents, cur_snosie), False)
                     elif(self.H.search_type == 'l2'):
                         self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, cur_snosie), False)
                     else:
