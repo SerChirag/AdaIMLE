@@ -40,10 +40,11 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
     cur_batch_latents = latents
 
     px_z = imle(cur_batch_latents, snoise)
+    num_resolutions = 1
 
     with autocast():  # Enable mixed precision
 
-        loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2), only_l2 = True)
         loss = loss_256
 
         if(H.use_multi_res):
@@ -58,10 +59,12 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
             targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
 
             loss_16 = loss_fn(px_z_16, targets_16, only_l2 = True)
-            loss_32 = loss_fn(px_z_32, targets_32)
-            loss_64 = loss_fn(px_z_64, targets_64)
-            loss_128 = loss_fn(px_z_128, targets_128)
+            loss_32 = loss_fn(px_z_32, targets_32, only_l2 = True)
+            loss_64 = loss_fn(px_z_64, targets_64, only_l2 = True)
+            loss_128 = loss_fn(px_z_128, targets_128, only_l2 = True)
             loss += loss_16 + loss_32 + loss_64 + loss_128
+
+            num_resolutions += 4
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
@@ -69,9 +72,11 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
                 if(px_z_scale.shape[2] < 32):
                     loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
                 else:
-                    loss_scale = loss_fn(px_z_scale, targets_scale)
+                    loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
                 loss += loss_scale
+                num_resolutions += 1
 
+    loss = loss / num_resolutions
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()  
