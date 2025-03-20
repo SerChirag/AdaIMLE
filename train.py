@@ -34,7 +34,7 @@ from torch.cuda.amp import autocast
 
 l2_loss = nn.MSELoss()
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, target_image, targets, latents, imle, ema_imle, optimizer, sampler, scaler):
     t0 = time.time()
     imle.zero_grad()
 
@@ -44,28 +44,30 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     with autocast():  # Enable mixed precision
 
-        loss_256 = l2_loss(px_z, targets)
-        loss = loss_256
+        loss = 5 * l2_loss(px_z, targets)
+        image_px = sampler.forward_decoder(px_z)
+
+        loss_256 = sampler.calc_loss(image_px, target_image)
 
         if(H.use_multi_res):
-            px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
-            px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
-            px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
+            px_z_32 = F.interpolate(image_px, scale_factor = 0.125, antialias=True, mode='bicubic')
+            px_z_64 = F.interpolate(image_px, scale_factor = 0.25, antialias=True, mode='bicubic')
+            px_z_128 = F.interpolate(image_px, scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            targets_32 = F.interpolate(targets, scale_factor = 0.125, antialias=True, mode='bicubic')
-            targets_64 = F.interpolate(targets, scale_factor = 0.25, antialias=True, mode='bicubic')
-            targets_128 = F.interpolate(targets, scale_factor = 0.5, antialias=True, mode='bicubic')
+            targets_32 = F.interpolate(target_image, scale_factor = 0.125, antialias=True, mode='bicubic')
+            targets_64 = F.interpolate(target_image, scale_factor = 0.25, antialias=True, mode='bicubic')
+            targets_128 = F.interpolate(target_image, scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            loss_32 = l2_loss(px_z_32, targets_32)
-            loss_64 = l2_loss(px_z_64, targets_64)
-            loss_128 = l2_loss(px_z_128, targets_128)
-            loss += loss_32 + loss_64 + loss_128
+            loss_32 = sampler.calc_loss(px_z_32, targets_32)
+            loss_64 = sampler.calc_loss(px_z_64, targets_64)
+            loss_128 = sampler.calc_loss(px_z_128, targets_128)
+            loss += loss_32 + loss_64 + loss_128 + loss_256
 
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets, scale_factor = scale, antialias=True, mode='bicubic')
-                loss_scale = l2_loss(px_z_scale, targets_scale)
-                loss += loss_scale
+            # for scale in H['multi_res_scales']:
+            #     px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
+            #     targets_scale = F.interpolate(targets, scale_factor = scale, antialias=True, mode='bicubic')
+            #     loss_scale = l2_loss(px_z_scale, targets_scale)
+            #     loss += loss_scale
 
     scaler.scale(loss).backward()
     scaler.step(optimizer)
@@ -182,9 +184,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
 
-                target_latent = sampler.encode(target.permute(0, 3, 1, 2)).detach()
+                target = target.permute(0, 3, 1, 2)
 
-                stat = training_step_imle(H, target_latent.shape[0], target_latent, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
+                target_latent = sampler.encode(target).detach()
+
+                stat = training_step_imle(H, target, target_latent, latents, imle, ema_imle, optimizer, sampler, sampler.scaler)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
