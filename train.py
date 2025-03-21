@@ -33,18 +33,19 @@ from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
 
 
-def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     t0 = time.time()
     imle.zero_grad()
 
     cur_batch_latents = latents
 
-    px_z = imle(cur_batch_latents, snoise)
+    px_z = imle(cur_batch_latents)
 
     with autocast():  # Enable mixed precision
 
         loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
         loss = loss_256
+        num_resolutions = 1
 
         if(H.use_multi_res):
             px_z_16 = F.interpolate(px_z, scale_factor = 0.0625, antialias=True, mode='bicubic')
@@ -62,6 +63,7 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
             loss_64 = loss_fn(px_z_64, targets_64)
             loss_128 = loss_fn(px_z_128, targets_128)
             loss += loss_16 + loss_32 + loss_64 + loss_128
+            num_resolutions = 5
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
@@ -71,7 +73,9 @@ def training_step_imle(H, n, targets, latents, snoise, imle, ema_imle, optimizer
                 else:
                     loss_scale = loss_fn(px_z_scale, targets_scale)
                 loss += loss_scale
+                num_resolutions += 1
 
+    loss = loss / num_resolutions
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()  
@@ -104,6 +108,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         subset_len = len(data_train)
 
     sampler = Sampler(H, subset_len, preprocess_fn)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     last_updated = torch.zeros(subset_len, dtype=torch.int16)
     times_updated = torch.zeros(subset_len, dtype=torch.int8)
@@ -144,8 +149,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     batch_slice = slice(0, x[0].size()[0])
                     latents = sampler.selected_latents[batch_slice]
                     with torch.no_grad():
-                        snoise = [s[batch_slice] for s in sampler.selected_snoise]
-                        generate_for_NN(sampler, x[0], latents, snoise, viz_batch_original.shape, imle,
+                        generate_for_NN(sampler, x[0], latents, viz_batch_original.shape, imle,
                             f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
                     print('loaded latest latents')
 
@@ -177,7 +181,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
-                                    [s[to_update[:H.num_images_visualize]] for s in sampler.selected_snoise],
                                     viz_batch_original.shape, imle,
                                     f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
@@ -191,16 +194,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 x = cur[0]
                 latents = cur[1][0]
                 _, target = preprocess_fn(x)
+
+                target = target.to(device)
+                latents = latents.to(device)
                 
-                # if(H.use_snoise):
-                cur_snoise = [s[indices] for s in sampler.selected_snoise]
-
-                for i in range(len(H.res)):
-                    cur_snoise[i].zero_()
-                # else:
-                #     cur_snoise = [s[indices] for s in sampler.selected_snoise]
-
-                stat = training_step_imle(H, target.shape[0], target, latents, cur_snoise, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
+                stat = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
                 stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
@@ -212,7 +210,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                         generate_images_initial(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
                                                 sampler.last_selected_latents[0: H.num_images_visualize],
-                                                [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
                                                 viz_batch_original.shape, imle, ema_imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
 
@@ -237,9 +234,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             if epoch % 5 == 0:
                 
-                cur_dists = torch.empty([subset_len], dtype=torch.float32).cuda()
-                cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32).cuda()
-                cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32).cuda()
+                cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
+                cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
+                cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
 
 
                 cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
@@ -302,7 +299,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     generate_images_initial(H, sampler, viz_batch_original,
                                             sampler.selected_latents[0: H.num_images_visualize],
                                             sampler.last_selected_latents[0: H.num_images_visualize],
-                                            [s[0: H.num_images_visualize] for s in sampler.selected_snoise],
                                             viz_batch_original.shape, imle, ema_imle,
                                             f'{H.save_dir}/latest.png', logprint, experiment)
 
