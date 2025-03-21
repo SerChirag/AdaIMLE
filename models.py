@@ -7,6 +7,8 @@ from helpers.imle_helpers import get_1x1, get_3x3, draw_gaussian_diag_samples, g
 from collections import defaultdict
 import numpy as np
 import itertools
+from dit import DiT_S_2, DiT_B_2
+
 
 
 class Block(nn.Module):
@@ -96,7 +98,8 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetowrk(code_dim=H.latent_dim, n_mlp=H.n_mpl)
+        # self.mapping_network = MappingNetowrk(code_dim=H.latent_dim, n_mlp=H.n_mpl)
+        self.mapping_network = DiT_S_2()
         resos = set()
         cond_width = int(H.width * H.bottleneck_multiple)
         dec_blocks = []
@@ -115,7 +118,7 @@ class Decoder(nn.Module):
 
     def forward(self, latent_code, spatial_noise, input_is_w=False):
         if not input_is_w:
-            w = self.mapping_network(latent_code)[0]
+            w = self.mapping_network(latent_code)
         else:
             w = latent_code
         
