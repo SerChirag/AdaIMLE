@@ -45,7 +45,7 @@ def generate_images_initial(H, sampler, orig, initial, last_latents, shape, imle
     last_latents = last_latents[:mb]
     batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
 
-    temp_latent_rnds = torch.randn([mb, H.image_channels, H.image_size, H.image_size], dtype=torch.float32).cuda()
+    temp_latent_rnds = torch.randn([mb, H.image_channels, H.image_size, H.image_size], dtype=torch.float32, device='cuda')
     for t in range(H.num_rows_visualize + 4):
         temp_latent_rnds.normal_()
         batches.append(sampler.sample(temp_latent_rnds, imle, None))
@@ -64,7 +64,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     delete_content_of_dir(f'{H.save_dir}/{subdir}')
     
     with torch.no_grad():
-        temp_latent_rnds = torch.randn([H.imle_batch, H.image_channels, H.image_size, H.image_size], dtype=torch.float32).cuda()
+        temp_latent_rnds = torch.randn([H.imle_batch, H.image_channels, H.image_size, H.image_size], dtype=torch.float32, device='cuda')
         for i in range(0, (n_samp // H.imle_batch)+1):
             
             batch_size = min(H.imle_batch, n_samp-i*H.imle_batch)
