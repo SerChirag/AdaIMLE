@@ -75,7 +75,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 loss += loss_scale
                 num_resolutions += 1
 
-    loss = loss / num_resolutions
+    # loss = loss / num_resolutions
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()  
