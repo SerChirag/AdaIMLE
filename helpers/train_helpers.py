@@ -151,8 +151,10 @@ def load_imle(H, logprint):
 
     ema_imle = ema_imle.cuda()
 
-    imle = imle.cuda()
+    # imle = torch.compile(imle)
     imle = torch.nn.DataParallel(imle)
+    imle = imle.cuda()
+
 
     if len(list(imle.named_parameters())) != len(list(imle.parameters())):
         raise ValueError('Some params are not named. Please name all params.')
