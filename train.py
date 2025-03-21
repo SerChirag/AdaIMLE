@@ -41,7 +41,8 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     cur_batch_latents = latents
 
     px_z = imle(cur_batch_latents)
-
+    number_of_resolutions = 1 
+    
     with autocast():  # Enable mixed precision
 
         loss_256 = l2_loss(px_z, targets)
@@ -60,13 +61,16 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
             loss_64 = l2_loss(px_z_64, targets_64)
             loss_128 = l2_loss(px_z_128, targets_128)
             loss += loss_32 + loss_64 + loss_128
+            number_of_resolutions += 3
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
                 targets_scale = F.interpolate(targets, scale_factor = scale, antialias=True, mode='bicubic')
                 loss_scale = l2_loss(px_z_scale, targets_scale)
                 loss += loss_scale
+                number_of_resolutions += 1
 
+    loss = loss / number_of_resolutions
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()  
