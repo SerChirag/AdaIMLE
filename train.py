@@ -153,15 +153,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                             f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
                     print('loaded latest latents')
 
-                if os.path.isfile(str(H.restore_latent_path)):
-                    threshold = torch.load(H.restore_threshold_path)
-                    change_thresholds[:] = threshold[:]
-                    print('loaded thresholds', torch.mean(change_thresholds))
-                else:
-                    to_update = sampler.entire_ds
+                
+                to_update = sampler.entire_ds
 
 
-            change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
 
             sampler.imle_sample_force(split_x_tensor, imle, to_update)
 
@@ -175,7 +170,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             times_updated[to_update] = times_updated[to_update] + 1
 
             save_latents_latest(H, split_ind, sampler.selected_latents)
-            save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
             if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
@@ -219,12 +213,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     logprint(f'Saving model@ {iterate} to {fp}')
                     save_model(fp, imle, ema_imle, optimizer, scheduler, H)
                     save_latents_latest(H, split_ind, sampler.selected_latents)
-                    save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
                 if iterate % H.iters_per_ckpt == 0:
                     save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
-                    save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
                     save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')

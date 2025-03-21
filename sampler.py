@@ -23,9 +23,9 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.entire_ds = torch.arange(sz)
-        self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
+        self.selected_latents = torch.empty([sz, self.H.image_channels, self.H.image_size, self.H.image_size], dtype=torch.float32)
+        self.last_selected_latents = torch.empty([sz, self.H.image_channels, self.H.image_size, self.H.image_size], dtype=torch.float32)
+        self.selected_latents_tmp = torch.empty([sz, self.H.image_channels, self.H.image_size, self.H.image_size], dtype=torch.float32)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
@@ -41,11 +41,11 @@ class Sampler:
         self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32, device='cuda')
         self.selected_dists_l2[:] = np.inf 
 
-        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
-        self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
+        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.image_channels, self.H.image_size, self.H.image_size], dtype=torch.float32)
+        self.temp_samples = torch.empty([self.H.imle_db_size, self.H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
 
-        self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
+        self.pool_latents = torch.randn([self.pool_size, self.H.image_channels, self.H.image_size, self.H.image_size], dtype=torch.float32)
 
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
@@ -101,7 +101,6 @@ class Sampler:
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
-        self.angle_generator = Angle_Generator(self.H.latent_dim)
         self.max_sample_angle_rad = H.max_sample_angle_rad
         self.min_sample_angle_rad = H.min_sample_angle_rad
 
@@ -356,6 +355,8 @@ class Sampler:
         # self.init_projection(ds)
         self.pool_latents.normal_()
 
+
+
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
 
@@ -363,16 +364,18 @@ class Sampler:
                 cur_latents = self.sample_angle(self.pool_latents[batch_slice])
             
             else:
-                cur_latents = self.pool_latents[batch_slice]
+                cur_latents = self.pool_latents[batch_slice].to('cuda')
 
             with torch.no_grad():
                 with torch.cuda.amp.autocast():
+                    result = gen(cur_latents, None).detach()
                     if(self.H.search_type == 'lpips'):
-                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
+                        self.pool_samples_proj[batch_slice] = self.get_projected(result, False)
                     elif(self.H.search_type == 'l2'):
-                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
+                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(result, False)
                     else:
-                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
+                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(result, False)
+
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         if to_update is None:
@@ -416,7 +419,7 @@ class Sampler:
                     global_need_update = indices[need_update]
 
                     self.selected_dists_tmp[global_need_update] = nearest_dist[need_update].clone()
-                    self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.latent_dim))
+                    self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.image_channels, self.H.image_size, self.H.image_size))
 
                 if i % 100 == 0:
                     print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
