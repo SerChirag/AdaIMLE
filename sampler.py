@@ -20,6 +20,7 @@ class Sampler:
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
+        self.l1_loss = torch.nn.L1Loss(reduce=False).cuda()
         self.H = H
         self.latent_lr = H.latent_lr
         self.entire_ds = torch.arange(sz)
@@ -209,10 +210,11 @@ class Sampler:
 
         if use_mean:       
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+            l1_loss = torch.mean(self.l1_loss(inp, tar), dim=[1, 2, 3])
             res = 0
 
             if only_l2:
-                return l2_loss.mean()
+                return l2_loss.mean() * 0.5 + l1_loss.mean() * 0.5
 
             inp_feat, inp_shape = self.lpips_net(inp)
             tar_feat, _ = self.lpips_net(tar)
