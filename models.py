@@ -8,7 +8,7 @@ from collections import defaultdict
 import numpy as np
 import itertools
 from dit import DiT_S_2, DiT_L_2
-from diffusers.models import AutoencoderKL
+from diffusers.models import AutoencoderTiny
 
 
 class Block(nn.Module):
@@ -137,7 +137,7 @@ class IMLE(nn.Module):
         self.dci_db = None
         # self.decoder = Decoder(H)
         self.decoder = DiT_L_2()
-        self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema")
+        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd")
         for param in self.vae.parameters():
             param.requires_grad = False
 
