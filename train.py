@@ -225,7 +225,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
                     save_latents(H, iterate, split_ind, change_thresholds, name='threshold')
-                    save_snoise(H, iterate, sampler.selected_snoise)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
