@@ -2,6 +2,8 @@ from math import sqrt
 
 import torch
 from torch import nn
+from torch.nn import functional as F
+
 
 
 class PixelNorm(nn.Module):
@@ -45,17 +47,42 @@ def equal_lr(module, name='weight'):
 
 
 class EqualLinear(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim, out_dim, num_layers=3):
         super().__init__()
+        
+        layers = []
+        dim_list = [in_dim] + [in_dim] * (num_layers - 1)
 
-        linear = nn.Linear(in_dim, out_dim)
-        # linear.weight.data.normal_()
-        linear.bias.data.zero_()
+        for i in range(num_layers - 1):
+            linear = nn.Linear(dim_list[i], dim_list[i + 1])
 
-        self.linear = linear
+            if dim_list[i] == dim_list[i + 1]:  # Square weight matrices
+                nn.init.eye_(linear.weight)  # Identity matrix
+            else:
+                nn.init.orthogonal_(linear.weight, gain=1.0)  # Preserve magnitudes
+            
+            nn.init.zeros_(linear.bias)  # Zero bias
+            
+            layers.append(linear)
+            
+            layers.append(nn.LeakyReLU(negative_slope=0.01, inplace=True))
+            # layers.append(nn.LayerNorm(dim_list[i + 1]))
+
+
+        self.mlp = nn.Sequential(*layers)
+
+        # for layer in self.mlp:
+        #     if isinstance(layer, nn.Linear):
+        #         nn.init.zeros_(layer.bias)
+
+        self.linear = nn.Linear(in_dim, out_dim)
+        # nn.init.normal_(self.linear.weight, mean=0, std=0.02)
+        nn.init.zeros_(self.linear.bias)
 
     def forward(self, input):
-        return self.linear(input)
+        x = self.mlp(input)
+        return self.linear(x)
+
 
 def normalize_2nd_moment(x, dim=1, eps=1e-8):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
