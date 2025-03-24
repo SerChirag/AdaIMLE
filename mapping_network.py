@@ -11,7 +11,7 @@ class PixelNorm(nn.Module):
         super().__init__()
 
     def forward(self, input):
-        return input / torch.sqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-8)
+        return input / torch.sqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-6)
 
 
 class EqualLR:
@@ -84,7 +84,7 @@ class EqualLinear(nn.Module):
         return self.linear(x)
 
 
-def normalize_2nd_moment(x, dim=1, eps=1e-8):
+def normalize_2nd_moment(x, dim=1, eps=1e-6):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
 
@@ -149,7 +149,7 @@ class AdaptiveInstanceNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super().__init__()
 
-        self.norm = nn.InstanceNorm2d(in_channel, eps=1e-2)
+        self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
         self.style.linear.bias.data[:in_channel] = 1
