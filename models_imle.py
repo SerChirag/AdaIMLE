@@ -7,7 +7,7 @@ from helpers.imle_helpers import get_1x1, get_3x3, draw_gaussian_diag_samples, g
 from collections import defaultdict
 import numpy as np
 import itertools
-
+from models.generator import Generator
 
 class Block(nn.Module):
     def __init__(self, in_width, middle_width, out_width, down_rate=None, residual=False, use_3x3=True, zero_last=False):
@@ -133,8 +133,9 @@ class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.dci_db = None
-        self.decoder = Decoder(H)
+        self.decoder = Generator(H.image_size,H.latent_dim,8)
 
     def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w)
+        x = self.decoder(latents)
+        return x[0]
 

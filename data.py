@@ -7,7 +7,7 @@ from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
 
-from models import parse_layer_string
+from models_imle import parse_layer_string
 
 
 def set_up_data(H):

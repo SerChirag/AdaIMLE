@@ -7,7 +7,7 @@ from tqdm import tqdm
 # from LPNet import LPNet
 from collections import defaultdict
 
-from models import parse_layer_string
+from models_imle import parse_layer_string
 import pandas as pd
 
 

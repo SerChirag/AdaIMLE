@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 # from LPNet import LPNet
 
-from models import parse_layer_string
+from models_imle import parse_layer_string
 
 
 def normalize(x):

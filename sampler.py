@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from LPNet import LPNet
 from torch.optim import AdamW
 from helpers.utils import ZippedDataset
-from models import parse_layer_string
+from models_imle import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
 
