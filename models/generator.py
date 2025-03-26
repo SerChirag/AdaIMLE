@@ -532,7 +532,7 @@ class Generator(nn.Module):
         self.style = nn.Sequential(*layers)
 
         start = 2
-        depths = [2, 2, 2, 2, 2, 2, 2, 2, 2]
+        depths = [4, 4, 4, 4, 4, 4, 4, 2, 2]
         in_channels = [
             512, 
             512, 
