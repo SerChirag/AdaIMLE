@@ -11,6 +11,8 @@ from torch import nn
 from models.basic_layers import (EqualLinear, PixelNorm,
                                  SinusoidalPositionalEmbedding, Upsample)
 
+import torch.nn.functional as F
+
 
 class ToRGB(nn.Module):
     def __init__(self, in_channel, upsample=True, resolution=None, blur_kernel=[1, 3, 3, 1]):
@@ -30,7 +32,7 @@ class ToRGB(nn.Module):
 
         if skip is not None:
             if self.is_upsample:
-                skip = self.upsample(skip)
+                skip = F.interpolate(skip, scale_factor=2, mode='bicubic', antialias=True)
 
             out = out + skip
         return out
@@ -400,19 +402,21 @@ class StyleBasicLayer(nn.Module):
                                  mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                                  drop=drop, attn_drop=attn_drop, style_dim=style_dim)
             for _ in range(depth)])
+        
+        self.depth = depth
 
         if upsample is not None:
             self.upsample = upsample(input_resolution, dim=dim, out_dim=out_dim)
         else:
             self.upsample = None
 
-    def forward(self, x, latent1, latent2):
-        if self.use_checkpoint:
-            x = checkpoint.checkpoint(self.blocks[0], x, latent1)
-            x = checkpoint.checkpoint(self.blocks[1], x, latent2)
-        else:
-            x = self.blocks[0](x, latent1)
-            x = self.blocks[1](x, latent2)
+    def forward(self, x, latent1):
+    
+        for blk in self.blocks:
+            if self.use_checkpoint:
+                x = checkpoint.checkpoint(blk, x, latent1)
+            else:
+                x = blk(x, latent1)
 
         if self.upsample is not None:
             x = self.upsample(x)
@@ -442,7 +446,7 @@ class BilinearUpsample(nn.Module):
     def __init__(self, input_resolution, dim, out_dim=None):
         super().__init__()
         assert dim % 2 == 0, f"x dim are not even."
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear')
+        self.upsample = nn.Upsample(scale_factor=2, mode='bicubic')
         self.norm = nn.LayerNorm(dim)
         self.reduction = nn.Linear(dim, out_dim, bias=False)
         self.input_resolution = input_resolution
@@ -532,7 +536,7 @@ class Generator(nn.Module):
         self.style = nn.Sequential(*layers)
 
         start = 2
-        depths = [4, 4, 4, 4, 4, 4, 4, 2, 2]
+        depths = [4, 4, 2, 2, 2, 2, 2, 2, 2]
         in_channels = [
             512, 
             512, 
@@ -540,9 +544,9 @@ class Generator(nn.Module):
             512, 
             256 * channel_multiplier, 
             128 * channel_multiplier, 
-            64 * channel_multiplier, 
-            32 * channel_multiplier, 
-            16 * channel_multiplier
+            64 * channel_multiplier * 2, 
+            32 * channel_multiplier * 4, 
+            16 * channel_multiplier * 4
         ]  
 
         end = int(math.log(size, 2))
@@ -614,24 +618,22 @@ class Generator(nn.Module):
 
             styles = torch.cat(style_t, dim=0)
         
-        if styles.ndim < 3:
-            latent = styles.unsqueeze(1).repeat(1, inject_index, 1)
-        else:
-            latent = styles
+        # if styles.ndim < 3:
+        #     latent = styles.unsqueeze(1).repeat(1, inject_index, 1)
+        # else:
+        #     latent = styles
 
-        x = self.input(latent)
+        x = self.input(styles)
         B, C, H, W = x.shape
         x = x.permute(0, 2, 3, 1).contiguous().view(B, H * W, C)
 
-        count = 0
         skip = None
         for layer, to_rgb in zip(self.layers, self.to_rgbs):
-            x = layer(x, latent[:,count,:], latent[:,count+1,:])
-            b, n, c = x.shape
-            h, w = int(math.sqrt(n)), int(math.sqrt(n))
-            skip = to_rgb(x.transpose(-1, -2).reshape(b, c, h, w), skip)
-            count = count + 2
+            x = layer(x, styles)
 
+        b, n, c = x.shape
+        h, w = int(math.sqrt(n)), int(math.sqrt(n))
+        skip = to_rgb(x.transpose(-1, -2).reshape(b, c, h, w), None)
         B, L, C = x.shape
         assert L == self.size * self.size
         x = x.reshape(B, self.size, self.size, C).permute(0, 3, 1, 2).contiguous()
