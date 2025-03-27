@@ -17,13 +17,15 @@ class Block(nn.Module):
         self.c1 = get_1x1(in_width, middle_width)
         self.c2 = get_3x3(middle_width, middle_width) if use_3x3 else get_1x1(middle_width, middle_width)
         self.c3 = get_3x3(middle_width, middle_width) if use_3x3 else get_1x1(middle_width, middle_width)
-        self.c4 = get_1x1(middle_width, out_width, zero_weights=zero_last)
+        self.c4 = get_3x3(middle_width, middle_width) if use_3x3 else get_1x1(middle_width, middle_width)
+        self.c5 = get_1x1(middle_width, out_width, zero_weights=zero_last)
 
     def forward(self, x):
         xhat = self.c1(F.gelu(x))
         xhat = self.c2(F.gelu(xhat))
         xhat = self.c3(F.gelu(xhat))
         xhat = self.c4(F.gelu(xhat))
+        xhat = self.c5(F.gelu(xhat))
         out = x + xhat if self.residual else xhat
         if self.down_rate is not None:
             out = F.avg_pool2d(out, kernel_size=self.down_rate, stride=self.down_rate)
@@ -80,7 +82,7 @@ class DecBlock(nn.Module):
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = Block(width, cond_width, width, residual=True, use_3x3=use_3x3)
-        self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
+        self.resnet.c5.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
