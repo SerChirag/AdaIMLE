@@ -64,13 +64,14 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     delete_content_of_dir(f'{H.save_dir}/{subdir}')
     
     with torch.no_grad():
-        temp_latent_rnds = torch.randn([H.imle_batch, H.latent_dim], dtype=torch.float32).cuda()
-        for i in range(0, (n_samp // H.imle_batch)+1):
-            
-            batch_size = min(H.imle_batch, n_samp-i*H.imle_batch)
+        with torch.cuda.amp.autocast():
+            temp_latent_rnds = torch.randn([H.imle_batch, H.latent_dim], dtype=torch.float32).cuda()
+            for i in range(0, (n_samp // H.imle_batch)+1):
+                
+                batch_size = min(H.imle_batch, n_samp-i*H.imle_batch)
 
-            temp_latent_rnds.normal_()
-            samp = sampler.sample(temp_latent_rnds, imle, None)
+                temp_latent_rnds.normal_()
+                samp = sampler.sample(temp_latent_rnds, imle, None)
 
-            for j in range(batch_size):
-                imageio.imwrite(f'{H.save_dir}/{subdir}/{i * H.imle_batch + j}.png', samp[j])
+                for j in range(batch_size):
+                    imageio.imwrite(f'{H.save_dir}/{subdir}/{i * H.imle_batch + j}.png', samp[j])
