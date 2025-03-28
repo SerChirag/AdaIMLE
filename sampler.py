@@ -368,7 +368,7 @@ class Sampler:
                 cur_latents = self.pool_latents[batch_slice]
 
             with torch.no_grad():
-                with autocast(device_type='cuda', dtype=torch.float16):
+                with torch.cuda.amp.autocast():
                     if(self.H.search_type == 'lpips'):
                         self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
                     elif(self.H.search_type == 'l2'):

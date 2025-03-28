@@ -40,7 +40,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     cur_batch_latents = latents
 
 
-    with autocast(device_type='cuda', dtype=torch.float16):
+    with torch.cuda.amp.autocast():
 
         px_z = imle(cur_batch_latents)
         loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
