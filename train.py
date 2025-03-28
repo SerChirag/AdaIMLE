@@ -39,10 +39,9 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     cur_batch_latents = latents
 
-    px_z = imle(cur_batch_latents)
+    with autocast(device_type='cuda', dtype=torch.float16):
 
-    with autocast():  # Enable mixed precision
-
+        px_z = imle(cur_batch_latents)
         loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
         loss = loss_256
         num_resolutions = 1
