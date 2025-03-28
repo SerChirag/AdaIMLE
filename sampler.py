@@ -13,6 +13,8 @@ from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
+from torch.cuda.amp import autocast
+
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -366,7 +368,7 @@ class Sampler:
                 cur_latents = self.pool_latents[batch_slice]
 
             with torch.no_grad():
-                with torch.cuda.amp.autocast():
+                with autocast(device_type='cuda', dtype=torch.float16):
                     if(self.H.search_type == 'lpips'):
                         self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
                     elif(self.H.search_type == 'l2'):
