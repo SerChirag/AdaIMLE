@@ -6,8 +6,8 @@ from torchvision import models as tv
 
 
 def normalize_tensor(in_feat, eps=1e-6):
-    norm_factor = torch.sqrt(torch.sum(in_feat**2, dim=1, keepdim=True) + eps)
-    return in_feat / (norm_factor + eps)
+    norm_factor = torch.sqrt(torch.relu(torch.sum(in_feat**2, dim=1, keepdim=True)) + eps)
+    return in_feat / norm_factor
 
 
 class RerangeLayer(nn.Module):
