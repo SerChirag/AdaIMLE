@@ -38,7 +38,8 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     imle.zero_grad()
 
     cur_batch_latents = latents
-
+    
+    # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
 
     with torch.cuda.amp.autocast():
 
