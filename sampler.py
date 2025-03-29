@@ -199,11 +199,7 @@ class Sampler:
     def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
 
         if use_mean:       
-            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             res = 0
-
-            if only_l2:
-                return l2_loss.mean()
 
             inp_feat, inp_shape = self.lpips_net(inp)
             tar_feat, _ = self.lpips_net(tar)
@@ -216,7 +212,7 @@ class Sampler:
 
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
-            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+            loss = self.H.lpips_coef * res.mean()
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
