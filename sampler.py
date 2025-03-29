@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-from diffusers import AutoencoderKL
+from diffusers import AutoencoderTiny
 from LPNet import LPNet
 from torch.optim import AdamW
 from helpers.utils import ZippedDataset
@@ -53,7 +53,7 @@ class Sampler:
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
 
         self.lpips_net.eval()
-        self.vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-ema").cuda()
+        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
         self.vae.eval()
         self.vae.requires_grad_(False)
 
@@ -220,8 +220,8 @@ class Sampler:
             
             loss = self.H.lpips_coef * res.mean()
 
-            input_feat = self.vae.encode(inp).latent_dist.sample() * self.vae.config.scaling_factor
-            target_feat = self.vae.encode(tar).latent_dist.sample() * self.vae.config.scaling_factor
+            input_feat = self.vae.encode(inp).latents
+            target_feat = self.vae.encode(tar).latents
             loss += 0.1 * self.l2_loss(input_feat, target_feat).mean()
 
             if logging:
@@ -241,10 +241,6 @@ class Sampler:
                 return loss, res.mean(), l2_loss
             else:
                 return loss
-
-
-
-        
 
     def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
         if dists is None:
