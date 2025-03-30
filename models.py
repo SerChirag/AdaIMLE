@@ -136,5 +136,7 @@ class IMLE(nn.Module):
         self.decoder = Decoder(H)
 
     def forward(self, latents, spatial_noise=None, input_is_w=False):
-        return self.decoder.forward(latents, spatial_noise, input_is_w)
+        out = self.decoder.forward(latents, spatial_noise, input_is_w)
+        out = torch.clamp(out, -1, 1)
+        return out
 
