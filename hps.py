@@ -104,6 +104,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
+    parser.add_argument('--encoder_coef', type=float, default=0.1)  # l2 loss coefficient
     parser.add_argument('--force_factor', type=float, default=1.5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
@@ -137,7 +138,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
-    parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
+    parser.add_argument('--search_type', type=str, default='vae', choices=['lpips', 'l2', 'vae','combined']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
     parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise

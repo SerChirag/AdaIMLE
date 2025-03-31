@@ -5,9 +5,13 @@ import torch.nn as nn
 from torchvision import models as tv
 
 
-def normalize_tensor(in_feat, eps=1e-6):
-    norm_factor = torch.sqrt(torch.sum(in_feat**2, dim=1, keepdim=True) + eps)
-    return in_feat / (norm_factor + eps)
+def normalize_tensor(in_feat, eps=1e-3):
+    norm_factor = torch.sum(in_feat**2, dim=1, keepdim=True)  # Compute squared sum
+    norm_factor = torch.clamp(norm_factor, min=eps)  # Ensure nonzero before sqrt
+    norm_factor = torch.sqrt(norm_factor)  # Now safe to take sqrt
+    norm_factor = torch.clamp(norm_factor, min=eps)  # Ensure nonzero before sqrt
+    return in_feat / norm_factor
+
 
 
 class RerangeLayer(nn.Module):
@@ -59,6 +63,7 @@ class LPNet(nn.Module):
             self.lins[i].weight = torch.sqrt(weights["lin%d.model.1.weight" % i])
 
     def forward(self, in0, avg=False):
+        # in0 = torch.clamp(in0, -1, 1)
         in0_input = self.scaling_layer(in0)
         outs0 = self.net.forward(in0_input)
         feats0 = {}
