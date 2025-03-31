@@ -75,15 +75,13 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 num_resolutions += 1
 
     # loss = loss / num_resolutions
-    scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()  
-    if ema_imle is not None:
-        update_ema(imle, ema_imle, H.ema_rate)
+    if not torch.isnan(loss):
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()  
+        if ema_imle is not None:
+            update_ema(imle, ema_imle, H.ema_rate)
 
-    stats = get_cpu_stats_over_ranks(dict(loss_nans=0, loss=loss))
-    stats.update(skipped_updates=0, iter_time=time.time() - t0, grad_norm=0)
-    return stats
 
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment = None):
@@ -176,7 +174,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
+            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 5 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
@@ -197,8 +195,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 target = target.to(device)
                 latents = latents.to(device)
                 
-                stat = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
-                stats.append(stat)
+                training_step_imle(H, target.shape[0], target, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
+                # stats.append(stat)
 
                 if(iterate <= H.warmup_iters):
                     # print("Warmup iteration: ", iterate)
