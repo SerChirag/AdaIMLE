@@ -1,8 +1,10 @@
 import os
 import time
 
+
 from comet_ml import Experiment, ExistingExperiment
 import imageio
+import torch.cuda.profiler as profiler
 import torch
 import wandb
 import torch.nn as nn
@@ -123,6 +125,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
         print('Outer batch - {}'.format(split_ind, len(split_x)))
+
+        profiler.start()
 
         while (epoch < H.num_epochs):
             
@@ -304,6 +308,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             
             if epoch % 5 == 0 and experiment is not None:
                 experiment.log_metrics(metrics, epoch=epoch, step=iterate)
+    
+        profiler.stop()
 
 def main(H=None):
     H_cur, logprint = set_up_hyperparams()
