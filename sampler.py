@@ -220,31 +220,33 @@ class Sampler:
         return res
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
-
-        if use_mean:       
-            res = 0
-
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
         
-            for i, g_feat in enumerate(inp_feat):
-                lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+        image_shape = inp.shape[2]
 
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
+        use_lpips = image_shape >= 32
+        use_encoder = image_shape >= 64
 
-                res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+        if use_mean:    
             
-            loss = self.H.lpips_coef * res.mean()
+            loss_l2 = self.l2_loss(inp, tar).mean()
+            loss_lpips = 0
+            loss_encoder = 0
 
-            input_feat = self.vae.encode(inp).latents
-            target_feat = self.vae.encode(tar).latents
-            loss += 0.1 * self.l2_loss(input_feat, target_feat).mean()
-
-            if logging:
-                return loss, res.mean(), l2_loss.mean()
-            else:
-                return loss
+            if(use_lpips):   
+                inp_feat, inp_shape = self.lpips_net(inp)
+                tar_feat, _ = self.lpips_net(tar)
+            
+                for i, g_feat in enumerate(inp_feat):
+                    lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+                    loss_lpips += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+                            
+            if(use_encoder):
+                input_feat = self.vae.encode(inp).latents
+                target_feat = self.vae.encode(tar).latents
+                loss_encoder = self.l2_loss(input_feat, target_feat).mean()
+            
+            loss = self.H.lpips_coef * loss_lpips.mean() + self.H.l2_coef * loss_l2 + self.H.encoder_coef * loss_encoder
+            return loss
 
         else:
             inp_feat, inp_shape = self.lpips_net(inp)
