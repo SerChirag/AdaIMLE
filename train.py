@@ -174,7 +174,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             save_latents_latest(H, split_ind, sampler.selected_latents)
             save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 5 == 0):
+            if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
                 latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
                 with torch.no_grad():
                     generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
