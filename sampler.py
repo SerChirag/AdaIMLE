@@ -255,7 +255,7 @@ class Sampler:
             for i, g_feat in enumerate(inp_feat):
                 res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-            loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
+            loss = 1.0 * res + 0.1 * l2_loss
             if logging:
                 return loss, res.mean(), l2_loss
             else:
