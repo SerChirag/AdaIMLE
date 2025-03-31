@@ -51,7 +51,7 @@ def parse_args_and_update_hparams(H, parser, s=None):
 def add_imle_arguments(parser):
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='./saved_models')
-    parser.add_argument('--data_root', type=str, default='./')
+    parser.add_argument('--data_root', type=str, default='./datasets/ffhq/')
     parser.add_argument('--desc', type=str, default='train')
     parser.add_argument('--dataset', type=str, default='cifar10')  # path to dataset
     parser.add_argument('--hparam_sets', '--hps', type=str)  # e.g. 'fewshot'
@@ -78,7 +78,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate
 
     parser.add_argument('--wd', type=float, default=0.00)  # weight decay
-    parser.add_argument('--num_epochs', type=int, default=10000)  # number of epochs
+    parser.add_argument('--num_epochs', type=int, default=2)  # number of epochs
     parser.add_argument('--n_batch', type=int, default=4)  # batch size
     parser.add_argument('--adam_beta1', type=float, default=0.9)
     parser.add_argument('--adam_beta2', type=float, default=0.9)
