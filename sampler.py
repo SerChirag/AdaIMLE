@@ -53,9 +53,9 @@ class Sampler:
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
 
         self.lpips_net.eval()
-        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
-        self.vae.eval()
-        self.vae.requires_grad_(False)
+        # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
+        # self.vae.eval()
+        # self.vae.requires_grad_(False)
 
         self.l2_projection = None
 
@@ -224,13 +224,13 @@ class Sampler:
         image_shape = inp.shape[2]
 
         use_lpips = image_shape >= 32
-        use_encoder = image_shape >= 64
+        # use_encoder = image_shape >= 64
 
         if use_mean:    
             
             loss_l2 = self.l2_loss(inp, tar).mean()
             loss_lpips = 0
-            loss_encoder = 0
+            # loss_encoder = 0
 
             if(use_lpips):   
                 inp_feat, inp_shape = self.lpips_net(inp)
@@ -240,12 +240,13 @@ class Sampler:
                     lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
                     loss_lpips += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
                             
-            if(use_encoder):
-                input_feat = self.vae.encode(inp).latents
-                target_feat = self.vae.encode(tar).latents
-                loss_encoder = self.l2_loss(input_feat, target_feat).mean()
+            # if(use_encoder):
+            #     input_feat = self.vae.encode(inp).latents
+            #     target_feat = self.vae.encode(tar).latents
+            #     loss_encoder = self.l2_loss(input_feat, target_feat).mean()
             
-            loss = self.H.lpips_coef * loss_lpips.mean() + self.H.l2_coef * loss_l2 + self.H.encoder_coef * loss_encoder
+            loss = self.H.lpips_coef * loss_lpips.mean() + self.H.l2_coef * loss_l2 
+            # + self.H.encoder_coef * loss_encoder
             return loss
 
         else:
