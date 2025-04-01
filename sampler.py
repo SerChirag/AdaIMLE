@@ -127,7 +127,6 @@ class Sampler:
             inp = inp.permute(0, 3, 1, 2)
         interpolated = self.vae.encode(inp).latents
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        interpolated = torch.mm(interpolated, self.l2_projection)
         return interpolated.cuda()
 
     def get_projected(self, inp, permute=True):
