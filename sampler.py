@@ -14,7 +14,7 @@ from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
 from torch.cuda.amp import autocast
-
+from diffusers import AutoencoderTiny
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -51,6 +51,11 @@ class Sampler:
 
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
+
+        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
+        self.vae.eval()
+        self.vae.requires_grad_(False)
+
         self.l2_projection = None
 
         self.knn = KNN(k=1, transpose_mode=True)
@@ -76,8 +81,13 @@ class Sampler:
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
 
-        else:
+        elif(H.search_type == 'vae'):
+            interpolated = self.vae.encode(fake).latents
+            interpolated = interpolated.reshape(interpolated.shape[0],-1)
+            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
+            sum_dims = H.proj_dim
 
+        else:
             projection_dim = H.proj_dim // 2
             dims = [int(projection_dim * 1. / len(out)) for _ in range(len(out))]
             if H.proj_proportion:
@@ -111,6 +121,14 @@ class Sampler:
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+
+    def get_vae_features(self, inp, permute=True):
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = self.vae.encode(inp).latents
+        interpolated = interpolated.reshape(interpolated.shape[0],-1)
+        interpolated = torch.mm(interpolated, self.l2_projection)
+        return interpolated.cuda()
 
     def get_projected(self, inp, permute=True):
         if(permute):
@@ -164,6 +182,8 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1])
             elif(self.H.search_type == 'l2'):
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1])
+            elif(self.H.search_type == 'vae'):
+                self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1])
             else:
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1])
 
@@ -312,6 +332,8 @@ class Sampler:
                         self.temp_samples_proj[batch_slice] = self.get_projected(self.temp_samples[batch_slice], False)
                     elif(self.H.search_type == 'l2'):
                         self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False)
+                    elif(self.H.search_type == 'vae'):
+                        self.temp_samples_proj[batch_slice] = self.get_vae_features(self.temp_samples[batch_slice], False)
                     else:
                         self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
 
@@ -373,6 +395,8 @@ class Sampler:
                         self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
                     elif(self.H.search_type == 'l2'):
                         self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
+                    elif(self.H.search_type == 'vae'):
+                        self.pool_samples_proj[batch_slice] = self.get_vae_features(gen(cur_latents, None), False)
                     else:
                         self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
 
