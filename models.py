@@ -84,7 +84,7 @@ class DecBlock(nn.Module):
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base/self.mixin, mode='bicubic')
+            x = F.interpolate(x, scale_factor=self.base // self.mixin, mode='bicubic')
         if self.base <= self.H.max_hierarchy:
             x = self.noise(x, spatial_noise)
         x = self.adaIN(x, w)
