@@ -93,7 +93,10 @@ class DecBlock(nn.Module):
 
     def forward_residual(self, x_hat, residual):
         # return x_hat + residual
-        return self.layer_norm(residual + x_hat)
+        if(residual is not None):
+            return self.layer_norm(residual + x_hat)
+        else:
+            return self.layer_norm(x_hat)
 
 
 class Decoder(nn.Module):
@@ -127,7 +130,7 @@ class Decoder(nn.Module):
 
         for idx, block in enumerate(self.dec_blocks):
             if block.mixin is not None:
-                x = block.forward(x, w, None)
+                x = block.forward_residual(block.forward(x, w, None), None)
             else:
                 x = block.forward_residual(block.forward(x, w, None), x)
         x = self.resnet(x)
