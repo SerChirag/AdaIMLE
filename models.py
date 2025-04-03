@@ -81,7 +81,7 @@ class DecBlock(nn.Module):
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = Block(width, cond_width, width, residual=True, use_3x3=use_3x3)
         self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
-        self.layer_norm = nn.LayerNorm([res, res])
+        self.layer_norm = nn.LayerNorm([width, res, res])
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
