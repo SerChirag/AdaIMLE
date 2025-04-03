@@ -81,15 +81,19 @@ class DecBlock(nn.Module):
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = Block(width, cond_width, width, residual=True, use_3x3=use_3x3)
         self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
+        self.layer_norm = nn.LayerNorm([res, res])
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base // self.mixin, mode='bicubic')
-        if self.base <= self.H.max_hierarchy:
-            x = self.noise(x, spatial_noise)
+        
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
+
+    def forward_residual(self, x_hat, residual):
+        # return x_hat + residual
+        return self.layer_norm(residual + x_hat)
 
 
 class Decoder(nn.Module):
@@ -122,8 +126,10 @@ class Decoder(nn.Module):
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
-            noise = None
-            x = block(x, w, noise)
+            if block.mixin is not None:
+                x = block.forward(x, w, None)
+            else:
+                x = block.forward_residual(block.forward(x, w, None), x)
         x = self.resnet(x)
         x = self.gain * x + self.bias
         return x

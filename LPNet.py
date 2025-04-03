@@ -63,6 +63,7 @@ class LPNet(nn.Module):
             self.lins[i].weight = torch.sqrt(weights["lin%d.model.1.weight" % i])
 
     def forward(self, in0, avg=False):
+        in0 = in0.clamp(-1, 1)
         in0_input = self.scaling_layer(in0)
         outs0 = self.net.forward(in0_input)
         feats0 = {}
