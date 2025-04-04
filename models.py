@@ -66,6 +66,32 @@ def get_width_settings(width, s):
     return mapping
 
 
+class ConvNeXtBlock(nn.Module):
+    def __init__(self, dim, expansion=4, kernel_size=7):
+        super().__init__()
+        self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
+        self.gelu = nn.GELU()
+        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+    
+    def forward(self, x):
+        residual = x
+        # Depthwise convolution with larger kernel
+        x = self.dw_conv(x)
+        # Permute to channels-last for LayerNorm
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        # Permute back to channels-first
+        x = x.permute(0, 3, 1, 2)
+        # Pointwise conv to expand channels
+        x = self.pw_conv1(x)
+        x = self.gelu(x)
+        # Pointwise conv to compress channels back
+        x = self.pw_conv2(x)
+        return x + residual  # Residual connection
+
+
 class DecBlock(nn.Module):
     def __init__(self, H, res, mixin, n_blocks):
         super().__init__()
@@ -79,8 +105,8 @@ class DecBlock(nn.Module):
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
-        self.resnet = Block(width, cond_width, width, residual=True, use_3x3=use_3x3)
-        self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
+        self.resnet = ConvNeXtBlock(width, kernel_size=7)
+        # self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
