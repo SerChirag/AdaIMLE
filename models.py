@@ -65,43 +65,8 @@ def get_width_settings(width, s):
             mapping[int(k)] = int(v)
     return mapping
 
-
-import torch
-from torch import nn
-from torch.nn import functional as F
-
-class SelfAttention(nn.Module):
-    def __init__(self, in_channels):
-        super().__init__()
-        # Reduce dimensionality for queries and keys
-        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.key_conv   = nn.Conv2d(in_channels, in_channels // 8, kernel_size=1)
-        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        # Learnable scaling factor initialized as zero
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x):
-        B, C, H, W = x.size()
-        # Compute query, key and value maps
-        proj_query = self.query_conv(x).view(B, -1, H * W)  # [B, C//8, N]
-        proj_key   = self.key_conv(x).view(B, -1, H * W)      # [B, C//8, N]
-        proj_value = self.value_conv(x).view(B, -1, H * W)      # [B, C, N]
-        
-        # Compute attention map using matrix multiplication and softmax
-        attention = torch.bmm(proj_query.permute(0, 2, 1), proj_key)  # [B, N, N]
-        attention = F.softmax(attention, dim=-1)
-        
-        # Apply attention to the value maps
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))  # [B, C, N]
-        out = out.view(B, C, H, W)
-        
-        # Apply scaling and residual connection
-        out = self.gamma * out + x
-        return out
-
-
 class ConvNeXtBlock(nn.Module):
-    def __init__(self, dim, expansion=2, kernel_size=7):
+    def __init__(self, dim, expansion=4, kernel_size=7):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-6)
@@ -140,12 +105,6 @@ class DecBlock(nn.Module):
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = ConvNeXtBlock(width, kernel_size=7)
-        self.use_attention = None
-        if (res >= 16 and res <= 64):
-            self.use_attention = True
-            self.attention = SelfAttention(width)
-        else:
-            self.attention = None
         # self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
@@ -155,8 +114,6 @@ class DecBlock(nn.Module):
             x = self.noise(x, spatial_noise)
         x = self.adaIN(x, w)
         x = self.resnet(x)
-        if self.use_attention:
-            x = self.attention(x)
         return x
 
 
