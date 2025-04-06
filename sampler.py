@@ -18,7 +18,7 @@ from diffusers import AutoencoderTiny
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.scaler = torch.cuda.amp.GradScaler(enabled=False)
+        self.scaler = torch.amp.GradScaler("cuda")
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
@@ -389,7 +389,7 @@ class Sampler:
                 cur_latents = self.pool_latents[batch_slice]
 
             with torch.no_grad():
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     if(self.H.search_type == 'lpips'):
                         self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
                     elif(self.H.search_type == 'l2'):

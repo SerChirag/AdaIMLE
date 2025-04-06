@@ -41,7 +41,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
 
-    with torch.cuda.amp.autocast():
+    with torch.amp.autocast('cuda'):
 
         px_z = imle(cur_batch_latents)
         loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
@@ -76,7 +76,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 loss += loss_scale
                 num_resolutions += 1
 
-    # loss = loss / num_resolutions
+    loss = loss / num_resolutions
     
     scaler.scale(loss).backward()
     scaler.step(optimizer)
