@@ -198,9 +198,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 
                 training_step_imle(H, target.shape[0], target, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
 
-                if(iterate <= H.warmup_iters):
-                    # print("Warmup iteration: ", iterate)
-                    scheduler.step()
+                scheduler.step()
 
                 if iterate % H.iters_per_images == 0:
                     with torch.no_grad():
@@ -222,9 +220,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     save_latents(H, iterate, split_ind, sampler.selected_latents)
 
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
-
-            if(iterate > H.warmup_iters):
-                scheduler.step()
 
             if epoch % 5 == 0:
                 
