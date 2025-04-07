@@ -70,9 +70,9 @@ class ConvNeXtBlock(nn.Module):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-6)
-        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
+        self.pw_conv1 = nn.Linear(dim, expansion * dim) # pointwise/1x1 convs, implemented with linear layers
         self.gelu = nn.GELU()
-        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+        self.pw_conv2 = nn.Linear(expansion * dim, dim)
     
     def forward(self, x):
         residual = x
@@ -82,12 +82,12 @@ class ConvNeXtBlock(nn.Module):
         x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
         # Permute back to channels-first
-        x = x.permute(0, 3, 1, 2)
         # Pointwise conv to expand channels
         x = self.pw_conv1(x)
         x = self.gelu(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
+        x = x.permute(0, 3, 1, 2)
         return x + residual  # Residual connection
 
 
@@ -109,7 +109,7 @@ class DecBlock(nn.Module):
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base // self.mixin, mode='bicubic')
+            x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
         if self.base <= self.H.max_hierarchy:
             x = self.noise(x, spatial_noise)
         x = self.adaIN(x, w)
