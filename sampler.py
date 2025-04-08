@@ -15,6 +15,7 @@ from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
+import faiss
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -400,54 +401,88 @@ class Sampler:
                         self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
 
     def imle_sample_force(self, dataset, gen, to_update=None):
+        """
+        Optimized force resampling routine using FAISS for batched nearest neighbor search.
+        This implementation replaces the nested loop over DataLoader batches and pool partitions with a one-shot FAISS query.
+        
+        It assumes:
+        - self.resample_pool() has updated the pool samples projections (self.pool_samples_proj) and pool latents (self.pool_latents).
+        - self.dataset_proj contains precomputed projections of your dataset.
+        - All features are in float32.
+        """
+        
+        # If no specific indices to update, use the entire dataset indices.
         if to_update is None:
             to_update = self.entire_ds
         if to_update.shape[0] == 0:
             return
-        
+
+        # Ensure the indices are on CPU (they are only used for indexing here)
         to_update = to_update.cpu()
 
         t1 = time.time()
         self.resample_pool(gen, dataset)
-        print(f'resampling took {time.time() - t1}')
+        print(f"Resampling pool took {time.time() - t1:.2f} seconds")
 
+        # Reset temporary distances (we assume selected_dists_tmp is a torch tensor)
         self.selected_dists_tmp[:] = np.inf
-
-        ## removing samples too close
-
         total_rejected = 0
-
         self.total_excluded = total_rejected
         self.total_excluded_percentage = (total_rejected * 1.0 / self.pool_size) * 100
 
         with torch.no_grad():
-            for i in range(self.pool_size // self.H.imle_db_size):
-                pool_slice = slice(i * self.H.imle_db_size, (i + 1) * self.H.imle_db_size)
-                pool_latents = self.pool_latents[pool_slice]
+            # Prepare the dataset features corresponding to the indices to update.
+            # Make sure dataset_proj is float32.
+            ds_feats = self.dataset_proj[to_update].cpu().numpy().astype(np.float32)
+            
+            # Prepare the pool samples features.
+            pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
+            feature_dim = pool_feats.shape[1]
+            
+            # Create a FAISS index for L2 distance search.
+            index = faiss.IndexFlatL2(feature_dim)
+            # If your GPU can handle it and you want to accelerate further, you can transfer the index to GPU:
+            # res = faiss.StandardGpuResources()
+            # index = faiss.index_cpu_to_gpu(res, 0, index)
+            
+            index.add(pool_feats)  # add the entire pool of features at once
+            
+            # Perform batched nearest neighbor search for all dataset features.
+            # The returned arrays have shape (num_samples, 1).
+            distances, indices = index.search(ds_feats, 1)
+            
+            # Convert the results to torch tensors.
+            distances_tensor = torch.from_numpy(distances).squeeze(1)  # shape: [num_to_update]
+            indices_tensor   = torch.from_numpy(indices).squeeze(1)    # shape: [num_to_update]
+            
+            # Get the current stored distances for these indices.
+            current_dists = self.selected_dists_tmp[to_update].cpu()
+            
+            # Determine which samples should be updated.
+            need_update = distances_tensor < current_dists
+            # Identify absolute indices in the full dataset:
+            update_indices = to_update[need_update]
+            
+            if update_indices.numel() > 0:
+                # Use indices from FAISS to fetch corresponding latents from the pool.
+                # Ensure that pool_latents is on the same device (or move it accordingly).
+                new_latents = self.pool_latents[indices_tensor[need_update].to(self.pool_latents.device)].clone()
+                
+                # Add random perturbation as in your original function.
+                perturbation = self.H.imle_perturb_coef * torch.randn(
+                    (need_update.sum().item(), self.H.latent_dim),
+                    device=new_latents.device
+                )
+                new_latents.add_(perturbation)
+                
+                # Update temporary distances and latents.
+                self.selected_dists_tmp[update_indices] = distances_tensor[need_update].to(self.selected_dists_tmp.device)
+                self.selected_latents_tmp[update_indices] = new_latents
+            else:
+                print("No updates found in this iteration.")
 
-                t0 = time.time()
-                for ind, y in enumerate(DataLoader(TensorDataset(dataset[to_update]), batch_size=self.H.imle_batch)):
-                    _, target = self.preprocess_fn(y)
-                    batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + target.shape[0])
-                    indices = to_update[batch_slice]
-                    x = self.dataset_proj[indices]
-
-                    nearest_dist , nearest_indices = self.knn(torch.unsqueeze(self.pool_samples_proj[pool_slice],0), torch.unsqueeze(x,0))  # 32 x 50 x 10
-                    nearest_indices = torch.squeeze(nearest_indices, dim=[0,2]).cpu()
-                    nearest_dist = torch.squeeze(nearest_dist, dim=[0,2]).cpu()
-
-                    need_update = nearest_dist < self.selected_dists_tmp[indices]
-                    need_update = need_update.cpu()
-                    global_need_update = indices[need_update]
-
-                    self.selected_dists_tmp[global_need_update] = nearest_dist[need_update].clone()
-                    self.selected_latents_tmp[global_need_update] = pool_latents[nearest_indices[need_update]].clone() + self.H.imle_perturb_coef * torch.randn((need_update.sum(), self.H.latent_dim))
-
-                if i % 100 == 0:
-                    print("NN calculated for {} out of {} - {}".format((i + 1) * self.H.imle_db_size, self.pool_size, time.time() - t0))
-        
-
+        # After processing, update the selected and last-selected latents.
         self.last_selected_latents[to_update] = self.selected_latents[to_update]
         self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
 
-        print(f'Force resampling took {time.time() - t1}')
+        print(f"Force resampling took {time.time() - t1:.2f} seconds")
