@@ -19,6 +19,7 @@ fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
+# fewshot.dec_blocks = '1x4,2m1,2x2,4m2,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
 fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
@@ -89,6 +90,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--iters_per_images', type=int, default=1000)  # number of iterations per sample save
     parser.add_argument('--num_images_visualize', type=int, default=8)  # number of images to visualize
     parser.add_argument('--num_rows_visualize', type=int, default=3)  # number of rows to visualize, e.g. 3 means 3x8=24 images
+
+    parser.add_argument('--residual_ratio', type=float, default=1.0)
 
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices

@@ -66,13 +66,14 @@ def get_width_settings(width, s):
     return mapping
 
 class ConvNeXtBlock(nn.Module):
-    def __init__(self, dim, expansion=4, kernel_size=7):
+    def __init__(self, dim, H, expansion=4, kernel_size=7):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
         self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
         self.gelu = nn.GELU()
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+        self.residual_ratio = H.residual_ratio
     
     def forward(self, x):
         residual = x
@@ -88,7 +89,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
-        return x + residual  # Residual connection
+        return x + residual * self.residual_ratio
 
 
 class DecBlock(nn.Module):
@@ -104,7 +105,7 @@ class DecBlock(nn.Module):
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
-        self.resnet = ConvNeXtBlock(width, kernel_size=7)
+        self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
         # self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
