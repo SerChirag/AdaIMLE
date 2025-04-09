@@ -190,6 +190,7 @@ class Sampler:
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
             nm = latents.shape[0]
+            latents = latents.to('cuda')
             px_z = gen(latents, None).permute(0, 2, 3, 1)
             xhat = (px_z + 1.0) * 127.5
             xhat = xhat.detach().cpu().numpy()
@@ -273,7 +274,7 @@ class Sampler:
         for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
             _, target = self.preprocess_fn(x)
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
+            cur_latents = latents[batch_slice].to('cuda')
             with torch.no_grad():
                 out = gen(cur_latents, None)
                 if(logging):
@@ -314,69 +315,8 @@ class Sampler:
                     dist = self.calc_loss_l2(target.permute(0, 3, 1, 2), out)
                 dists[batch_slice] = torch.squeeze(dist)
         return dists
-
-    def imle_sample(self, dataset, gen, factor=None):
-        if factor is None:
-            factor = self.H.imle_factor
-        imle_pool_size = int(len(dataset) * factor)
-        t1 = time.time()
-        self.selected_dists_tmp[:] = self.selected_dists[:]
-        for i in range((imle_pool_size // self.H.imle_db_size)+1):
-            self.temp_latent_rnds.normal_()
-            for j in range(self.H.imle_db_size // self.H.imle_batch):
-                batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
-                cur_latents = self.temp_latent_rnds[batch_slice]
-                with torch.no_grad():
-                    self.temp_samples[batch_slice] = gen(cur_latents, None)
-                    if(self.H.search_type == 'lpips'):
-                        self.temp_samples_proj[batch_slice] = self.get_projected(self.temp_samples[batch_slice], False)
-                    elif(self.H.search_type == 'l2'):
-                        self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False)
-                    elif(self.H.search_type == 'vae'):
-                        self.temp_samples_proj[batch_slice] = self.get_vae_features(self.temp_samples[batch_slice], False)
-                    else:
-                        self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
-
-            if not gen.module.dci_db:
-                device_count = torch.cuda.device_count()
-
-                gen.module.dci_db = MDCI(self.temp_samples_proj.shape[1], num_comp_indices=self.H.num_comp_indices,
-                                            num_simp_indices=self.H.num_simp_indices, devices=[i for i in range(device_count)], ts=device_count)
-
-                # gen.module.dci_db = DCI(self.temp_samples_proj.shape[1], num_comp_indices=self.H.num_comp_indices,
-                                            # num_simp_indices=self.H.num_simp_indices)
-            gen.module.dci_db.add(self.temp_samples_proj)
-
-            t0 = time.time()
-            for ind, y in enumerate(DataLoader(dataset, batch_size=self.H.imle_batch)):
-                # t2 = time.time()
-                _, target = self.preprocess_fn(y)
-                x = self.dataset_proj[ind * self.H.imle_batch:ind * self.H.imle_batch + target.shape[0]]
-                cur_batch_data_flat = x.float()
-
-                nearest_indices, _ = gen.module.dci_db.query(cur_batch_data_flat, num_neighbours=1)
-                nearest_indices = nearest_indices.long()[:, 0]
-
-                batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x.size()[0])
-                actual_selected_dists = self.calc_loss(target.permute(0, 3, 1, 2),
-                                                       self.temp_samples[nearest_indices].cuda(), use_mean=False)
-                # actual_selected_dists = torch.squeeze(actual_selected_dists)
-
-                to_update = torch.nonzero(actual_selected_dists < self.selected_dists[batch_slice], as_tuple=False)
-                to_update = torch.squeeze(to_update)
-                self.selected_dists[ind * self.H.imle_batch + to_update] = actual_selected_dists[to_update].clone()
-                self.selected_latents[ind * self.H.imle_batch + to_update] = self.temp_latent_rnds[nearest_indices[to_update]].clone()
-
-                del cur_batch_data_flat
-
-        # adding perturbation
-        changed = torch.sum(self.selected_dists_tmp != self.selected_dists).item()
-        print("Samples and NN are calculated, time: {}, mean: {} # changed: {}, {}%".format(time.time() - t1,
-                                                                                            self.selected_dists.mean(),
-                                                                                            changed, (changed / len(
-                dataset)) * 100))
-           
-    def resample_pool(self, gen, ds):
+        
+    def resample_pool(self, gen):
         # self.init_projection(ds)
         self.pool_latents.normal_()
 
@@ -388,6 +328,7 @@ class Sampler:
             
             else:
                 cur_latents = self.pool_latents[batch_slice]
+                cur_latents = cur_latents.to('cuda')
 
             with torch.no_grad():
                 with torch.amp.autocast('cuda'):
@@ -410,18 +351,10 @@ class Sampler:
         - self.dataset_proj contains precomputed projections of your dataset.
         - All features are in float32.
         """
-        
-        # If no specific indices to update, use the entire dataset indices.
-        if to_update is None:
-            to_update = self.entire_ds
-        if to_update.shape[0] == 0:
-            return
 
-        # Ensure the indices are on CPU (they are only used for indexing here)
-        to_update = to_update.cpu()
 
         t1 = time.time()
-        self.resample_pool(gen, dataset)
+        self.resample_pool(gen)
         print(f"Resampling pool took {time.time() - t1:.2f} seconds")
 
         # Reset temporary distances (we assume selected_dists_tmp is a torch tensor)
@@ -433,7 +366,7 @@ class Sampler:
         with torch.no_grad():
             # Prepare the dataset features corresponding to the indices to update.
             # Make sure dataset_proj is float32.
-            ds_feats = self.dataset_proj[to_update].cpu().numpy().astype(np.float32)
+            ds_feats = self.dataset_proj.cpu().numpy().astype(np.float32)
             
             # Prepare the pool samples features.
             pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
@@ -452,16 +385,16 @@ class Sampler:
             distances, indices = index.search(ds_feats, 1)
             
             # Convert the results to torch tensors.
-            distances_tensor = torch.from_numpy(distances).squeeze(1)  # shape: [num_to_update]
-            indices_tensor   = torch.from_numpy(indices).squeeze(1)    # shape: [num_to_update]
+            distances_tensor = torch.from_numpy(distances).squeeze(1)  
+            indices_tensor   = torch.from_numpy(indices).squeeze(1)    
             
             # Get the current stored distances for these indices.
-            current_dists = self.selected_dists_tmp[to_update].cpu()
+            current_dists = self.selected_dists_tmp.cpu()
             
             # Determine which samples should be updated.
             need_update = distances_tensor < current_dists
             # Identify absolute indices in the full dataset:
-            update_indices = to_update[need_update]
+            update_indices = need_update
             
             if update_indices.numel() > 0:
                 # Use indices from FAISS to fetch corresponding latents from the pool.
@@ -482,7 +415,7 @@ class Sampler:
                 print("No updates found in this iteration.")
 
         # After processing, update the selected and last-selected latents.
-        self.last_selected_latents[to_update] = self.selected_latents[to_update]
-        self.selected_latents[to_update] = self.selected_latents_tmp[to_update]
+        self.last_selected_latents = self.selected_latents
+        self.selected_latents = self.selected_latents_tmp
 
         print(f"Force resampling took {time.time() - t1:.2f} seconds")

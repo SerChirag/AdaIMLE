@@ -106,7 +106,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         subset_len = len(data_train)
 
     sampler = Sampler(H, subset_len, preprocess_fn)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     last_updated = torch.zeros(subset_len, dtype=torch.int16)
     times_updated = torch.zeros(subset_len, dtype=torch.int8)
@@ -124,54 +124,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     while (epoch < H.num_epochs):
         
         epoch += 1
-        last_updated[:] = last_updated + 1
+       
+        if epoch % H.imle_force_resample == 0:
+            sampler.imle_sample_force(split_x_tensor, imle)
 
-        updated_too_much = last_updated >= H.imle_force_resample
-            
-        # all_conditions = torch.logical_or(in_threshold, updated_too_much)
-        to_update = torch.nonzero(updated_too_much, as_tuple=False).squeeze(1)
-
-        if (epoch == starting_epoch):
-            if os.path.isfile(str(H.restore_latent_path)):
-                latents = torch.load(H.restore_latent_path)
-                sampler.selected_latents[:] = latents[:]
-                for x in DataLoader(split_x, batch_size=H.num_images_visualize, pin_memory=True):
-                    break
-                batch_slice = slice(0, x[0].size()[0])
-                latents = sampler.selected_latents[batch_slice]
-                with torch.no_grad():
-                    generate_for_NN(sampler, x[0], latents, viz_batch_original.shape, imle,
-                        f'{H.save_dir}/NN-samples_{epoch}-{split_ind}-imle.png', logprint)
-                print('loaded latest latents')
-
-            if os.path.isfile(str(H.restore_latent_path)):
-                threshold = torch.load(H.restore_threshold_path)
-                change_thresholds[:] = threshold[:]
-                print('loaded thresholds', torch.mean(change_thresholds))
-            else:
-                to_update = sampler.entire_ds
-
-
-        change_thresholds[to_update] = sampler.selected_dists[to_update].clone() * (1 - H.change_coef)
-
-        sampler.imle_sample_force(split_x_tensor, imle, to_update)
-
-        # if (to_update.shape[0] > 0):
-        #     print("Saving latents")
-        #     save_latents_latest(H, split_ind, sampler.selected_latents, name=str(epoch))
-
-
-        to_update = to_update.cpu()
-        last_updated[to_update] = 0
-        times_updated[to_update] = times_updated[to_update] + 1
-
-        save_latents_latest(H, split_ind, sampler.selected_latents)
-        save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
-
-        if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
-            latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
+        if (epoch % 5 == 0):
+            latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
-                generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
+                generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
@@ -206,11 +166,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, H)
-                save_latents_latest(H, split_ind, sampler.selected_latents)
 
             if iterate % H.iters_per_ckpt == 0:
                 save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
-                save_latents(H, iterate, split_ind, sampler.selected_latents)
 
         print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
@@ -226,8 +184,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                                                             dists_lpips=cur_dists_lpips,
                                                                                             dists_l2=cur_dists_l2, 
                                                                                             logging=True)
-
-            # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
                     
             metrics = {
                 'mean_loss': torch.mean(cur_dists).item(),
@@ -246,12 +202,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'total_excluded_percentage': sampler.total_excluded_percentage,
             }
             
-            if (to_update.shape[0] != 0):
-                metrics['mean_loss_resample'] = torch.mean(cur_dists).item()
-                metrics['std_loss_resample'] = torch.std(cur_dists).item()
-                metrics['max_loss_resample'] = torch.max(cur_dists).item()
-                metrics['min_loss_resample'] = torch.min(cur_dists).item()
-
             logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
