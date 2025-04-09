@@ -89,7 +89,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
-        return x + residual * self.residual_ratio
+        return x * self.residual_ratio + residual
 
 
 class DecBlock(nn.Module):
@@ -116,8 +116,6 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
-
-
 
 
 class Decoder(nn.Module):
