@@ -4,7 +4,7 @@ import time
 from comet_ml import Experiment, ExistingExperiment
 import imageio
 import torch
-import wandb
+from torch.utils.data.distributed import DistributedSampler
 import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
@@ -31,6 +31,22 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
+import torch.distributed as dist
+
+import os
+import torch.distributed as dist
+
+def init_distributed():
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+        print(f"Initializing process group: rank {rank}/{world_size} on GPU {local_rank}")
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+    else:
+        print("Not running in distributed mode.")
 
 
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
@@ -85,7 +101,8 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
         update_ema(imle, ema_imle, H.ema_rate)
 
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment = None):
+
+def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
     subset_len = len(data_train)
     if H.subset_len != -1:
         subset_len = H.subset_len
@@ -94,16 +111,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         break
 
     optimizer, scheduler, _, iterate, starting_epoch = load_opt(H, imle, logprint)
-
     print("Starting epoch: ", starting_epoch)
     print("Starting iteration: ", iterate)
 
     stats = []
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    subset_len = H.subset_len
-    if subset_len == -1:
-        subset_len = len(data_train)
+    subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
 
     sampler = Sampler(H, subset_len, preprocess_fn)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -122,9 +136,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
     while (epoch < H.num_epochs):
-        
         epoch += 1
-       
+
+        # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             sampler.imle_sample_force(split_x_tensor, imle)
 
@@ -135,56 +149,60 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
 
-    
+        # Create a dataset that pairs images with their current latents.
         comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
-        data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, pin_memory=True, shuffle=True, num_workers=4, persistent_workers=True)
+
+        # Use a DistributedSampler if in distributed training.
+        if torch.distributed.is_initialized():
+            train_sampler = DistributedSampler(comb_dataset, shuffle=True)
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
+                                     pin_memory=True, num_workers=4, persistent_workers=True)
+        else:
+            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True,
+                                     pin_memory=True, num_workers=4, persistent_workers=True)
+
+        # If using distributed sampler, set the epoch for shuffling
+        if torch.distributed.is_initialized():
+            train_sampler.set_epoch(epoch)
 
         start_time = time.time()
 
+        # Main training loop.
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
             _, target = preprocess_fn(x)
-
             target = target.to(device)
             latents = latents.to(device)
-            
-            training_step_imle(H, target.shape[0], target, latents, imle, ema_imle, optimizer, sampler.calc_loss, sampler.scaler)
 
+            training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
+                               optimizer, sampler.calc_loss, sampler.scaler)
             scheduler.step()
 
-            if iterate % H.iters_per_images == 0:
-                with torch.no_grad():
-                    generate_images_initial(H, sampler, viz_batch_original,
-                                            sampler.selected_latents[0: H.num_images_visualize],
-                                            sampler.last_selected_latents[0: H.num_images_visualize],
-                                            viz_batch_original.shape, imle, ema_imle,
-                                            f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
-
+            # Save or log only on rank 0.
+            # if iterate % H.iters_per_images == 0:
+            #     with torch.no_grad():
+            #         generate_images_initial(H, sampler, viz_batch_original,
+            #                                 sampler.selected_latents[0: H.num_images_visualize],
+            #                                 sampler.last_selected_latents[0: H.num_images_visualize],
+            #                                 viz_batch_original.shape, imle, ema_imle,
+            #                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
             iterate += 1
-            if iterate % H.iters_per_save == 0:
+            if iterate % H.iters_per_save == 0 and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, H)
-
-            if iterate % H.iters_per_ckpt == 0:
+            if iterate % H.iters_per_ckpt == 0 and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
                 save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
 
         print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
         if epoch % 5 == 0:
-            
             cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
             cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
             cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-
-
-            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
-                                                                                            dists=cur_dists,  
-                                                                                            dists_lpips=cur_dists_lpips,
-                                                                                            dists_l2=cur_dists_l2, 
-                                                                                            logging=True)
-                    
+            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(
+                split_x_tensor, imle, dists=cur_dists, dists_lpips=cur_dists_lpips, dists_l2=cur_dists_l2, logging=True)
             metrics = {
                 'mean_loss': torch.mean(cur_dists).item(),
                 'std_loss': torch.std(cur_dists).item(),
@@ -201,30 +219,23 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 'total_excluded': sampler.total_excluded,
                 'total_excluded_percentage': sampler.total_excluded_percentage,
             }
-            
             logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
-        if (epoch > 0 and epoch % H.fid_freq == 0):
-            print("Learning rate: ", optimizer.param_groups[0]['lr'])
-            generate_and_save(H, imle, sampler, min(5000,subset_len * H.fid_factor))
-            print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-            cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
-            if cur_fid < best_fid:
-                best_fid = cur_fid
-                # save models
-                fp = os.path.join(H.save_dir, 'best_fid')
-                logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                save_model(fp, imle, ema_imle, optimizer, scheduler, H)
-            
-            precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+        # Periodically compute FID and update model checkpoints (only from rank 0).
+        # if (epoch > 0 and epoch % H.fid_freq == 0):
+        #     print("Learning rate: ", optimizer.param_groups[0]['lr'])
+        #     generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+        #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+        #     if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+        #         best_fid = cur_fid
+        #         fp = os.path.join(H.save_dir, 'best_fid')
+        #         logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+        #         save_model(fp, imle, ema_imle, optimizer, scheduler, H)
 
-            metrics['fid'] = cur_fid
-            metrics['best_fid'] = best_fid
-            metrics['precision'] = precision
-            metrics['recall'] = recall
-            
+        #     precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+        #     metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
 
-        if epoch % 50 == 0:
+        if epoch % 50 == 0 and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
             with torch.no_grad():
                 generate_images_initial(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
@@ -232,12 +243,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                         viz_batch_original.shape, imle, ema_imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
 
-
-        if H.use_wandb:
-            wandb.log(metrics, step=iterate)
-        
-        if epoch % 5 == 0 and experiment is not None:
+        if epoch % 5 == 0 and experiment is not None and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
+
+
 
 def main(H=None):
     H_cur, logprint = set_up_hyperparams()
@@ -265,14 +274,6 @@ def main(H=None):
             experiment.log_parameters(H)
     else:
         experiment = None
-
-    if H.use_wandb:
-        wandb.init(
-            name=H.wandb_name,
-            project=H.wandb_project,
-            config=H,
-            mode=H.wandb_mode,
-        )
 
     os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
     
@@ -347,22 +348,13 @@ def main(H=None):
 
     elif H.mode == 'train':
         print(H)
+        init_distributed()  # Initialize the process group early.
+        if dist.is_initialized():
+            imle = torch.nn.parallel.DistributedDataParallel(
+                imle, device_ids=[torch.cuda.current_device()], output_device=torch.cuda.current_device()
+            )
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
-    elif H.mode == 'ppl':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        sampler = Sampler(H, subset_len, preprocess_fn)
-        calc_ppl(H, imle, sampler)
-
-    elif H.mode == 'ppl_uniform':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        sampler = Sampler(H, subset_len, preprocess_fn)
-        calc_ppl_uniform(H, imle, sampler)
-    
     elif H.mode == 'interpolate':
         subset_len = H.subset_len
         if subset_len == -1:
@@ -388,54 +380,6 @@ def main(H=None):
             sampler = Sampler(H, subset_len, preprocess_fn)
             generate_video(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/slerp.mp4', logprint)
 
-    elif H.mode == 'spatial_visual':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=H.subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            for i in range(H.num_images_to_generate):
-                print(H.num_images_to_generate, i)
-                spatial_vissual(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp-{i}.png', logprint)
-
-    elif H.mode == 'generate_rnd':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=H.subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            generate_rnd(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/rnd.png', logprint)
-
-    elif H.mode == 'generate_rnd_nn':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=len(data_train)):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            generate_rnd_nn(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}', logprint, preprocess_fn)
-
-    elif H.mode == 'nn_interp':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=len(data_train)):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            nn_interp(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}', logprint, preprocess_fn)
-
-    elif H.mode == 'generate_sample_nn':
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=len(data_train)):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, H.subset_len, preprocess_fn)
-            generate_sample_nn(H, split_x,  sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/rnd2.png', logprint, preprocess_fn)
-
-    elif H.mode == 'backtrack_interpolate':
         subset_len = H.subset_len
         if subset_len == -1:
             subset_len = len(data_train)

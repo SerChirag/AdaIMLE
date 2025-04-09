@@ -317,29 +317,30 @@ class Sampler:
         return dists
         
     def resample_pool(self, gen):
-        # self.init_projection(ds)
         self.pool_latents.normal_()
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
 
-            if(self.H.use_angular_resample):
-                cur_latents = self.sample_angle(self.pool_latents[batch_slice])
-            
-            else:
-                cur_latents = self.pool_latents[batch_slice]
-                cur_latents = cur_latents.to('cuda')
+            cur_latents = self.pool_latents[batch_slice].to(torch.cuda.current_device())
 
             with torch.no_grad():
-                with torch.amp.autocast('cuda'):
-                    if(self.H.search_type == 'lpips'):
-                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
-                    elif(self.H.search_type == 'l2'):
-                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
-                    elif(self.H.search_type == 'vae'):
-                        self.pool_samples_proj[batch_slice] = self.get_vae_features(gen(cur_latents, None), False)
+                with torch.amp.autocast(device_type="cuda"):
+                    outputs = gen(cur_latents, None)
+                    if self.H.search_type == 'lpips':
+                        proj = self.get_projected(outputs, False)
+                    elif self.H.search_type == 'l2':
+                        proj = self.get_l2_feature(outputs, False)
+                    elif self.H.search_type == 'vae':
+                        proj = self.get_vae_features(outputs, False)
                     else:
-                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
+                        proj = self.get_combined_feature(outputs, False)
+                    self.pool_samples_proj[batch_slice] = proj
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         """
