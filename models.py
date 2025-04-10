@@ -109,7 +109,7 @@ class DecBlock(nn.Module):
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
-        self.resnet.pw_conv2.weight.data *= np.sqrt(1 / n_blocks)
+        # self.resnet.pw_conv2.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
