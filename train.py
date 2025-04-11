@@ -9,6 +9,7 @@ import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
+from models import IMLE
 
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
@@ -32,6 +33,7 @@ from visual.utils import (generate_and_save, generate_for_NN,
 from helpers.improved_precision_recall import compute_prec_recall
 from torch.cuda.amp import autocast
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 import os
 import torch.distributed as dist
@@ -253,7 +255,7 @@ def main(H=None):
     if not H:
         H = H_cur
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
-    imle, ema_imle = load_imle(H, logprint)
+    # imle, ema_imle = load_imle(H, logprint)
 
     if H.use_comet and H.comet_api_key:
         if(H.comet_experiment_key):
@@ -276,144 +278,27 @@ def main(H=None):
         experiment = None
 
     os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
-    
-
-    if H.mode == 'eval':
-        
-        os.makedirs(f'{H.save_dir}/eval', exist_ok=True)
-        print(H)
-
-        with torch.no_grad():
-            # Generating
-            sampler = Sampler(H, len(data_train), preprocess_fn)
-            n_samp = H.n_batch
-            temp_latent_rnds = torch.randn([n_samp, H.latent_dim], dtype=torch.float32).cuda()
-            for i in range(0, H.num_images_to_generate // n_samp):
-                if (i % 10 == 0):
-                    print(i * n_samp)
-                temp_latent_rnds.normal_()
-                tmp_snoise = [s[:n_samp].normal_() for s in sampler.snoise_tmp]
-                torch.save(temp_latent_rnds, f'{H.save_dir}/eval/temp_latent_rnds_{i}.pt')
-                torch.save(tmp_snoise, f'{H.save_dir}/eval/tmp_snoise_{i}.pt')
-                samp = sampler.sample(temp_latent_rnds, imle, tmp_snoise)
-                for j in range(n_samp):
-                    imageio.imwrite(f'{H.save_dir}/eval/{i * n_samp + j}.png', samp[j])
-
-    elif H.mode == 'eval_fid':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        sampler = Sampler(H, len(data_train), preprocess_fn)
-        # generate_and_save(H, imle, sampler, 5000)
-
-        generate_and_save(H, imle, sampler, 5000)
-        print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-        cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
-        print("FID: ", cur_fid)
 
 
-    elif H.mode == 'reconstruct':
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        ind = 0
-        for split_ind, split_x_tensor in enumerate(DataLoader(data_train, batch_size=H.subset_len, pin_memory=True)):
-            if (ind == 14):
-                break
-            split_x = TensorDataset(split_x_tensor[0])
-            ind += 1
-            
-        for param in imle.parameters():
-            param.requires_grad = False
-        viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                H.num_images_visualize, H.dataset)
-        if os.path.isfile(str(H.restore_latent_path)):
-            latents = torch.tensor(torch.load(H.restore_latent_path), requires_grad=True)
-        else:
-            latents = torch.randn([viz_batch_original.shape[0], H.latent_dim], requires_grad=True)
-        sampler = Sampler(H, subset_len, preprocess_fn)
-        reconstruct(H, sampler, imle, preprocess_fn, viz_batch_original, latents, 'reconstruct', logprint, training_step_imle)
+        print(f"Initializing process group: rank {rank}/{world_size} on GPU {local_rank}")
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+    else:
+        print("Not running in distributed mode.")
 
-    elif H.mode == 'backtrack':
-        for param in imle.parameters():
-            param.requires_grad = False
-        for split_x in DataLoader(data_train, batch_size=H.subset_len):
-            split_x = split_x[0]
-            pass
-        print(f'split shape is {split_x.shape}')
-        sampler = Sampler(H, H.subset_len, preprocess_fn)
-        backtrack(H, sampler, imle, preprocess_fn, split_x, logprint, training_step_imle)
+    imle = IMLE(H)
+    device = torch.device(f"cuda:{local_rank}")
+    imle = imle.to(device)
 
+    # Wrap the model with DistributedDataParallel, providing the appropriate device_ids
+    imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
 
-    elif H.mode == 'train':
-        print(H)
-        init_distributed()  # Initialize the process group early.
-        if dist.is_initialized():
-            imle = torch.nn.parallel.DistributedDataParallel(
-                imle, device_ids=[torch.cuda.current_device()], output_device=torch.cuda.current_device()
-            )
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
-
-    elif H.mode == 'interpolate':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, subset_len, preprocess_fn)
-            for i in range(H.num_images_to_generate):
-                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp-{i}.png', logprint)
-    
-    elif H.mode == 'generate_video':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, subset_len, preprocess_fn)
-            generate_video(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/slerp.mp4', logprint)
-
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        with torch.no_grad():
-            for split_x in DataLoader(data_train, batch_size=subset_len):
-                split_x = split_x[0]
-            viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn,
-                                                                    H.num_images_visualize, H.dataset)
-            sampler = Sampler(H, subset_len, preprocess_fn)
-            latents = torch.tensor(torch.load(f'{H.restore_latent_path}'), requires_grad=True, dtype=torch.float32, device='cuda')
-            for i in range(latents.shape[0] - 1):
-                lat0 = latents[i:i+1]
-                lat1 = latents[i+1:i+2]
-                sn1 = None
-                sn2 = None
-                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/back-interp-{i}.png', logprint, lat0, lat1, sn1, sn2)
-
-    elif H.mode == 'prec_rec':
-        
-        os.makedirs(f'{H.save_dir}/prec_rec', exist_ok=True)
-
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        sampler = Sampler(H, len(data_train), preprocess_fn)
-        # generate_and_save(H, imle, sampler, 5000)
-
-        print("Generating images")
-        generate_and_save(H, imle, sampler, 1000, subdir='prec_rec')
-        print(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
-        precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/prec_rec/')
-        print("Precision: ", precision)
-        print("Recall: ", recall)
-
+    train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, None, logprint, experiment)
 
 if __name__ == "__main__":
     main()

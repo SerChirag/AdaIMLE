@@ -8,18 +8,18 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from LPNet import LPNet
-from torch.optim import AdamW
-from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
-from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
 import faiss
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.scaler = torch.amp.GradScaler("cuda")
+        
+        self.device = torch.device("cuda", torch.cuda.current_device())
+
+        self.scaler = torch.amp.GradScaler(self.device)
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
@@ -51,17 +51,20 @@ class Sampler:
         self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
 
         self.projections = []
-        self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
+        self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
 
-        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
+        print(next(self.lpips_net.parameters()).device)
+
+        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
         self.vae.eval()
         self.vae.requires_grad_(False)
 
         self.l2_projection = None
 
-        self.knn = KNN(k=1, transpose_mode=True)
+        fake = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
 
-        fake = torch.zeros(1, 3, H.image_size, H.image_size, device='cuda')
+        print("Device: ", self.device)
+        torch.distributed.barrier()
 
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
