@@ -69,10 +69,12 @@ def set_up_data(H):
     else:
         eval_dataset = vaX
 
-    shift = torch.tensor([shift]).cuda().view(1, 1, 1, 1)
-    scale = torch.tensor([scale]).cuda().view(1, 1, 1, 1)
-    shift_loss = torch.tensor([shift_loss]).cuda().view(1, 1, 1, 1)
-    scale_loss = torch.tensor([scale_loss]).cuda().view(1, 1, 1, 1)
+    device = torch.device("cuda", torch.cuda.current_device())
+
+    shift = torch.tensor([shift], device=device).view(1, 1, 1, 1)
+    scale = torch.tensor([scale], device=device).view(1, 1, 1, 1)
+    shift_loss = torch.tensor([shift_loss], device=device).view(1, 1, 1, 1)
+    scale_loss = torch.tensor([scale_loss], device=device).view(1, 1, 1, 1)
 
     if H.dataset == 'ffhq_1024':
         train_data = ImageFolder(trX, transforms.ToTensor())

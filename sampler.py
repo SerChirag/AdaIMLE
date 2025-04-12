@@ -19,10 +19,12 @@ class Sampler:
         
         self.device = torch.device("cuda", torch.cuda.current_device())
 
-        self.scaler = torch.amp.GradScaler(self.device)
+        print("Sampler initialized on device:", self.device)
+
+        self.scaler = torch.amp.GradScaler()
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
-        self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
+        self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.entire_ds = torch.arange(sz)
@@ -53,8 +55,6 @@ class Sampler:
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
 
-        print(next(self.lpips_net.parameters()).device)
-
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
         self.vae.eval()
         self.vae.requires_grad_(False)
@@ -63,7 +63,6 @@ class Sampler:
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
 
-        print("Device: ", self.device)
         torch.distributed.barrier()
 
         if(H.search_type == 'lpips'):
@@ -76,50 +75,33 @@ class Sampler:
                 dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
                 dims.insert(0,H.proj_dim - sum(dims))
             for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device='cuda'), p=2, dim=1))
+                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
             sum_dims = sum(dims)
 
         elif(H.search_type == 'l2'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
+            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
             sum_dims = H.proj_dim
 
         elif(H.search_type == 'vae'):
             interpolated = self.vae.encode(fake).latents
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
+            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
             sum_dims = H.proj_dim
 
         else:
-            projection_dim = H.proj_dim // 2
-            dims = [int(projection_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (projection_dim / sm)) for feat_ind in range(len(out) - 1)]
-                dims.append(projection_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind]), p=2, dim=1).cuda())
-
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim // 2), p=2, dim=1).cuda()
-            sum_dims = H.proj_dim
+            exit()
 
         self.dci_dim = sum_dims
         print('dci_dim', self.dci_dim)
 
-        self.temp_samples_proj = torch.empty([self.H.imle_db_size, sum_dims], dtype=torch.float32, device='cuda')
-        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cuda')
-        self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device='cuda')
+        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device=self.device)
+        self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device=self.device)
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
-
-        self.angle_generator = Angle_Generator(self.H.latent_dim)
-        self.max_sample_angle_rad = H.max_sample_angle_rad
-        self.min_sample_angle_rad = H.min_sample_angle_rad
 
         self.total_excluded = 0
         self.total_excluded_percentage = 0
@@ -131,21 +113,21 @@ class Sampler:
             inp = inp.permute(0, 3, 1, 2)
         interpolated = self.vae.encode(inp).latents
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        return interpolated.cuda()
+        return interpolated
 
     def get_projected(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         
         interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out, _ = self.lpips_net(interpolated.cuda())
+        out, _ = self.lpips_net(interpolated.to(self.device))
         gen_feat = []
         for i in range(len(out)):
             gen_feat.append(torch.mm(out[i], self.projections[i]))
             # TODO divide?
         lpips_feat = torch.cat(gen_feat, dim=1)
         # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
-        return lpips_feat.cuda()
+        return lpips_feat
     
     def get_l2_feature(self, inp, permute=True):
         if(permute):
@@ -154,26 +136,7 @@ class Sampler:
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
         interpolated = torch.mm(interpolated, self.l2_projection)
         # interpolated = F.normalize(interpolated, p=2, dim=1)
-        return interpolated.cuda()
-    
-    def get_combined_feature(self, inp, permute=True):
-        lpips_feat = self.get_projected(inp, permute)
-        l2_feat = self.get_l2_feature(inp, permute)
-        return torch.cat([lpips_feat, l2_feat], dim=1)
-        # return torch.cat([lpips_feat, l2_feat], dim=1)
-        # if(permute):
-        #     inp = inp.permute(0, 3, 1, 2)
-
-        # out, _ = self.lpips_net(inp.cuda())
-        # gen_feat = []
-        # for i in range(len(out)):
-        #     gen_feat.append(torch.mm(out[i], self.projections[i]))
-        #     # TODO divide?
-        # gen_feat = torch.cat(gen_feat, dim=1)
-        # interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
-        # interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        # interpolated = torch.mm(interpolated, self.l2_projection)
-        # return gen_feat + interpolated.cuda()
+        return interpolated
 
     def init_projection(self, dataset):
         for proj_mat in self.projections:
@@ -193,7 +156,7 @@ class Sampler:
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
             nm = latents.shape[0]
-            latents = latents.to('cuda')
+            latents = latents.to(self.device)
             px_z = gen(latents, None).permute(0, 2, 3, 1)
             xhat = (px_z + 1.0) * 127.5
             xhat = xhat.detach().cpu().numpy()
@@ -277,7 +240,7 @@ class Sampler:
         for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
             _, target = self.preprocess_fn(x)
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice].to('cuda')
+            cur_latents = latents[batch_slice].to(self.device)
             with torch.no_grad():
                 out = gen(cur_latents, None)
                 if(logging):
@@ -328,7 +291,7 @@ class Sampler:
             cur_latents = self.pool_latents[batch_slice].to(torch.cuda.current_device())
 
             with torch.no_grad():
-                with torch.amp.autocast(device_type="cuda"):
+                with torch.cuda.amp.autocast(enabled=True):
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'lpips':
                         proj = self.get_projected(outputs, False)
@@ -360,6 +323,8 @@ class Sampler:
         t1 = time.time()
         self.resample_pool(gen)
         print(f"Resampling pool took {time.time() - t1:.2f} seconds")
+
+        
 
         # Reset temporary distances (we assume selected_dists_tmp is a torch tensor)
         self.selected_dists_tmp[:] = np.inf

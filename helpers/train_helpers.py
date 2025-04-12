@@ -149,11 +149,10 @@ def load_imle(H, logprint):
         ema_imle.load_state_dict(imle.state_dict())
     ema_imle.requires_grad_(False)
 
-    ema_imle = ema_imle.cuda()
+    ema_imle = ema_imle
 
-    imle = imle.cuda()
-    
-    # imle = torch.compile(imle)
+    imle = imle
+    imle = torch.compile(imle)
 
     if len(list(imle.named_parameters())) != len(list(imle.parameters())):
         raise ValueError('Some params are not named. Please name all params.')

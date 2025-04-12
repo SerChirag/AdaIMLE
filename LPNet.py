@@ -24,14 +24,13 @@ class RerangeLayer(nn.Module):
 
 
 class NetLinLayer(nn.Module):
-    ''' A single linear layer used as placeholder for LPIPS learnt weights '''
     def __init__(self):
         super(NetLinLayer, self).__init__()
-        self.weight = None
+        self.register_buffer('weight', None)
 
     def forward(self, inp):
-        out = self.weight * inp
-        return out
+        return self.weight * inp
+
 
 
 class ScalingLayer(nn.Module):
@@ -53,14 +52,18 @@ class LPNet(nn.Module):
         self.scaling_layer = ScalingLayer()
         self.net = vgg16(pretrained=True, requires_grad=False)
         self.L = 5
-        self.lins = [NetLinLayer() for _ in range(self.L)]
+        # Use ModuleList instead of a plain list
+        self.lins = nn.ModuleList([NetLinLayer() for _ in range(self.L)])
 
         model_path = os.path.abspath(
             os.path.join(path, 'weights/v%s/%s.pth' % (version, pnet_type)))
         print('Loading model from: %s' % model_path)
         weights = torch.load(model_path)
+        
         for i in range(self.L):
-            self.lins[i].weight = torch.sqrt(weights["lin%d.model.1.weight" % i])
+            weight_tensor = torch.sqrt(weights[f"lin{i}.model.1.weight"])
+            # Register the buffer for the weight in the corresponding module
+            self.lins[i].register_buffer("weight", weight_tensor)
 
     def forward(self, in0, avg=False):
         in0_input = in0.clip(-1, 1)
@@ -74,14 +77,16 @@ class LPNet(nn.Module):
             feats0[kk] = normalize_tensor(outs0[kk])
 
         if avg:
-            res = [self.lins[kk](feats0[kk]).mean([2,3],keepdim=False) for kk in range(self.L)]
+            res = [self.lins[kk](feats0[kk]).mean([2,3], keepdim=False) for kk in range(self.L)]
         else:
             for kk in range(self.L):
                 cur_res = self.lins[kk](feats0[kk])
                 shapes.append(cur_res.shape[-1])
                 res.append(cur_res.reshape(cur_res.shape[0], -1))
 
-        return res, shapes
+        # Convert shapes list to tensor
+        shapes_tensor = torch.tensor(shapes, device=in0.device)
+        return res, shapes_tensor
 
 
 class vgg16(torch.nn.Module):
