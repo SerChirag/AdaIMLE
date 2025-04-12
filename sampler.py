@@ -96,7 +96,7 @@ class Sampler:
         self.dci_dim = sum_dims
         print('dci_dim', self.dci_dim)
 
-        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device=self.device)
+        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
         self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device=self.device)
 
         self.knn_ignore = H.knn_ignore
@@ -139,19 +139,17 @@ class Sampler:
         return interpolated
 
     def init_projection(self, dataset):
-        for proj_mat in self.projections:
-            proj_mat[:] = F.normalize(torch.randn(proj_mat.shape), p=2, dim=1)
 
         for ind, x in enumerate(DataLoader(TensorDataset(dataset), batch_size=self.H.n_batch)):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
-                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1])
+                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'l2'):
-                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1])
+                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'vae'):
-                self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1])
+                self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
             else:
-                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1])
+                exit()
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():

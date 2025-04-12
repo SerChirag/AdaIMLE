@@ -16,7 +16,7 @@ from helpers.imle_helpers import backtrack, reconstruct
 from helpers.train_helpers import (load_imle, load_opt, save_latents,
                                    save_latents_latest, save_model,
                                    save_snoise, set_up_hyperparams, update_ema)
-from helpers.utils import ZippedDataset, get_cpu_stats_over_ranks
+from helpers.utils import ZippedDataset, is_main_process
 from metrics.ppl import calc_ppl
 from metrics.ppl_uniform import calc_ppl_uniform
 from sampler import Sampler
@@ -116,25 +116,29 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     print("Starting epoch: ", starting_epoch)
     print("Starting iteration: ", iterate)
 
-    stats = []
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
     subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
 
     sampler = Sampler(H, subset_len, preprocess_fn)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.distributed.barrier()
+    device = torch.device("cuda", torch.cuda.current_device())
 
-    last_updated = torch.zeros(subset_len, dtype=torch.int16)
-    times_updated = torch.zeros(subset_len, dtype=torch.int8)
-    change_thresholds = torch.empty(subset_len)
-    change_thresholds[:] = H.change_threshold
     best_fid = 100000
     epoch = starting_epoch - 1
 
-    split_ind = 0
-    split_x_tensor = data_train.tensors[0].pin_memory()
+    split_x_tensor = data_train.tensors[0]
     split_x = TensorDataset(split_x_tensor)
+
+    if(is_main_process()):
+        print("\n\nGenerating initial samples\n\n")
     sampler.init_projection(split_x_tensor)
+    
+    torch.distributed.barrier()
+
+    if(is_main_process()):
+        print("\n\nDone\n\n")
+
     viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
     while (epoch < H.num_epochs):
