@@ -72,8 +72,11 @@ class ConvNeXtBlock(nn.Module):
         self.norm = nn.LayerNorm(dim, eps=1e-3)
         self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
         self.gelu = nn.GELU()
+        self.sigmoid = nn.Sigmoid()
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
-        self.residual_ratio = H.residual_ratio
+
+        ## single parameter for residual ratio
+        self.residual_ratio = nn.Parameter(torch.zeros(1))
     
     def forward(self, x):
         residual = x
@@ -89,7 +92,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
-        return x + residual * self.residual_ratio
+        return x * self.sigmoid(self.residual_ratio) + residual
 
 
 class DecBlock(nn.Module):
@@ -106,7 +109,7 @@ class DecBlock(nn.Module):
         use_3x3 = res > 2
         cond_width = int(width * H.bottleneck_multiple)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
-        # self.resnet.c4.weight.data *= np.sqrt(1 / n_blocks)
+        # self.resnet.pw_conv2.weight.data *= np.sqrt(1 / n_blocks)
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
@@ -116,8 +119,6 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
-
-
 
 
 class Decoder(nn.Module):
