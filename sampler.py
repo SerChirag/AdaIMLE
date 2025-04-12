@@ -16,13 +16,15 @@ from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
 import faiss
+from accelerate import Accelerator
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
-        self.scaler = torch.amp.GradScaler("cuda")
+        self.accelerator = Accelerator(mixed_precision="fp16")
+
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
-        self.l2_loss = torch.nn.MSELoss(reduce=False).cuda()
+        self.l2_loss = torch.nn.MSELoss(reduce=False)
         self.H = H
         self.latent_lr = H.latent_lr
         self.entire_ds = torch.arange(sz)
@@ -38,10 +40,10 @@ class Sampler:
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
-        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32, device='cuda')
+        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32, device=self.accelerator.device)
         self.selected_dists_lpips[:] = np.inf
 
-        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32, device='cuda')
+        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32, device=self.accelerator.device)
         self.selected_dists_l2[:] = np.inf 
 
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
@@ -51,11 +53,12 @@ class Sampler:
         self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
 
         self.projections = []
-        self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
+        self.lpips_net = self.accelerator.prepare_model(LPNet(pnet_type=H.lpips_net, path=H.lpips_path))
+        
 
-        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
-        self.vae.eval()
-        self.vae.requires_grad_(False)
+        # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
+        # self.vae.eval()
+        # self.vae.requires_grad_(False)
 
         self.l2_projection = None
 
@@ -316,30 +319,77 @@ class Sampler:
                 dists[batch_slice] = torch.squeeze(dist)
         return dists
         
+
+
     def resample_pool(self, gen):
-        # self.init_projection(ds)
+        rank = self.accelerator.process_index
+        world_size = self.accelerator.num_processes
+
+        # Step 1: Init latent pool only on rank 0 (optional)
         self.pool_latents.normal_()
+        total_pool = self.pool_latents.shape[0]
 
-        for j in range(self.pool_size // self.H.imle_batch):
-            batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
+        # Step 2: Slice the pool for this rank
+        local_size = (total_pool + world_size - 1) // world_size
+        start = rank * local_size
+        end = min((rank + 1) * local_size, total_pool)
+        batch_slice = slice(start, end)
 
-            if(self.H.use_angular_resample):
-                cur_latents = self.sample_angle(self.pool_latents[batch_slice])
-            
-            else:
-                cur_latents = self.pool_latents[batch_slice]
-                cur_latents = cur_latents.to('cuda')
+        cur_latents = self.pool_latents[batch_slice].to(self.accelerator.device)
 
+        # Step 3: Create local DataLoader
+        dataloader = DataLoader(TensorDataset(cur_latents), batch_size=self.H.imle_batch, shuffle=False)
+        dataloader = self.accelerator.prepare_data_loader(dataloader)
+
+        local_proj = []
+
+        for batch in dataloader:
             with torch.no_grad():
-                with torch.amp.autocast('cuda'):
-                    if(self.H.search_type == 'lpips'):
-                        self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
-                    elif(self.H.search_type == 'l2'):
-                        self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
-                    elif(self.H.search_type == 'vae'):
-                        self.pool_samples_proj[batch_slice] = self.get_vae_features(gen(cur_latents, None), False)
-                    else:
-                        self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
+                latents = batch[0].to(self.accelerator.device)
+                if self.H.search_type == 'lpips':
+                    feat = self.get_projected(gen(latents, None), False)
+                elif self.H.search_type == 'l2':
+                    feat = self.get_l2_feature(gen(latents, None), False)
+                elif self.H.search_type == 'vae':
+                    feat = self.get_vae_features(gen(latents, None), False)
+                else:
+                    feat = self.get_combined_feature(gen(latents, None), False)
+
+                local_proj.append(feat.cpu())
+
+        local_proj = torch.cat(local_proj, dim=0)
+
+        # Step 4: Gather from all processes
+        gathered_proj = [torch.zeros_like(local_proj) for _ in range(world_size)]
+        dist.all_gather(gathered_proj, local_proj.contiguous().to(self.accelerator.device))
+
+        # Step 5: Merge into global pool on all processes
+        self.pool_samples_proj = torch.cat(gathered_proj, dim=0)[:total_pool].to(self.accelerator.device)
+
+        if dist.is_initialized():
+            dist.barrier()
+
+
+        # for j in range(self.pool_size // self.H.imle_batch):
+        #     batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
+
+        #     if(self.H.use_angular_resample):
+        #         cur_latents = self.sample_angle(self.pool_latents[batch_slice])
+            
+        #     else:
+        #         cur_latents = self.pool_latents[batch_slice]
+        #         cur_latents = cur_latents.to('cuda')
+
+        #     with torch.no_grad():
+        #         with torch.amp.autocast('cuda'):
+        #             if(self.H.search_type == 'lpips'):
+        #                 self.pool_samples_proj[batch_slice] = self.get_projected(gen(cur_latents, None), False)
+        #             elif(self.H.search_type == 'l2'):
+        #                 self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
+        #             elif(self.H.search_type == 'vae'):
+        #                 self.pool_samples_proj[batch_slice] = self.get_vae_features(gen(cur_latents, None), False)
+        #             else:
+        #                 self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         """
