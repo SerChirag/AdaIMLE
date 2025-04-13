@@ -46,9 +46,6 @@ def parse_args_and_update_hparams(H, parser, s=None):
     except:
         pass
 
-    print(H)
-
-
 def add_imle_arguments(parser):
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--save_dir', type=str, default='./saved_models')
@@ -93,6 +90,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--residual_ratio', type=float, default=1.0)
 
+    parser.add_argument('--accumulation_steps', type=int, default=2)  # accumulation steps
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices
     parser.add_argument('--imle_db_size', type=int, default=1024)  # imle database size
@@ -115,7 +113,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--latent_decay', type=float, default=0.0)  # learning rate decay for optimizing latent codes -- not used
     parser.add_argument('--latent_epoch', type=int, default=0)  # number of epochs for optimizing latent codes -- not used
     parser.add_argument('--reconstruct_iter_num', type=int, default=100000)  # number of iterations for reconstructing images using backtracking
-    parser.add_argument('--imle_force_resample', type=int, default=30)  # number of iterations to wait before ignoringthe threshold and resample anyway
+    parser.add_argument('--imle_force_resample', type=int, default=5)  # number of iterations to wait before ignoringthe threshold and resample anyway
     parser.add_argument('--snoise_factor', type=int, default=8)  # spatial noise factor
     parser.add_argument('--max_hierarchy', type=int, default=256)  # maximum hierarchy level for spatial noise, i.e., 64 means up to 64x64 spatial noise but not higher resolution
     parser.add_argument('--load_strict', type=int, default=1)  # whether to load checkpoints strict
@@ -141,7 +139,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
-    parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
+    parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
     parser.add_argument('--use_angular_resample', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--use_eps_ignore', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise

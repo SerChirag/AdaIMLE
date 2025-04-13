@@ -10,7 +10,7 @@ from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from models import IMLE
-
+import copy
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
 from helpers.train_helpers import (load_imle, load_opt, save_latents,
@@ -20,13 +20,6 @@ from helpers.utils import ZippedDataset, is_main_process
 from metrics.ppl import calc_ppl
 from metrics.ppl_uniform import calc_ppl_uniform
 from sampler import Sampler
-from visual.generate_rnd import generate_rnd
-from visual.generate_rnd_nn import generate_rnd_nn
-from visual.generate_sample_nn import generate_sample_nn
-from visual.generate_video import generate_video
-from visual.interpolate import random_interp
-from visual.nn_interplate import nn_interp
-from visual.spatial_visual import spatial_vissual
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_images_initial,
                           get_sample_for_visualization)
@@ -52,18 +45,13 @@ def init_distributed():
 
 
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
-    t0 = time.time()
-    imle.zero_grad()
-
-    cur_batch_latents = latents
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-
     with autocast(device_type='cuda', dtype=torch.float16):
 
-        px_z = imle(cur_batch_latents)
-        loss_256 = loss_fn(px_z, targets.permute(0, 3, 1, 2))
-        loss = loss_256
+        px_z = imle(latents)
+        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_measure = loss.clone()
         num_resolutions = 1
 
         if(H.use_multi_res):
@@ -81,7 +69,10 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
             loss_32 = loss_fn(px_z_32, targets_32)
             loss_64 = loss_fn(px_z_64, targets_64)
             loss_128 = loss_fn(px_z_128, targets_128)
-            loss += loss_16 + loss_32 + loss_64 + loss_128
+            loss.add_(loss_16)
+            loss.add_(loss_32)
+            loss.add_(loss_64)
+            loss.add_(loss_128)
             num_resolutions = 5
 
             for scale in H['multi_res_scales']:
@@ -91,15 +82,17 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                     loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
                 else:
                     loss_scale = loss_fn(px_z_scale, targets_scale)
-                loss += loss_scale
+                loss.add_(loss_scale)
                 num_resolutions += 1
 
     loss = loss / num_resolutions
+    loss = loss / H.accumulation_steps
     
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()  
 
+    return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
     subset_len = len(data_train)
@@ -169,6 +162,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         torch.distributed.barrier()
         # Main training loop.
+
+        epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
+        epoch_iter_count = 0
+        accum_counter = 0
+
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
@@ -176,9 +174,23 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             target = target.to(device)
             latents = latents.to(device)
 
-            training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
+            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
                                optimizer, sampler.calc_loss, sampler.scaler)
-            scheduler.step()
+            
+            epoch_loss_sum += loss.item()
+            epoch_iter_count += 1
+            iterate += 1
+
+            accum_counter += 1
+
+            # When we have accumulated enough mini-batches, perform the step.
+            if accum_counter % H.accumulation_steps == 0:
+                sampler.scaler.step(optimizer)
+                sampler.scaler.update()
+                imle.zero_grad()
+                scheduler.step()
+                update_ema(ema_imle, imle.module, H.ema_rate)
+
             
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
@@ -188,39 +200,35 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 sampler.last_selected_latents[0: H.num_images_visualize],
                                                 viz_batch_original.shape, imle, ema_imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
-            iterate += 1
             if iterate % H.iters_per_save == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, H)
                 save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
+        
+        if accum_counter % H.accumulation_steps != 0:
+            sampler.scaler.step(optimizer)
+            sampler.scaler.update()
+            imle.zero_grad()
+            scheduler.step()
+            update_ema(ema_imle, imle.module, H.ema_rate)
+        
+        epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
+        dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
+        total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
+        dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
+
+        mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
+
 
         if(is_main_process()):
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
-        # if epoch % 5 == 0:
-        #     cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(
-        #         split_x_tensor, imle, dists=cur_dists, dists_lpips=cur_dists_lpips, dists_l2=cur_dists_l2, logging=True)
-        #     metrics = {
-        #         'mean_loss': torch.mean(cur_dists).item(),
-        #         'std_loss': torch.std(cur_dists).item(),
-        #         'max_loss': torch.max(cur_dists).item(),
-        #         'min_loss': torch.min(cur_dists).item(),
-        #         'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-        #         'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-        #         'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-        #         'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-        #         'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-        #         'std_loss_l2': torch.std(cur_dists_l2).item(),
-        #         'max_loss_l2': torch.max(cur_dists_l2).item(),
-        #         'min_loss_l2': torch.min(cur_dists_l2).item(),
-        #         'total_excluded': sampler.total_excluded,
-        #         'total_excluded_percentage': sampler.total_excluded_percentage,
-        #     }
-        #     logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+            if epoch % 5 == 0:
+                metrics = {
+                    'mean_loss': mean_loss,
+                }
+                logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
         # Periodically compute FID and update model checkpoints (only from rank 0).
         # if (epoch > 0 and epoch % H.fid_freq == 0):
@@ -294,6 +302,9 @@ def main(H=None):
 
     torch.distributed.barrier()
 
+    if(is_main_process()):
+        logprint('training model', H.desc, 'on', H.dataset)
+
     imle = IMLE(H)
     device = torch.device(f"cuda:{local_rank}")
     imle = imle.to(device)
@@ -301,8 +312,16 @@ def main(H=None):
 
     # Wrap the model with DistributedDataParallel, providing the appropriate device_ids
     imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
-    
-    train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, None, logprint, experiment)
+
+    ema_imle = IMLE(H)  # Create a new instance of your model architecture.
+    ema_imle = ema_imle.to(device)  # Move to the correct device.
+    ema_imle = torch.compile(ema_imle)
+
+    ema_imle.load_state_dict(imle.module.state_dict())  # Copy weights.
+    ema_imle.require_grad = False  # Disable gradients for EMA model.
+    ema_imle.eval()
+
+    train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
 if __name__ == "__main__":
     main()

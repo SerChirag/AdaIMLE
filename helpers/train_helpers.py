@@ -17,6 +17,7 @@ from torch.optim import AdamW
 from models import IMLE
 from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, SequentialLR
+import random
 
 
 def update_ema(imle, ema_imle, ema_rate):
@@ -101,12 +102,10 @@ def set_up_hyperparams(s=None):
     parse_args_and_update_hparams(H, parser, s=s)
     setup_save_dirs(H)
     logprint = logger(H.logdir)
-    for i, k in enumerate(sorted(H)):
-        logprint(type='hparam', key=k, value=H[k])
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
     torch.cuda.manual_seed(H.seed)
-    logprint('training model', H.desc, 'on', H.dataset)
+    random.seed(H.seed)
     return H, logprint
 
 

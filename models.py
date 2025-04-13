@@ -119,7 +119,6 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.dci_db = None
         self.decoder = Decoder(H)
 
     def forward(self, latents, input_is_w=False):
