@@ -57,7 +57,7 @@ class LPNet(nn.Module):
 
         model_path = os.path.abspath(
             os.path.join(path, 'weights/v%s/%s.pth' % (version, pnet_type)))
-        print('Loading model from: %s' % model_path)
+        # print('Loading model from: %s' % model_path)
         weights = torch.load(model_path)
         
         for i in range(self.L):

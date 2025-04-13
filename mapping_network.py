@@ -72,50 +72,12 @@ class MappingNetowrk(nn.Module):
 
         self.style = nn.Sequential(*layers)
 
-    def forward(
-        self,
-        input,
-        noise=None,
-        step=0,
-        alpha=-1,
-        mean_style=None,
-        style_weight=0,
-        mixing_range=(-1, -1),
-    ):
-        styles = []
-
-        # input = normalize_2nd_moment(input)
-
+    def forward(self, input, **kwargs):
         if type(input) not in (list, tuple):
             input = [input]
-
-        for i in input:
-            x = self.style(i)
-            styles.append(x)
-
-        # batch = input[0].shape[0]
-        #
-        # if noise is None:
-        #     noise = []
-        #
-        #     for i in range(step + 1):
-        #         size = 4 * 2 ** i
-        #         noise.append(torch.randn(batch, 1, size, size, device=input[0].device))
-
-        # if mean_style is not None:
-        #     styles_norm = []
-        #
-        #     for style in styles:
-        #         styles_norm.append(mean_style + style_weight * (style - mean_style))
-        #
-        #     styles = styles_norm
-
-        return styles
-
-    # def mean_style(self, input):
-    #     style = self.style(input).mean(0, keepdim=True)
-    #
-    #     return style
+        # Since input is now a single tensor in a list, compute only one style code.
+        x = self.style(input[0])
+        return x
 
 
 class AdaptiveInstanceNorm(nn.Module):
