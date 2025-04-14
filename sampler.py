@@ -166,26 +166,6 @@ class Sampler:
             xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
             return xhat
 
-    def sample_from_out(self, px_z):
-        with torch.no_grad():
-            px_z = px_z.permute(0, 2, 3, 1)
-            xhat = (px_z + 1.0) * 127.5
-            xhat = xhat.detach().cpu().numpy()
-            xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
-            return xhat
-    
-    def calc_loss_projected(self, inp, tar):
-        inp_feat = self.get_projected(inp,False)
-        tar_feat = self.get_projected(tar,False)
-        res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
-        return res
-    
-    def calc_loss_l2(self, inp, tar):
-        inp_feat = self.get_l2_feature(inp,False)
-        tar_feat = self.get_l2_feature(tar,False)
-        res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
-        return res
-
     def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
 
         if use_mean:       
@@ -224,67 +204,7 @@ class Sampler:
                 return loss, res.mean(), l2_loss
             else:
                 return loss
-
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
-        if dists is None:
-            dists = self.selected_dists
-        if dists_lpips is None:
-            dists_lpips = self.selected_dists_lpips
-        if dists_l2 is None:
-            dists_l2 = self.selected_dists_l2
-        if latents is None:
-            latents = self.selected_latents
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice].to(self.device)
-            with torch.no_grad():
-                out = gen(cur_latents, None)
-                if(logging):
-                    dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
-                    dists[batch_slice] = torch.squeeze(dist)
-                    dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
-                    dists_l2[batch_slice] = torch.squeeze(dist_l2)
-                else:
-                    dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                    dists[batch_slice] = torch.squeeze(dist)
-        
-        if(logging):
-            return dists, dists_lpips, dists_l2
-        else:
-            return dists
-    
-    def calc_dists_existing_nn(self, dataset_tensor, gen, dists=None, latents=None, to_update=None, snoise=None):
-        if dists is None:
-            dists = self.selected_dists
-        if latents is None:
-            latents = self.selected_latents
-
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
-            with torch.no_grad():
-                out = gen(cur_latents, None)
-                if(self.H.search_type == 'lpips'):
-                    dist = self.calc_loss_projected(target.permute(0, 3, 1, 2), out)
-                else:
-                    dist = self.calc_loss_l2(target.permute(0, 3, 1, 2), out)
-                dists[batch_slice] = torch.squeeze(dist)
-        return dists
-        
+      
     def resample_pool(self, gen):
        
         # Determine local pool size

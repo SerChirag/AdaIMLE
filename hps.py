@@ -90,7 +90,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--residual_ratio', type=float, default=1.0)
 
-    parser.add_argument('--accumulation_steps', type=int, default=2)  # accumulation steps
+    parser.add_argument('--accumulation_steps', type=int, default=1)  # accumulation steps
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices
     parser.add_argument('--imle_db_size', type=int, default=1024)  # imle database size
