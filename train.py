@@ -10,7 +10,7 @@ from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from models import IMLE
-import copy
+import numpy as np
 from data import set_up_data
 from helpers.imle_helpers import backtrack, reconstruct
 from helpers.train_helpers import (load_imle, load_opt, save_latents,
@@ -21,7 +21,7 @@ from metrics.ppl import calc_ppl
 from metrics.ppl_uniform import calc_ppl_uniform
 from sampler import Sampler
 from visual.utils import (generate_and_save, generate_for_NN,
-                          generate_images_initial,
+                          generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch import autocast
@@ -126,7 +126,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
 
+    latent_for_visualization = []
+
+    if(is_main_process()):
+        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).cuda()
+        
     while (epoch < H.num_epochs):
+
+        torch.distributed.barrier()
         epoch += 1
 
         # Update the IMLE force resampling every imle_force_resample epochs.
@@ -195,15 +202,19 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
                     with torch.no_grad():
-                        generate_images_initial(H, sampler, viz_batch_original,
+                        generate_visualization(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
                                                 sampler.last_selected_latents[0: H.num_images_visualize],
-                                                viz_batch_original.shape, imle, ema_imle,
+                                                latent_for_visualization,
+                                                viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
+                        
             if iterate % H.iters_per_save == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, H)
+            
+            if iterate % H.iters_per_ckpt == 0 and is_main_process():
                 save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
         
         if accum_counter % H.accumulation_steps != 0:
@@ -219,43 +230,43 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
+        metrics = {
+            'mean_loss': mean_loss,
+        }
 
+        if (epoch > 0 and epoch % H.fid_freq == 0):
+            generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+
+            torch.distributed.barrier()
+            if(is_main_process()):
+                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+                if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+                    best_fid = cur_fid
+                    fp = os.path.join(H.save_dir, 'best_fid')
+                    logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
+
+                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
 
         if(is_main_process()):
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
             if epoch % 5 == 0:
-                metrics = {
-                    'mean_loss': mean_loss,
-                }
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
-        # Periodically compute FID and update model checkpoints (only from rank 0).
-        # if (epoch > 0 and epoch % H.fid_freq == 0):
-        #     print("Learning rate: ", optimizer.param_groups[0]['lr'])
-        #     generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
-        #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
-        #     if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
-        #         best_fid = cur_fid
-        #         fp = os.path.join(H.save_dir, 'best_fid')
-        #         logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-        #         save_model(fp, imle, ema_imle, optimizer, scheduler, H)
-
-        #     precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-        #     metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
 
         if epoch % 50 == 0 and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
             with torch.no_grad():
-                generate_images_initial(H, sampler, viz_batch_original,
+                generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
                                         sampler.last_selected_latents[0: H.num_images_visualize],
-                                        viz_batch_original.shape, imle, ema_imle,
+                                        latent_for_visualization,
+                                        viz_batch_original.shape, imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
 
-        # if epoch % 5 == 0 and experiment is not None and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
-        #     experiment.log_metrics(metrics, epoch=epoch, step=iterate)
-
-
+        if (epoch % 5 == 0 and experiment is not None and is_main_process()):
+            experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
 def main(H=None):
     H_cur, logprint = set_up_hyperparams()
@@ -308,14 +319,14 @@ def main(H=None):
     imle = IMLE(H)
     device = torch.device(f"cuda:{local_rank}")
     imle = imle.to(device)
-    imle = torch.compile(imle)
+    # imle = torch.compile(imle)
 
     # Wrap the model with DistributedDataParallel, providing the appropriate device_ids
     imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
 
     ema_imle = IMLE(H)  # Create a new instance of your model architecture.
     ema_imle = ema_imle.to(device)  # Move to the correct device.
-    ema_imle = torch.compile(ema_imle)
+    # ema_imle = torch.compile(ema_imle)
 
     ema_imle.load_state_dict(imle.module.state_dict())  # Copy weights.
     ema_imle.require_grad = False  # Disable gradients for EMA model.

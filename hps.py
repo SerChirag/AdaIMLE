@@ -85,8 +85,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
     parser.add_argument('--iters_per_images', type=int, default=1000)  # number of iterations per sample save
-    parser.add_argument('--num_images_visualize', type=int, default=8)  # number of images to visualize
-    parser.add_argument('--num_rows_visualize', type=int, default=3)  # number of rows to visualize, e.g. 3 means 3x8=24 images
+    parser.add_argument('--num_images_visualize', type=int, default=10)  # number of images to visualize
+    parser.add_argument('--num_rows_visualize', type=int, default=9)  # number of rows to visualize, e.g. 3 means 3x8=24 images
 
     parser.add_argument('--residual_ratio', type=float, default=1.0)
 
