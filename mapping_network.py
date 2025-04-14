@@ -73,10 +73,9 @@ class MappingNetowrk(nn.Module):
         self.style = nn.Sequential(*layers)
 
     def forward(self, input, **kwargs):
-        if type(input) not in (list, tuple):
-            input = [input]
+        
         # Since input is now a single tensor in a list, compute only one style code.
-        x = self.style(input[0])
+        x = self.style(input)
         return x
 
 
