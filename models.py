@@ -79,7 +79,9 @@ class ConvNeXtBlock(nn.Module):
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
 
         ## single parameter for residual ratio
-        self.residual_ratio = nn.Parameter(torch.tensor([inverse_sigmoid(H.residual_ratio_init)]), requires_grad=True)
+        self.residual_ratio = nn.Parameter(
+            torch.tensor([inverse_sigmoid(H.residual_ratio_init)], dtype=self.dw_conv.weight.dtype),
+        )
     def forward(self, x):
         residual = x
         # Depthwise convolution with larger kernel
@@ -115,7 +117,7 @@ class DecBlock(nn.Module):
 
     def forward(self, x, w, spatial_noise):
         if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base // self.mixin, mode='bicubic')
+            x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
         if self.base <= self.H.max_hierarchy:
             x = self.noise(x, spatial_noise)
         x = self.adaIN(x, w)
