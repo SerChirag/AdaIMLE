@@ -65,6 +65,9 @@ def get_width_settings(width, s):
             mapping[int(k)] = int(v)
     return mapping
 
+def inverse_sigmoid(x):
+    return np.log(x / (1 - x ))
+
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7):
         super().__init__()
@@ -76,8 +79,7 @@ class ConvNeXtBlock(nn.Module):
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
 
         ## single parameter for residual ratio
-        self.residual_ratio = nn.Parameter(torch.zeros(1))
-    
+        self.residual_ratio = nn.Parameter(torch.tensor([inverse_sigmoid(H.residual_ratio_init)]), requires_grad=True)
     def forward(self, x):
         residual = x
         # Depthwise convolution with larger kernel

@@ -91,7 +91,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_visualize', type=int, default=8)  # number of images to visualize
     parser.add_argument('--num_rows_visualize', type=int, default=3)  # number of rows to visualize, e.g. 3 means 3x8=24 images
 
-    parser.add_argument('--residual_ratio', type=float, default=1.0)
+    parser.add_argument('--residual_ratio_init', type=float, default=0.2)
 
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices
