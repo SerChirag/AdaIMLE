@@ -43,6 +43,8 @@ def init_distributed():
     else:
         print("Not running in distributed mode.")
 
+def cleanup():
+    dist.destroy_process_group()
 
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
@@ -102,7 +104,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         data_train = TensorDataset(data_train[0])
         break
 
-    optimizer, scheduler, _, iterate, starting_epoch = load_opt(H, imle, logprint)
+    optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
     print("Starting epoch: ", starting_epoch)
     print("Starting iteration: ", iterate)
 
@@ -114,7 +116,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     torch.distributed.barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
-    best_fid = 100000
     epoch = starting_epoch - 1
 
     split_x_tensor = data_train.tensors[0]
@@ -182,7 +183,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latents = latents.to(device)
 
             loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, sampler.scaler)
+                               optimizer, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -192,8 +193,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             # When we have accumulated enough mini-batches, perform the step.
             if accum_counter % H.accumulation_steps == 0:
-                sampler.scaler.step(optimizer)
-                sampler.scaler.update()
+                scaler.step(optimizer)
+                scaler.update()
                 imle.zero_grad()
                 scheduler.step()
                 update_ema(ema_imle, imle.module, H.ema_rate)
@@ -211,15 +212,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                         
             if iterate % H.iters_per_save == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, 'latest')
-                logprint(f'Saving model@ {iterate} to {fp}')
-                save_model(fp, imle, ema_imle, optimizer, scheduler, H)
+                logprint(f'Saving latest model@ {iterate} to {fp}')
+                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+            torch.distributed.barrier()
+
             
             if iterate % H.iters_per_ckpt == 0 and is_main_process():
-                save_model(os.path.join(H.save_dir, f'iter-{iterate}'), imle, ema_imle, optimizer, scheduler, H)
+                fp = os.path.join(H.save_dir, f'iter-{iterate}')
+                logprint(f'Saving model@ {iterate} to {fp}')
+                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+            torch.distributed.barrier()
         
         if accum_counter % H.accumulation_steps != 0:
-            sampler.scaler.step(optimizer)
-            sampler.scaler.update()
+            scaler.step(optimizer)
+            scaler.update()
             imle.zero_grad()
             scheduler.step()
             update_ema(ema_imle, imle.module, H.ema_rate)
@@ -244,10 +250,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     best_fid = cur_fid
                     fp = os.path.join(H.save_dir, 'best_fid')
                     logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, scheduler, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
 
                 precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                 metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+            torch.distributed.barrier()
+
 
         if(is_main_process()):
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
@@ -316,23 +324,12 @@ def main(H=None):
     if(is_main_process()):
         logprint('training model', H.desc, 'on', H.dataset)
 
-    imle = IMLE(H)
-    device = torch.device(f"cuda:{local_rank}")
-    imle = imle.to(device)
-    # imle = torch.compile(imle)
-
-    # Wrap the model with DistributedDataParallel, providing the appropriate device_ids
-    imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
-
-    ema_imle = IMLE(H)  # Create a new instance of your model architecture.
-    ema_imle = ema_imle.to(device)  # Move to the correct device.
-    # ema_imle = torch.compile(ema_imle)
-
-    ema_imle.load_state_dict(imle.module.state_dict())  # Copy weights.
-    ema_imle.require_grad = False  # Disable gradients for EMA model.
-    ema_imle.eval()
+    imle, ema_imle = load_imle(H, logprint)
 
     train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+
+    cleanup()
+
 
 if __name__ == "__main__":
     main()

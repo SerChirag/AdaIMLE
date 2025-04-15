@@ -22,7 +22,6 @@ class Sampler:
         self.world_size = get_world_size()
         self.rank = get_rank()
 
-        self.scaler = torch.amp.GradScaler()
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)

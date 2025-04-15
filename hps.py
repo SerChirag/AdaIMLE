@@ -64,6 +64,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_log_path', type=str, default=None)  # restore log from checkpoint
     parser.add_argument('--restore_optimizer_path', type=str, default=None)  # restore optimizer from checkpoint
     parser.add_argument('--restore_scheduler_path', type=str, default=None)  # restore optimizer from scheduler
+    parser.add_argument('--restore_scaler_path', type=str, default=None)  # restore optimizer from scheduler
+
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
@@ -71,6 +73,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
+    parser.add_argument('--compile', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
 
     parser.add_argument('--lr', type=float, default=0.00015)  # learning rate
     parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate

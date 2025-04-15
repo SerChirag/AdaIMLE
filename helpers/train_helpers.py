@@ -18,6 +18,8 @@ from models import IMLE
 from torch.nn.parallel.distributed import DistributedDataParallel
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, SequentialLR
 import random
+from helpers.utils import is_main_process, get_world_size, get_rank
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 def update_ema(imle, ema_imle, ema_rate):
@@ -26,11 +28,12 @@ def update_ema(imle, ema_imle, ema_rate):
         p2.data.add_(p1.data * (1 - ema_rate))
 
 
-def save_model(path, imle, ema_imle, optimizer, scheduler, H):
+def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
     torch.save(imle.state_dict(), f'{path}-model.th')
     torch.save(ema_imle.state_dict(), f'{path}-model-ema.th')
     torch.save(optimizer.state_dict(), f'{path}-opt.th')
     torch.save(scheduler.state_dict(), f'{path}-sched.th')
+    torch.save(scaler.state_dict(), f'{path}-scaler.th')
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
     subprocess.check_output(['cp', from_log, to_log])
@@ -91,7 +94,6 @@ def first_rank_first(local_rank, mpi_size):
 def setup_save_dirs(H):
     H.save_dir = os.path.join(H.save_dir, H.desc)
     mkdir_p(H.save_dir)
-    mkdir_p(f'H.save_dir/fid')
     H.logdir = os.path.join(H.save_dir, 'log')
 
 
@@ -126,7 +128,7 @@ def restore_params(model, path, local_rank, mpi_size, map_ddp=True, map_cpu=Fals
 def restore_log(path, local_rank, mpi_size):
     loaded = [json.loads(l) for l in open(distributed_maybe_download(path, local_rank, mpi_size))]
     try:
-        cur_eval_loss = min([z['elbo'] for z in loaded if 'type' in z and z['type'] == 'eval_loss'])
+        cur_eval_loss = min([z['best_fid'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
     except ValueError:
         cur_eval_loss = float('inf')
     starting_epoch = max([z['epoch'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
@@ -135,30 +137,34 @@ def restore_log(path, local_rank, mpi_size):
 
 
 def load_imle(H, logprint):
+    local_rank = get_rank()
+    device = torch.device(f"cuda:{local_rank}")
+
     imle = IMLE(H)
+    imle.to(device)
+    if(H.compile):
+        imle = torch.compile(imle) 
     if H.restore_path:
         logprint(f'Restoring imle from {H.restore_path}')
         restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
 
     ema_imle = IMLE(H)
+    ema_imle = ema_imle.to(device)  # Move to the correct device.
+    if(H.compile):
+        ema_imle = torch.compile(ema_imle)
     if H.restore_ema_path:
         logprint(f'Restoring ema imle from {H.restore_ema_path}')
         restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
     else:
         ema_imle.load_state_dict(imle.state_dict())
+
     ema_imle.requires_grad_(False)
+    ema_imle.eval()
 
-    ema_imle = ema_imle
+     
+    imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
 
-    imle = imle
-    imle = torch.compile(imle)
 
-    if len(list(imle.named_parameters())) != len(list(imle.parameters())):
-        raise ValueError('Some params are not named. Please name all params.')
-    total_params = 0
-    for name, p in imle.named_parameters():
-        total_params += np.prod(p.shape)
-    logprint(total_params=total_params, readable=f'{total_params:,}')
     return imle, ema_imle
 
 
@@ -168,19 +174,28 @@ def load_opt(H, imle, logprint):
     cosine_iters = H.total_iters - H.warmup_iters
     scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
-
+    scaler = torch.amp.GradScaler()
+    
     if H.restore_optimizer_path:
         optimizer.load_state_dict(
-            torch.load(distributed_maybe_download(H.restore_optimizer_path, H.local_rank, H.mpi_size), map_location='cpu'))
+            torch.load(H.restore_optimizer_path, map_location='cpu'))
+        
     if H.restore_scheduler_path:
+        
         scheduler.load_state_dict(
-            torch.load(distributed_maybe_download(H.restore_scheduler_path, H.local_rank, H.mpi_size), map_location='cpu'))
+            torch.load(H.restore_scheduler_path, map_location='cpu', weights_only=False))
+        
+    if H.restore_scaler_path:
+        scaler.load_state_dict(
+            torch.load(H.restore_scaler_path, map_location='cpu'))
+        
     if H.restore_log_path:
         cur_eval_loss, iterate, starting_epoch = restore_log(H.restore_log_path, H.local_rank, H.mpi_size)
     else:
         cur_eval_loss, iterate, starting_epoch = float('inf'), 0, 0
+
     logprint('starting at epoch', starting_epoch, 'iterate', iterate, 'eval loss', cur_eval_loss)
-    return optimizer, scheduler, cur_eval_loss, iterate, starting_epoch
+    return optimizer, scheduler, scaler, cur_eval_loss, iterate, starting_epoch
 
 
 def save_latents(H, outer, split_ind, latents, name='latents'):
