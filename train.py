@@ -139,10 +139,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if torch.distributed.is_initialized():
             train_sampler = DistributedSampler(comb_dataset, shuffle=True)
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                     pin_memory=True, num_workers=4, persistent_workers=True)
+                                     pin_memory=True, num_workers=4, persistent_workers=True, multiprocessing_context="spawn")
         else:
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True,
-                                     pin_memory=True, num_workers=4, persistent_workers=True)
+                                     pin_memory=True, num_workers=4, persistent_workers=True, multiprocessing_context="spawn")
 
         # If using distributed sampler, set the epoch for shuffling
         if torch.distributed.is_initialized():
