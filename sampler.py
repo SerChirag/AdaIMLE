@@ -27,6 +27,7 @@ class Sampler:
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
+        self.sz = sz
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
@@ -267,9 +268,6 @@ class Sampler:
 
         # Reset temporary distances for all samples.
         self.selected_dists_tmp[:] = np.inf
-        total_rejected = 0
-        self.total_excluded = total_rejected
-        self.total_excluded_percentage = (total_rejected * 1.0 / self.pool_size) * 100
 
         with torch.no_grad():
             # Total number of dataset samples.
@@ -285,7 +283,7 @@ class Sampler:
             else:
                 local_size = chunk_size
                 local_start = self.rank * local_size + remainder
-            local_end = local_start + local_size
+            local_end = min(local_start + local_size, self.sz)
 
             # Obtain the full dataset features (on CPU) and then slice locally.
             ds_feats = self.dataset_proj.cpu().numpy().astype(np.float32)
@@ -329,33 +327,28 @@ class Sampler:
             # --------------------
             # Gather the local updates to rank 0.
             # NCCL requires using GPU tensors; so move local updated arrays to GPU.
-            local_updated_dists_gpu = local_updated_dists.to(self.device)
-            local_updated_latents_gpu = local_updated_latents.to(self.device)
+            
 
-            # On rank 0, prepare lists to receive the gathered data.
-            if(is_main_process()):
-                gathered_dists = [torch.empty_like(local_updated_dists_gpu) for _ in range(self.world_size)]
-                gathered_latents = [torch.empty_like(local_updated_latents_gpu) for _ in range(self.world_size)]
+            if is_main_process():
+                gathered_dists = [None for _ in range(self.world_size)]
+                gathered_latents = [None for _ in range(self.world_size)]
             else:
                 gathered_dists = None
                 gathered_latents = None
 
-            # Gather local arrays from all processes to rank 0.
-            torch.distributed.gather(local_updated_dists_gpu, gathered_dists, dst=0)
-            torch.distributed.gather(local_updated_latents_gpu, gathered_latents, dst=0)
+            torch.distributed.gather_object(local_updated_dists, gathered_dists, dst=0)
+            torch.distributed.gather_object(local_updated_latents, gathered_latents, dst=0)
 
-            # Rank 0 concatenates the gathered data to form the full updated arrays.
-            if(is_main_process()):
-                full_updated_dists = torch.cat(gathered_dists, dim=0)
-                full_updated_latents = torch.cat(gathered_latents, dim=0)
+            if is_main_process():
+                full_updated_dists = torch.cat(gathered_dists, dim=0)[:self.sz].to(self.device)
+                full_updated_latents = torch.cat(gathered_latents, dim=0)[:self.sz].to(self.device)
             else:
-                # Allocate placeholders for broadcast.
-                full_updated_dists = torch.empty(total_samples, dtype=local_updated_dists_gpu.dtype, device=self.device)
-                full_updated_latents = torch.empty(total_samples, self.H.latent_dim, dtype=local_updated_latents_gpu.dtype, device=self.device)
+                full_updated_dists = torch.empty(self.sz, dtype=torch.float32, device=self.device)
+                full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
 
-            # Broadcast the full updated arrays from rank 0 to all processes.
             torch.distributed.broadcast(full_updated_dists, src=0)
             torch.distributed.broadcast(full_updated_latents, src=0)
+
 
             # Move the broadcasted results to CPU if desired.
             self.selected_dists_tmp = full_updated_dists.cpu()

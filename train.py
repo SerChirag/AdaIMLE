@@ -31,17 +31,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import os
 import torch.distributed as dist
 
-def init_distributed():
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
-        print(f"Initializing process group: rank {rank}/{world_size} on GPU {local_rank}")
-        dist.init_process_group(backend="nccl", init_method="env://")
-        torch.cuda.set_device(local_rank)
-    else:
-        print("Not running in distributed mode.")
 
 def cleanup():
     dist.destroy_process_group()
@@ -105,8 +94,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         break
 
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
-    print("Starting epoch: ", starting_epoch)
-    print("Starting iteration: ", iterate)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
@@ -130,7 +117,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     latent_for_visualization = []
 
     if(is_main_process()):
-        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).cuda()
+        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
         
     while (epoch < H.num_epochs):
 
@@ -277,10 +264,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
 
-def main(H=None):
-    H_cur, logprint = set_up_hyperparams()
-    if not H:
-        H = H_cur
+def main():
+    rank = int(os.environ["RANK"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group("nccl", init_method="env://")
+    
+    H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
     # imle, ema_imle = load_imle(H, logprint)
 
@@ -307,18 +299,6 @@ def main(H=None):
             experiment = None
 
         os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
-
-
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-
-        print(f"Initializing process group: rank {rank}/{world_size} on GPU {local_rank}")
-        dist.init_process_group(backend="nccl", init_method="env://")
-        torch.cuda.set_device(local_rank)
-    else:
-        print("Not running in distributed mode.")
 
     torch.distributed.barrier()
 

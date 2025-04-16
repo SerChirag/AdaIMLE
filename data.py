@@ -89,10 +89,11 @@ def set_up_data(H):
         for data_train in DataLoader(train_data, batch_size=len(train_data)):
             ds = torch.tensor(data_train[0] * 255, dtype=torch.uint8)
             train_data = TensorDataset(ds.permute(0, 2, 3, 1))
-            H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.n_batch)
             break
         valid_data = train_data
         untranspose = False
+    H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.n_batch)
+
 
 
     def preprocess_func(x):

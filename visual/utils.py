@@ -28,7 +28,7 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     mb = shape[0]
-    initial = initial[:mb].cuda()
+    initial = initial[:mb].to(ema_imle.device)
     nns = sampler.sample(initial, ema_imle, None)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
@@ -76,7 +76,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
         for i in range(0, n_local, H.imle_batch):
             current_batch_size = min(H.imle_batch, n_local - i)
             # Generate random latent vectors for the current batch
-            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32).cuda()
+            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32).to(imle.device)
             latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
             samp = sampler.sample(latent_batch, imle, None)
