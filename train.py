@@ -22,6 +22,7 @@ from helpers.improved_precision_recall import compute_prec_recall
 from torch import autocast
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 
 import os
 import torch.distributed as dist
@@ -308,4 +309,5 @@ def main():
 
 
 if __name__ == "__main__":
+    mp.set_start_method("spawn", force=True)
     main()
