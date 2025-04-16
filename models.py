@@ -79,7 +79,7 @@ class DecBlock(nn.Module):
 
     def forward(self, x, w):
         if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base // self.mixin, mode='bicubic')
+            x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x

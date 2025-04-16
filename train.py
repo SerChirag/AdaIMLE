@@ -123,7 +123,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if epoch % H.imle_force_resample == 0:
             sampler.imle_sample_force(split_x_tensor, imle)
 
-        if (epoch % 5 == 0 and is_main_process()):
+        if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
@@ -247,7 +247,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if epoch % 50 == 0 and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+        if (epoch % 50 == 0 and is_main_process()):
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
