@@ -107,7 +107,7 @@ def set_up_data(H):
         'as well as the input processed for the loss'
         if untranspose:
             x[0] = x[0].permute(0, 2, 3, 1)
-        inp = x[0].cuda(non_blocking=True).float()
+        inp = x[0].to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
         # out = inp.clone()
         # inp.add_(shift).mul_(scale)

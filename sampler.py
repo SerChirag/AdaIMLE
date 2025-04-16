@@ -41,12 +41,6 @@ class Sampler:
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
-        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32, device='cuda')
-        self.selected_dists_lpips[:] = np.inf
-
-        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32, device='cuda')
-        self.selected_dists_l2[:] = np.inf 
-
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
