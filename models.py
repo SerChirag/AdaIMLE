@@ -2,11 +2,12 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import MappingNetowrk, AdaptiveInstanceNorm
+from mapping_network import MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
 from helpers.imle_helpers import get_1x1, get_3x3, draw_gaussian_diag_samples, gaussian_analytical_kl
 from collections import defaultdict
 import numpy as np
 import itertools
+
 
 
 def parse_layer_string(s):
@@ -74,6 +75,8 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+        if res <= H.max_hierarchy:
+            self.noise = NoiseInjection(width)
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
 
@@ -83,6 +86,7 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
+
 
 class Decoder(nn.Module):
     def __init__(self, H):
