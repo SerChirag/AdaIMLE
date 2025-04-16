@@ -15,6 +15,8 @@ from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
+import open_clip
+
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -51,6 +53,16 @@ class Sampler:
 
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
+        
+
+        self.clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device='cuda').view(1, 3, 1, 1)
+        self.clip_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device='cuda').view(1, 3, 1, 1)
+
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            'ViT-B-32', pretrained='openai', jit=False
+        )
+
+        self.clip_encoder = model.visual.eval().cuda()
 
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
         self.vae.eval()
@@ -80,6 +92,11 @@ class Sampler:
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim), p=2, dim=1).cuda()
             sum_dims = H.proj_dim
+        
+        elif(H.search_type == 'clip'):
+            interpolated = self.preprocess_clip_tensor(fake)
+            out = self.clip_encoder(interpolated)               
+            sum_dims = out.shape[-1]
 
         elif(H.search_type == 'vae'):
             interpolated = self.vae.encode(fake).latents
@@ -121,6 +138,25 @@ class Sampler:
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+    
+    def preprocess_clip_tensor(self, inp):
+        # x: [B, C, H, W], range [0, 1]
+
+        x = (inp + 1.0) / 2.0
+        x = torch.clamp(x, 0.0, 1.0)
+
+        x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
+        return (x - self.clip_mean) / self.clip_std
+
+
+
+    def get_clip_features(self, inp, permute=True):
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = self.preprocess_clip_tensor(inp)
+        interpolated = self.clip_encoder(interpolated)
+        interpolated = F.normalize(interpolated, dim=1)
+        return interpolated.cuda()
 
     def get_vae_features(self, inp, permute=True):
         if(permute):
@@ -128,6 +164,12 @@ class Sampler:
         interpolated = self.vae.encode(inp).latents
         interpolated = interpolated.reshape(interpolated.shape[0],-1)
         return interpolated.cuda()
+
+    def calc_clip_loss(self, inp, tar, permute=False):
+        feat_inp = self.get_clip_features(inp, permute=permute)
+        feat_tar = self.get_clip_features(tar, permute=permute)
+        return self.l2_loss(feat_inp, feat_tar).mean()
+
 
     def get_projected(self, inp, permute=True):
         if(permute):
@@ -152,25 +194,6 @@ class Sampler:
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated.cuda()
     
-    def get_combined_feature(self, inp, permute=True):
-        lpips_feat = self.get_projected(inp, permute)
-        l2_feat = self.get_l2_feature(inp, permute)
-        return torch.cat([lpips_feat, l2_feat], dim=1)
-        # return torch.cat([lpips_feat, l2_feat], dim=1)
-        # if(permute):
-        #     inp = inp.permute(0, 3, 1, 2)
-
-        # out, _ = self.lpips_net(inp.cuda())
-        # gen_feat = []
-        # for i in range(len(out)):
-        #     gen_feat.append(torch.mm(out[i], self.projections[i]))
-        #     # TODO divide?
-        # gen_feat = torch.cat(gen_feat, dim=1)
-        # interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample)
-        # interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        # interpolated = torch.mm(interpolated, self.l2_projection)
-        # return gen_feat + interpolated.cuda()
-
     def init_projection(self, dataset):
         for proj_mat in self.projections:
             proj_mat[:] = F.normalize(torch.randn(proj_mat.shape), p=2, dim=1)
@@ -183,6 +206,8 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1])
             elif(self.H.search_type == 'vae'):
                 self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1])
+            elif(self.H.search_type == 'clip'):
+                self.dataset_proj[batch_slice] = self.get_clip_features(self.preprocess_fn(x)[1])
             else:
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1])
 
@@ -215,8 +240,16 @@ class Sampler:
         res = torch.linalg.norm(inp_feat - tar_feat, dim=1)
         return res
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
+    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+        
+        only_l2 = False
+        if (inp.shape[2] <= 32):
+            only_l2 = True
 
+        use_clip = False
+        if (inp.shape[2] == 256):
+            use_clip = True
+        
         if use_mean:       
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             res = 0
@@ -230,12 +263,14 @@ class Sampler:
             for i, g_feat in enumerate(inp_feat):
                 lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
 
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
-
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+
+            if use_clip:
+                clip_loss = self.calc_clip_loss(inp, tar)
+                loss = loss + self.H.clip_coef * clip_loss.mean()
+            
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
@@ -333,6 +368,8 @@ class Sampler:
                         self.temp_samples_proj[batch_slice] = self.get_l2_feature(self.temp_samples[batch_slice], False)
                     elif(self.H.search_type == 'vae'):
                         self.temp_samples_proj[batch_slice] = self.get_vae_features(self.temp_samples[batch_slice], False)
+                    elif(self.H.search_type == 'clip'):
+                        self.temp_samples_proj[batch_slice] = self.get_clip_features(self.temp_samples[batch_slice], False)
                     else:
                         self.temp_samples_proj[batch_slice] = self.get_combined_feature(self.temp_samples[batch_slice], False)
 
@@ -396,6 +433,8 @@ class Sampler:
                         self.pool_samples_proj[batch_slice] = self.get_l2_feature(gen(cur_latents, None), False)
                     elif(self.H.search_type == 'vae'):
                         self.pool_samples_proj[batch_slice] = self.get_vae_features(gen(cur_latents, None), False)
+                    elif(self.H.search_type == 'clip'):
+                        self.pool_samples_proj[batch_slice] = self.get_clip_features(gen(cur_latents, None), False)
                     else:
                         self.pool_samples_proj[batch_slice] = self.get_combined_feature(gen(cur_latents, None), False)
 

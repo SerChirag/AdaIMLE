@@ -59,7 +59,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
             targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
             targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            loss_16 = loss_fn(px_z_16, targets_16, only_l2 = True)
+            loss_16 = loss_fn(px_z_16, targets_16)
             loss_32 = loss_fn(px_z_32, targets_32)
             loss_64 = loss_fn(px_z_64, targets_64)
             loss_128 = loss_fn(px_z_128, targets_128)
@@ -70,7 +70,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
                 targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
                 if(px_z_scale.shape[2] < 32):
-                    loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
                 else:
                     loss_scale = loss_fn(px_z_scale, targets_scale)
                 loss += loss_scale
@@ -168,7 +168,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         save_latents_latest(H, split_ind, sampler.selected_latents)
         save_latents_latest(H, split_ind, change_thresholds, name='threshold_latest')
 
-        if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 20 == 0):
+        if (to_update.shape[0] >= H.num_images_visualize + 8) and (epoch % 5 == 0):
             latents = sampler.selected_latents[to_update[:H.num_images_visualize]]
             with torch.no_grad():
                 generate_for_NN(sampler, split_x_tensor[to_update[:H.num_images_visualize]], latents,
