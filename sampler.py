@@ -339,6 +339,8 @@ class Sampler:
             torch.distributed.gather_object(local_updated_dists, gathered_dists, dst=0)
             torch.distributed.gather_object(local_updated_latents, gathered_latents, dst=0)
 
+            torch.distributed.barrier()  # Ensure all processes complete the gather
+
             if is_main_process():
                 full_updated_dists = torch.cat(gathered_dists, dim=0)[:self.sz].to(self.device)
                 full_updated_latents = torch.cat(gathered_latents, dim=0)[:self.sz].to(self.device)
@@ -348,6 +350,8 @@ class Sampler:
 
             torch.distributed.broadcast(full_updated_dists, src=0)
             torch.distributed.broadcast(full_updated_latents, src=0)
+
+            torch.distributed.barrier()
 
 
             # Move the broadcasted results to CPU if desired.
