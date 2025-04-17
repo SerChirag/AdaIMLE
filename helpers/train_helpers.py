@@ -129,7 +129,7 @@ def restore_log(path, local_rank, mpi_size):
     loaded = [json.loads(l) for l in open(distributed_maybe_download(path, local_rank, mpi_size))]
     try:
         cur_eval_loss = min([z['best_fid'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
-    except ValueError:
+    except:
         cur_eval_loss = float('inf')
     starting_epoch = max([z['epoch'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
     iterate = max([z['step'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])

@@ -123,7 +123,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if epoch % H.imle_force_resample == 0:
             sampler.imle_sample_force(split_x_tensor, imle)
 
-        if (epoch % 5 == 0 and is_main_process()):
+        if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
@@ -229,7 +229,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             torch.distributed.barrier()
             torch.cuda.empty_cache()
             if(is_main_process()):
-                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, num_workers=0)
                 if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
                     best_fid = cur_fid
                     fp = os.path.join(H.save_dir, 'best_fid')
