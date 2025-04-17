@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from transformers import AutoImageProcessor, AutoModel
 
 from LPNet import LPNet
 from torch.optim import AdamW
@@ -55,15 +56,13 @@ class Sampler:
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
         
 
-        self.clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device='cuda').view(1, 3, 1, 1)
-        self.clip_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device='cuda').view(1, 3, 1, 1)
+        self.clip_mean = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(1, 3, 1, 1)
+        self.clip_std = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(1, 3, 1, 1)
 
-        model, _, preprocess = open_clip.create_model_and_transforms(
-            'ViT-B-32', pretrained='openai', jit=False
-        )
+        model = AutoModel.from_pretrained("facebook/dinov2-base").eval().cuda()
 
-        self.clip_encoder = model.visual.eval().cuda()
-
+        self.clip_encoder = model
+        
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
         self.vae.eval()
         self.vae.requires_grad_(False)
@@ -95,7 +94,9 @@ class Sampler:
         
         elif(H.search_type == 'clip'):
             interpolated = self.preprocess_clip_tensor(fake)
-            out = self.clip_encoder(interpolated)               
+            with torch.no_grad():
+                out = self.clip_encoder(pixel_values=interpolated)
+                out = out.last_hidden_state.mean(dim=1)            
             sum_dims = out.shape[-1]
 
         elif(H.search_type == 'vae'):
@@ -154,9 +155,10 @@ class Sampler:
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         interpolated = self.preprocess_clip_tensor(inp)
-        interpolated = self.clip_encoder(interpolated)
-        interpolated = F.normalize(interpolated, dim=1)
-        return interpolated.cuda()
+        with torch.no_grad():
+            out = self.clip_encoder(pixel_values=interpolated)
+            out = out.last_hidden_state.mean(dim=1)   
+        return out.cuda()
 
     def get_vae_features(self, inp, permute=True):
         if(permute):
