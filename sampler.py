@@ -250,7 +250,7 @@ class Sampler:
             only_l2 = True
 
         use_clip = False
-        if (inp.shape[2] == 256):
+        if (inp.shape[2] >= 224):
             use_clip = True
         
         if use_mean:       
