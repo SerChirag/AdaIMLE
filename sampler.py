@@ -149,6 +149,7 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
             else:
                 exit()
+        self.dataset_proj = self.dataset_proj.cpu().numpy().astype(np.float32)
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
@@ -204,9 +205,14 @@ class Sampler:
         # Determine local pool size
         local_pool_size = ceil(self.pool_size / self.world_size)
 
+        torch.manual_seed(self.rank + int(time.time()) % 100000)
+        torch.distributed.barrier()
+
+
         # Generate local pool latents and prepare container for projected features
         local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), device=self.device)
         # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
+
         local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
 
         # Process local chunk in batches
@@ -260,17 +266,18 @@ class Sampler:
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
 
+
         # Reset temporary distances for all samples.
         self.selected_dists_tmp[:] = np.inf
 
         with torch.no_grad():
             # Total number of dataset samples.
-            total_samples = self.dataset_proj.shape[0]
+            total_datapoints = self.dataset_proj.shape[0]
 
             # --------------------
             # Partition the dataset features so each process works on a different chunk.
-            chunk_size = total_samples // self.world_size
-            remainder = total_samples % self.world_size
+            chunk_size = total_datapoints // self.world_size
+            remainder = total_datapoints % self.world_size
             if self.rank < remainder:
                 local_size = chunk_size + 1
                 local_start = self.rank * local_size
@@ -280,8 +287,7 @@ class Sampler:
             local_end = min(local_start + local_size, self.sz)
 
             # Obtain the full dataset features (on CPU) and then slice locally.
-            ds_feats = self.dataset_proj.cpu().numpy().astype(np.float32)
-            local_ds_feats = ds_feats[local_start:local_end]
+            local_ds_feats = self.dataset_proj[local_start:local_end]
 
             # Pool features (as computed from resample_pool).
             pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)

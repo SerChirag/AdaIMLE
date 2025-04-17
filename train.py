@@ -99,7 +99,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     torch.distributed.barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
-    epoch = starting_epoch - 1
+    epoch = starting_epoch 
 
     split_x_tensor = data_train.tensors[0]
     split_x = TensorDataset(split_x_tensor)
@@ -118,13 +118,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     while (epoch < H.num_epochs):
 
         torch.distributed.barrier()
-        epoch += 1
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             sampler.imle_sample_force(split_x_tensor, imle)
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
@@ -170,7 +169,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
-            iterate += 1
 
             accum_counter += 1
 
@@ -192,7 +190,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 latent_for_visualization,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
-                        
+            iterate += 1
+            
             if iterate % H.iters_per_save == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving latest model@ {iterate} to {fp}')
@@ -205,6 +204,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
             torch.distributed.barrier()
+
         
         if accum_counter % H.accumulation_steps != 0:
             scaler.step(optimizer)
@@ -259,6 +259,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
+
+        epoch += 1
 
 def main():
     rank = int(os.environ["RANK"])
