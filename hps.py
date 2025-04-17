@@ -107,7 +107,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
-    parser.add_argument('--clip_coef', type=float, default=0.0)  # l2 weight for nearest neighbour search
+    parser.add_argument('--clip_coef', type=float, default=0.2)  # l2 weight for nearest neighbour search
     parser.add_argument('--force_factor', type=float, default=1.5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold

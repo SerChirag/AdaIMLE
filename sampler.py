@@ -158,6 +158,7 @@ class Sampler:
         with torch.no_grad():
             out = self.clip_encoder(pixel_values=interpolated)
             out = out.last_hidden_state.mean(dim=1)   
+            out = F.normalize(out, p=2, dim=1)
         return out.cuda()
 
     def get_vae_features(self, inp, permute=True):
