@@ -15,6 +15,8 @@ from helpers.angle_sampler import Angle_Generator
 from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
+from transformers import AutoImageProcessor, AutoModel
+
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -50,6 +52,15 @@ class Sampler:
         self.pool_latents = torch.randn([self.pool_size, H.latent_dim], dtype=torch.float32)
 
         self.projections = []
+
+
+        self.dino_mean = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(1, 3, 1, 1)
+        self.dino_std = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(1, 3, 1, 1)
+
+        model = AutoModel.from_pretrained("facebook/dinov2-base").eval().cuda()
+
+        self.dino_encoder = model
+        
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).cuda()
 
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").cuda()
@@ -121,6 +132,26 @@ class Sampler:
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+
+    def preprocess_dino_tensor(self, inp):
+        # x: [B, C, H, W], range [0, 1]
+
+        x = (inp + 1.0) / 2.0
+        x = torch.clamp(x, 0.0, 1.0)
+
+        x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
+        return (x - self.dino_mean) / self.dino_std
+
+
+    def get_dino_features(self, inp, permute=False):
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = self.preprocess_dino_tensor(inp)
+        with torch.no_grad():
+            out = self.dino_encoder(pixel_values=interpolated)
+            out = out.last_hidden_state.mean(dim=1)   
+            out = F.normalize(out, p=2, dim=1)
+        return out.cuda()
 
     def get_vae_features(self, inp, permute=True):
         if(permute):
@@ -221,6 +252,11 @@ class Sampler:
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             res = 0
 
+            use_dino = False
+        
+            if(inp.shape[2] >= 224):
+                use_dino = True
+
             if only_l2:
                 return l2_loss.mean()
 
@@ -236,6 +272,13 @@ class Sampler:
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+
+            if(use_dino):
+                dino_feat = self.get_dino_features(inp)
+                tar_feat = self.get_dino_features(tar)
+                dino_loss = self.l2_loss(dino_feat, tar_feat)
+                loss += self.H.dino_coef * dino_loss.mean()
+                
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
