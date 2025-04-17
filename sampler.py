@@ -221,6 +221,11 @@ class Sampler:
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
             res = 0
 
+            use_vae_loss = False
+
+            if(inp.shape[2] >= 64):
+                use_vae_loss = True
+
             if only_l2:
                 return l2_loss.mean()
 
@@ -236,6 +241,12 @@ class Sampler:
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
             loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+
+            if(use_vae_loss):
+                inp_vae_feat = self.get_vae_features(inp, False)
+                tar_vae_feat = self.get_vae_features(tar, False)
+                loss += self.H.vae_coef * self.l2_loss(inp_vae_feat, tar_vae_feat).mean()
+
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
