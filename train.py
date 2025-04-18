@@ -78,12 +78,9 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 num_resolutions += 1
 
     loss = loss / num_resolutions
-    loss = loss / H.accumulation_steps
+    loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()  
-
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
@@ -167,6 +164,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
         epoch_iter_count = 0
         accum_counter = 0
+        imle.zero_grad(set_to_none=True)
+
 
         for cur, indices in data_loader:
             x = cur[0]
@@ -187,8 +186,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if accum_counter % H.accumulation_steps == 0:
                 scaler.step(optimizer)
                 scaler.update()
-                imle.zero_grad()
                 scheduler.step()
+                imle.zero_grad(set_to_none=True)
                 update_ema(ema_imle, imle.module, H.ema_rate)
 
             
@@ -220,8 +219,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if accum_counter % H.accumulation_steps != 0:
             scaler.step(optimizer)
             scaler.update()
-            imle.zero_grad()
             scheduler.step()
+            imle.zero_grad(set_to_none=True)
             update_ema(ema_imle, imle.module, H.ema_rate)
         
         epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
@@ -285,6 +284,9 @@ def main():
     
     H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
+
+    H.world_size = world_size
+    H.local_rank = local_rank
     # imle, ema_imle = load_imle(H, logprint)
 
     experiment = None
