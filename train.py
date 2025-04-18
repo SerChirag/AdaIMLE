@@ -229,9 +229,43 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-        metrics = {
-            'mean_loss': mean_loss,
-        }
+
+        ############ Can be removed ###############
+        if(is_main_process() and epoch % 5 == 0):
+            
+            cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
+            cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
+            cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
+
+
+            cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+                                                                                            dists=cur_dists,  
+                                                                                            dists_lpips=cur_dists_lpips,
+                                                                                            dists_l2=cur_dists_l2, 
+                                                                                            logging=True)
+
+            # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
+                    
+            metrics = {
+                'mean_loss': torch.mean(cur_dists).item(),
+                'std_loss': torch.std(cur_dists).item(),
+                'max_loss': torch.max(cur_dists).item(),
+                'min_loss': torch.min(cur_dists).item(),
+                'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
+                'std_loss_lpips': torch.std(cur_dists_lpips).item(),
+                'max_loss_lpips': torch.max(cur_dists_lpips).item(),
+                'min_loss_lpips': torch.min(cur_dists_lpips).item(),
+                'mean_loss_l2': torch.mean(cur_dists_l2).item(),
+                'std_loss_l2': torch.std(cur_dists_l2).item(),
+                'max_loss_l2': torch.max(cur_dists_l2).item(),
+                'min_loss_l2': torch.min(cur_dists_l2).item(),
+            }
+
+        ############ Can be removed ###############
+
+        # metrics = {
+        #     'mean_loss': mean_loss,
+        # }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             set_seed(get_rank() + int(time.time()) % 100000)
