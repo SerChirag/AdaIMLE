@@ -241,7 +241,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             torch.distributed.barrier()
             torch.cuda.empty_cache()
             if(is_main_process()):
-                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, num_workers=0)
+                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
                 if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
                     best_fid = cur_fid
                     fp = os.path.join(H.save_dir, 'best_fid')
