@@ -97,12 +97,21 @@ def setup_save_dirs(H):
     H.logdir = os.path.join(H.save_dir, 'log')
 
 
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    random.seed(seed)
+
+    
+
 def set_up_hyperparams(s=None):
     H = Hyperparams()
     parser = argparse.ArgumentParser()
     parser = add_imle_arguments(parser)
     parse_args_and_update_hparams(H, parser, s=s)
     setup_save_dirs(H)
+    set_seed(H.seed)
     logprint = logger(H.logdir)
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)

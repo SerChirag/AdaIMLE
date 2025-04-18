@@ -149,6 +149,7 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
             else:
                 exit()
+
         self.dataset_proj = self.dataset_proj.cpu().numpy().astype(np.float32)
 
     def sample(self, latents, gen, snoise=None):
@@ -205,9 +206,6 @@ class Sampler:
         # Determine local pool size
         local_pool_size = ceil(self.pool_size / self.world_size)
 
-        torch.manual_seed(self.rank + int(time.time()) % 100000)
-        torch.distributed.barrier()
-
 
         # Generate local pool latents and prepare container for projected features
         local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), device=self.device)
@@ -242,11 +240,11 @@ class Sampler:
         torch.distributed.all_gather(gathered_latents, local_pool_latents)
         torch.distributed.all_gather(gathered_proj, local_pool_proj)
 
+        torch.distributed.barrier()
+
         # Aggregate the full pool on process 0
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
-
-
 
     def imle_sample_force(self, dataset, gen, to_update=None):
         """
@@ -266,8 +264,6 @@ class Sampler:
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
 
-
-        # Reset temporary distances for all samples.
         self.selected_dists_tmp[:] = np.inf
 
         with torch.no_grad():
@@ -320,15 +316,8 @@ class Sampler:
                     (need_update.sum().item(), self.H.latent_dim), device=new_latents.device)
                 new_latents.add_(perturbation)
 
-                # Update distances and latents for indices that need update.
                 local_updated_dists[need_update] = local_distances[need_update]
                 local_updated_latents[need_update] = new_latents
-
-            # --------------------
-            # Gather the local updates to rank 0.
-            # NCCL requires using GPU tensors; so move local updated arrays to GPU.
-            
-
             if is_main_process():
                 gathered_dists = [None for _ in range(self.world_size)]
                 gathered_latents = [None for _ in range(self.world_size)]

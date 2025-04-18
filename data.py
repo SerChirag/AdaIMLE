@@ -148,7 +148,6 @@ def few_shot_image_folder(data_root, image_size):
 
 def imagenet32(data_root):
     trX = np.load(os.path.join(data_root, 'imagenet32-train.npy'), mmap_mode='r')
-    np.random.seed(42)
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-5000]]
     valid = trX[tr_va_split_indices[-5000:]]
@@ -158,7 +157,6 @@ def imagenet32(data_root):
 
 def imagenet64(data_root):
     trX = np.load(os.path.join(data_root, 'imagenet64-train.npy'), mmap_mode='r')
-    np.random.seed(42)
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-5000]]
     valid = trX[tr_va_split_indices[-5000:]]
@@ -173,7 +171,6 @@ def ffhq1024(data_root):
 
 def ffhq256(data_root):
     trX = np.load(os.path.join(data_root, 'ffhq-256.npy'), mmap_mode='r')
-    np.random.seed(5)
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-7000]]
     valid = trX[tr_va_split_indices[-7000:]]

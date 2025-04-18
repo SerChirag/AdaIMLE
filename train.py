@@ -12,8 +12,8 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema)
-from helpers.utils import ZippedDataset, is_main_process
+from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.utils import ZippedDataset, is_main_process, get_world_size, get_rank
 from sampler import Sampler
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_visualization,
@@ -30,6 +30,11 @@ import torch.distributed as dist
 
 def cleanup():
     dist.destroy_process_group()
+
+def print_seed(device):
+    cpu_seed = torch.initial_seed()
+    cuda_seed = torch.cuda.initial_seed()
+    print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
@@ -121,7 +126,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            set_seed(get_rank() + int(time.time()) % 100000)
             sampler.imle_sample_force(split_x_tensor, imle)
+            set_seed(H.seed)
+
+        torch.distributed.barrier()
+        
+
 
         if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
@@ -224,7 +235,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
+            set_seed(get_rank() + int(time.time()) % 100000)
             generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+            set_seed(H.seed)
 
             torch.distributed.barrier()
             torch.cuda.empty_cache()
