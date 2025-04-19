@@ -79,6 +79,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
+    loss *= H.world_size
     
     scaler.scale(loss).backward()
     return loss_measure.detach()
@@ -123,11 +124,19 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
-            sampler.imle_sample_force(split_x_tensor, imle)
+            if(is_main_process()):
+                sampler.imle_sample_force(imle)
+            torch.distributed.barrier()
+            sampler.selected_latents = sampler.selected_latents.to(device)
+            sampler.last_selected_latents = sampler.last_selected_latents.to(device)
+            torch.distributed.broadcast(sampler.selected_latents, 0)
+            torch.distributed.broadcast(sampler.last_selected_latents, 0)
+            torch.distributed.barrier()
 
-        torch.distributed.barrier()
-        
+            sampler.selected_latents = sampler.selected_latents.to('cpu')
+            sampler.last_selected_latents = sampler.last_selected_latents.to('cpu')        
 
+            torch.distributed.barrier()
 
         if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
