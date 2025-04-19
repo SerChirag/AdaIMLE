@@ -141,17 +141,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
 
         # Use a DistributedSampler if in distributed training.
-        if torch.distributed.is_initialized():
-            train_sampler = DistributedSampler(comb_dataset, shuffle=True, seed=H.seed)
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                     pin_memory=True, num_workers=4, persistent_workers=True, multiprocessing_context="spawn")
-        else:
-            data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, shuffle=True,
-                                     pin_memory=True, num_workers=4, persistent_workers=True, multiprocessing_context="spawn")
+        train_sampler = DistributedSampler(comb_dataset, 
+                                           shuffle=True, 
+                                           num_replicas=H.world_size,
+                                           rank=H.local_rank,
+                                           seed=H.seed)
+        
+        data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
+                                    pin_memory=True, num_workers=4, 
+                                    persistent_workers=True, 
+                                    multiprocessing_context="spawn",
+                                    shuffle=False)
 
         # If using distributed sampler, set the epoch for shuffling
-        if torch.distributed.is_initialized():
-            train_sampler.set_epoch(epoch)
+        train_sampler.set_epoch(epoch)
 
         if(is_main_process()):
             start_time = time.time()
