@@ -79,7 +79,6 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
-    loss = loss * H.world_size
     
     scaler.scale(loss).backward()
     return loss_measure.detach()
@@ -124,9 +123,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
-            set_seed(get_rank() + int(time.time()) % 100000)
             sampler.imle_sample_force(split_x_tensor, imle)
-            set_seed(H.seed)
 
         torch.distributed.barrier()
         
@@ -269,9 +266,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         # }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
-            set_seed(get_rank() + int(time.time()) % 100000)
             generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
-            set_seed(H.seed)
 
             torch.distributed.barrier()
             torch.cuda.empty_cache()

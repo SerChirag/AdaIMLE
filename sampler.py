@@ -115,6 +115,8 @@ class Sampler:
         self.total_excluded_percentage = 0
         self.dataset_size = sz
         self.db_iter = 0
+        self.generator_seed = torch.Generator(device=self.device)         
+        self.generator_seed.manual_seed(H.seed + self.rank)
 
     def get_vae_features(self, inp, permute=True):
         if(permute):
@@ -251,14 +253,16 @@ class Sampler:
     ############### Can be removed ###########
 
 
-    def resample_pool(self, gen):
-       
+    def resample_pool(self, gen):   
+
         # Determine local pool size
         local_pool_size = ceil(self.pool_size / self.world_size)
 
 
         # Generate local pool latents and prepare container for projected features
-        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), device=self.device)
+        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), 
+                                         device=self.device, 
+                                         generator=self.generator_seed)
         # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
 
         local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
@@ -292,7 +296,7 @@ class Sampler:
 
         torch.distributed.barrier()
 
-        # Aggregate the full pool on process 0
+        # Aggregate the full pool latents and projected features
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
@@ -316,93 +320,170 @@ class Sampler:
 
         self.selected_dists_tmp[:] = np.inf
 
-        with torch.no_grad():
-            # Total number of dataset samples.
-            total_datapoints = self.dataset_proj.shape[0]
-
-            # --------------------
-            # Partition the dataset features so each process works on a different chunk.
-            chunk_size = total_datapoints // self.world_size
-            remainder = total_datapoints % self.world_size
-            if self.rank < remainder:
-                local_size = chunk_size + 1
-                local_start = self.rank * local_size
-            else:
-                local_size = chunk_size
-                local_start = self.rank * local_size + remainder
-            local_end = min(local_start + local_size, self.sz)
-
-            # Obtain the full dataset features (on CPU) and then slice locally.
-            local_ds_feats = self.dataset_proj[local_start:local_end]
-
-            # Pool features (as computed from resample_pool).
-            pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
-            feature_dim = pool_feats.shape[1]
-
-            # --------------------
-            # Build FAISS index on global pool features.
-            index = faiss.IndexFlatL2(feature_dim)
-            index.add(pool_feats)  # add entire pool
-
-            # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-            distances, indices = index.search(local_ds_feats, 1)
-            local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
-            local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-
-            # Get current temporary distances for the local slice.
-            local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
-            # Determine which samples need update.
-            need_update = local_distances < local_current_dists
-
-            # Prepare local updated arrays.
-            local_updated_dists = local_current_dists.clone()
-            local_updated_latents = self.selected_latents_tmp[local_start:local_end].clone()
-
-            if need_update.sum().item() > 0:
-                # Fetch new latents from the pool for samples that need update.
-                new_latents = self.pool_latents[local_indices[need_update]].clone()
-                # Add random perturbation.
-                perturbation = self.H.imle_perturb_coef * torch.randn(
-                    (need_update.sum().item(), self.H.latent_dim), device=new_latents.device)
-                new_latents.add_(perturbation)
-
-                local_updated_dists[need_update] = local_distances[need_update]
-                local_updated_latents[need_update] = new_latents
+        if(is_main_process()):
+            with torch.no_grad():
+                # Prepare the dataset features corresponding to the indices to update.
+                # Make sure dataset_proj is float32.                
+                # Prepare the pool samples features.
+                feature_dim = self.pool_samples_proj.shape[1]
                 
-            if is_main_process():
-                gathered_dists = [None for _ in range(self.world_size)]
-                gathered_latents = [None for _ in range(self.world_size)]
-            else:
-                gathered_dists = None
-                gathered_latents = None
+                # Create a FAISS index for L2 distance search.
+                index = faiss.IndexFlatL2(feature_dim)
+                # If your GPU can handle it and you want to accelerate further, you can transfer the index to GPU:
+                # res = faiss.StandardGpuResources()
+                # index = faiss.index_cpu_to_gpu(res, 0, index)
+                pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
+                
+                index.add(pool_feats)  # add the entire pool of features at once
+                
+                # Perform batched nearest neighbor search for all dataset features.
+                # The returned arrays have shape (num_samples, 1).
+                distances, indices = index.search(self.dataset_proj, 1)
+                
+                # Convert the results to torch tensors.
+                distances_tensor = torch.from_numpy(distances).squeeze(1)  
+                indices_tensor   = torch.from_numpy(indices).squeeze(1)    
+                
+                # Get the current stored distances for these indices.
+                current_dists = self.selected_dists_tmp.cpu()
+                
+                # Determine which samples should be updated.
+                need_update = distances_tensor < current_dists
+                # Identify absolute indices in the full dataset:
+                update_indices = need_update
+                
+                if update_indices.numel() > 0:
+                    # Use indices from FAISS to fetch corresponding latents from the pool.
+                    # Ensure that pool_latents is on the same device (or move it accordingly).
+                    new_latents = self.pool_latents[indices_tensor[need_update].to(self.pool_latents.device)].clone()
+                    
+                    # Add random perturbation as in your original function.
+                    perturbation = self.H.imle_perturb_coef * torch.randn(
+                        (need_update.sum().item(), self.H.latent_dim),
+                        device=new_latents.device
+                    )
+                    new_latents.add_(perturbation)
+                    
+                    # Update temporary distances and latents.
+                    self.selected_dists_tmp[update_indices] = distances_tensor[need_update].to(self.selected_dists_tmp.device)
+                    self.selected_latents_tmp[update_indices] = new_latents
+                else:
+                    print("No updates found in this iteration.")
 
-            torch.distributed.gather_object(local_updated_dists, gathered_dists, dst=0)
-            torch.distributed.gather_object(local_updated_latents, gathered_latents, dst=0)
+            # After processing, update the selected and last-selected latents.
+            self.last_selected_latents = self.selected_latents
+            self.selected_latents = self.selected_latents_tmp
 
-            torch.distributed.barrier()  # Ensure all processes complete the gather
-
-            if is_main_process():
-                full_updated_dists = torch.cat(gathered_dists, dim=0)[:self.sz].to(self.device)
-                full_updated_latents = torch.cat(gathered_latents, dim=0)[:self.sz].to(self.device)
-            else:
-                full_updated_dists = torch.empty(self.sz, dtype=torch.float32, device=self.device)
-                full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
-
-            torch.distributed.broadcast(full_updated_dists, src=0)
-            torch.distributed.broadcast(full_updated_latents, src=0)
-
-            torch.distributed.barrier()
-
-
-            # Move the broadcasted results to CPU if desired.
-            self.selected_dists_tmp = full_updated_dists.cpu()
-            self.selected_latents_tmp = full_updated_latents.cpu()
-
-            # Update last and current selected latents on all processes.
-            self.last_selected_latents = self.selected_latents.clone()
-            self.selected_latents = self.selected_latents_tmp.clone()
-
-            if is_main_process():
-                print(f"Force resampling took {time.time() - t1:.2f} seconds")
-
+            print(f"Force resampling took {time.time() - t1:.2f} seconds")
+        
         torch.distributed.barrier()  # Ensure synchronization before leaving the function
+
+        ## Move the tensor to gpu 
+        self.selected_latents_tmp = self.selected_latents_tmp.to(self.device)
+        self.selected_dists_tmp = self.selected_dists_tmp.to(self.device)
+
+        ## Broadcast the updated latents and distances to all processes
+        torch.distributed.broadcast(self.selected_latents_tmp, src=0)
+        torch.distributed.broadcast(self.selected_dists_tmp, src=0)
+        torch.distributed.barrier()
+
+        ## Move the broadcasted results to CPU if desired.
+        self.selected_dists_tmp = self.selected_dists_tmp.cpu()
+        self.selected_latents_tmp = self.selected_latents_tmp.cpu()
+
+
+        # with torch.no_grad():
+        #     # Total number of dataset samples.
+        #     total_datapoints = self.dataset_proj.shape[0]
+
+        #     # --------------------
+        #     # Partition the dataset features so each process works on a different chunk.
+        #     chunk_size = total_datapoints // self.world_size
+        #     remainder = total_datapoints % self.world_size
+        #     if self.rank < remainder:
+        #         local_size = chunk_size + 1
+        #         local_start = self.rank * local_size
+        #     else:
+        #         local_size = chunk_size
+        #         local_start = self.rank * local_size + remainder
+        #     local_end = min(local_start + local_size, self.sz)
+
+        #     # Obtain the full dataset features (on CPU) and then slice locally.
+        #     local_ds_feats = self.dataset_proj[local_start:local_end]
+
+        #     # Pool features (as computed from resample_pool).
+        #     pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
+        #     feature_dim = pool_feats.shape[1]
+
+        #     # --------------------
+        #     # Build FAISS index on global pool features.
+        #     index = faiss.IndexFlatL2(feature_dim)
+        #     index.add(pool_feats)  # add entire pool
+
+        #     # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
+        #     distances, indices = index.search(local_ds_feats, 1)
+        #     local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
+        #     local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+
+        #     # Get current temporary distances for the local slice.
+        #     local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
+        #     # Determine which samples need update.
+        #     need_update = local_distances < local_current_dists
+
+        #     # Prepare local updated arrays.
+        #     local_updated_dists = local_current_dists.clone()
+        #     local_updated_latents = self.selected_latents_tmp[local_start:local_end].clone()
+
+        #     if need_update.sum().item() > 0:
+        #         # Fetch new latents from the pool for samples that need update.
+        #         new_latents = self.pool_latents[local_indices[need_update]].clone()
+        #         # Add random perturbation.
+            
+        #         local_updated_dists[need_update] = local_distances[need_update]
+        #         local_updated_latents[need_update] = new_latents
+                
+        #     if is_main_process():
+        #         gathered_dists = [None for _ in range(self.world_size)]
+        #         gathered_latents = [None for _ in range(self.world_size)]
+        #     else:
+        #         gathered_dists = None
+        #         gathered_latents = None
+
+        #     torch.distributed.gather_object(local_updated_dists, gathered_dists, dst=0)
+        #     torch.distributed.gather_object(local_updated_latents, gathered_latents, dst=0)
+
+        #     torch.distributed.barrier()  # Ensure all processes complete the gather
+
+        #     if is_main_process():
+        #         print(torch.cat(gathered_dists, dim=0).shape)
+        #         full_updated_dists = torch.cat(gathered_dists, dim=0).to(self.device)
+        #         full_updated_latents = torch.cat(gathered_latents, dim=0).to(self.device)
+        #         perturbation = self.H.imle_perturb_coef * torch.randn(
+        #             (self.sz, self.H.latent_dim), 
+        #             device=self.device,
+        #             generator=self.generator_seed)
+        #         full_updated_latents += perturbation
+        #     else:
+        #         full_updated_dists = torch.empty(self.sz, dtype=torch.float32, device=self.device)
+        #         full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
+
+        #     torch.distributed.barrier()
+
+        #     torch.distributed.broadcast(full_updated_dists, src=0)
+        #     torch.distributed.broadcast(full_updated_latents, src=0)
+
+        #     torch.distributed.barrier()
+
+
+        #     # Move the broadcasted results to CPU if desired.
+        #     self.selected_dists_tmp = full_updated_dists.cpu()
+        #     self.selected_latents_tmp = full_updated_latents.cpu()
+
+        #     # Update last and current selected latents on all processes.
+        #     self.last_selected_latents = self.selected_latents.clone()
+        #     self.selected_latents = self.selected_latents_tmp.clone()
+
+        #     if is_main_process():
+        #         print(f"Force resampling took {time.time() - t1:.2f} seconds")
+
+        # torch.distributed.barrier()  # Ensure synchronization before leaving the function
