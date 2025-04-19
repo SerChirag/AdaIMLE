@@ -75,6 +75,8 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+        if res <= H.max_hierarchy:
+            self.noise = NoiseInjection(width)
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
 
@@ -84,7 +86,6 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
-
 
 class Decoder(nn.Module):
     def __init__(self, H):
