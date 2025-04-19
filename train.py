@@ -79,6 +79,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
+    loss = loss * H.world_size
     
     scaler.scale(loss).backward()
     return loss_measure.detach()
@@ -131,7 +132,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
@@ -144,7 +145,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Use a DistributedSampler if in distributed training.
         if torch.distributed.is_initialized():
-            train_sampler = DistributedSampler(comb_dataset, shuffle=True)
+            train_sampler = DistributedSampler(comb_dataset, shuffle=True, seed=H.seed)
             data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
                                      pin_memory=True, num_workers=4, persistent_workers=True, multiprocessing_context="spawn")
         else:
