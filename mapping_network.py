@@ -104,7 +104,7 @@ class NoiseInjection(nn.Module):
     def __init__(self, channel):
         super().__init__()
 
-        self.weight = nn.Parameter(torch.randn(1, channel, 1, 1))
+        self.weight = nn.Parameter(torch.randn(1, channel, 1, 1), requires_grad=False)
 
     def forward(self, image, spatial_noise):
         return image 
