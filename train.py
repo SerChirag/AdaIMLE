@@ -198,7 +198,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 scaler.update()
                 scheduler.step()
                 imle.zero_grad(set_to_none=True)
-                update_ema(ema_imle, imle.module, H.ema_rate)
+                update_ema(imle.module, ema_imle, H.ema_rate)
 
             
             if iterate % H.iters_per_images == 0:
@@ -231,7 +231,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             scaler.update()
             scheduler.step()
             imle.zero_grad(set_to_none=True)
-            update_ema(ema_imle, imle.module, H.ema_rate)
+            update_ema(imle.module, ema_imle, H.ema_rate)
         
         epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
