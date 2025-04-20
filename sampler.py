@@ -189,13 +189,13 @@ class Sampler:
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
-            nm = latents.shape[0]
-            latents = latents.to('cuda')
-            px_z = gen(latents, None).permute(0, 2, 3, 1)
-            xhat = (px_z + 1.0) * 127.5
-            xhat = xhat.detach().cpu().numpy()
-            xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
-            return xhat
+            with torch.amp.autocast('cuda'):
+                latents = latents.to('cuda')
+                px_z = gen(latents, None).permute(0, 2, 3, 1)
+                xhat = (px_z + 1.0) * 127.5
+                xhat = xhat.detach().cpu().numpy()
+                xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
+                return xhat
 
     def sample_from_out(self, px_z):
         with torch.no_grad():

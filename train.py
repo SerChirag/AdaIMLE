@@ -205,8 +205,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
+            torch.cuda.empty_cache()
+
             print("Learning rate: ", optimizer.param_groups[0]['lr'])
             generate_and_save(H, imle, sampler, min(5000,subset_len * H.fid_factor))
+            torch.cuda.empty_cache()
+
             print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
             cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
             if cur_fid < best_fid:
@@ -304,6 +308,7 @@ def main(H=None):
             subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
         # generate_and_save(H, imle, sampler, 5000)
+
 
         generate_and_save(H, imle, sampler, 5000)
         print(f'{H.data_root}/img', f'{H.save_dir}/fid/')
