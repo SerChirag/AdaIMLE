@@ -79,7 +79,6 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
 
     loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
-    loss *= H.world_size
     
     scaler.scale(loss).backward()
     return loss_measure.detach()
