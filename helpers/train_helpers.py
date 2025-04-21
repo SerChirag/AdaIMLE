@@ -152,18 +152,9 @@ def load_imle(H, logprint):
     imle = IMLE(H)
     imle.to(device)
     
-    if H.restore_path:
-        logprint(f'Restoring imle from {H.restore_path}')
-        restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
 
     ema_imle = IMLE(H)
     ema_imle = ema_imle.to(device)  # Move to the correct device.
-
-    if H.restore_ema_path:
-        logprint(f'Restoring ema imle from {H.restore_ema_path}')
-        restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
-    else:
-        ema_imle.load_state_dict(imle.state_dict())
 
     ema_imle.requires_grad_(False)
     ema_imle.eval()
@@ -178,6 +169,19 @@ def load_imle(H, logprint):
     if(H.compile):
         imle = torch.compile(imle) 
         ema_imle = torch.compile(ema_imle)
+
+    if H.restore_path:
+        logprint(f'Restoring imle from {H.restore_path}')
+        restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+
+
+    if H.restore_ema_path:
+        logprint(f'Restoring ema imle from {H.restore_ema_path}')
+        restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+    else:
+        ema_imle.load_state_dict(imle.state_dict())
+
+    
 
 
 
