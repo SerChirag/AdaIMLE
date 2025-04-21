@@ -118,6 +118,11 @@ class Sampler:
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
 
+        self.faiss_res = faiss.StandardGpuResources()  # one per process
+        index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
+        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, self.rank, index_flat)
+
+
     def get_vae_features(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
@@ -343,11 +348,11 @@ class Sampler:
 
             # --------------------
             # Build FAISS index on global pool features.
-            index = faiss.IndexFlatL2(feature_dim)
-            index.add(pool_feats)  # add entire pool
+
+            self.gpu_index_flat.add(pool_feats)  # add entire pool
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-            distances, indices = index.search(local_ds_feats, 1)
+            distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
 
@@ -412,3 +417,4 @@ class Sampler:
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         torch.distributed.barrier()  # Ensure synchronization before leaving the function
+        self.gpu_index_flat.reset()
