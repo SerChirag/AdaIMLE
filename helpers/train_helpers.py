@@ -159,7 +159,8 @@ def load_imle(H, logprint):
     ema_imle.requires_grad_(False)
     ema_imle.eval()
 
-     
+    ema_imle.load_state_dict(imle.state_dict())
+
     imle = DDP(imle, device_ids=[local_rank], 
                output_device=local_rank,
                gradient_as_bucket_view=True,
@@ -178,8 +179,6 @@ def load_imle(H, logprint):
     if H.restore_ema_path:
         logprint(f'Restoring ema imle from {H.restore_ema_path}')
         restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
-    else:
-        ema_imle.load_state_dict(imle.state_dict())
 
     
 
