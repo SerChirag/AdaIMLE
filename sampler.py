@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from transformers import AutoImageProcessor, AutoModel
 
 from LPNet import LPNet
 from helpers.utils import is_main_process, get_world_size, get_rank
@@ -64,6 +65,13 @@ class Sampler:
         ## TODO: check this is required or not
         self.lpips_net = torch.compile(self.lpips_net)
 
+        self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
+        self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
+
+        model = AutoModel.from_pretrained("facebook/dinov2-base").eval().to(self.device)
+        self.dino_encoder = torch.compile(model)
+
+
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
         self.vae.eval()
         self.vae.requires_grad_(False)
@@ -98,6 +106,25 @@ class Sampler:
             interpolated = interpolated.reshape(interpolated.shape[0],-1)
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
             sum_dims = H.proj_dim
+        
+        elif(H.search_type == 'combined'):
+            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
+            out, shapes = self.lpips_net(interpolated)
+            sum_dims = 0
+            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
+            if H.proj_proportion:
+                sm = sum([dim.shape[1] for dim in out])
+                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
+                dims.insert(0,H.proj_dim - sum(dims))
+            for ind, feat in enumerate(out):
+                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
+            sum_dims = sum(dims)
+
+            interpolated = self.preprocess_dino_tensor(fake)
+            with torch.no_grad():
+                out = self.dino_encoder(pixel_values=interpolated)
+                out = out.last_hidden_state.mean(dim=1)            
+            sum_dims += out.shape[-1]
 
         else:
             exit()
@@ -122,6 +149,14 @@ class Sampler:
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, self.rank, index_flat)
 
+    def preprocess_dino_tensor(self, inp):
+        # x: [B, C, H, W], range [0, 1]
+
+        x = (inp + 1.0) / 2.0
+        x = torch.clamp(x, 0.0, 1.0)
+
+        x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
+        return (x - self.dino_mean) / self.dino_std
 
     def get_vae_features(self, inp, permute=True):
         if(permute):
@@ -152,6 +187,25 @@ class Sampler:
         interpolated = torch.mm(interpolated, self.l2_projection)
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated
+    
+    def get_dino_features(self, inp, permute=True):
+        if(permute):
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = self.preprocess_dino_tensor(inp)
+        with torch.no_grad():
+            out = self.dino_encoder(pixel_values=interpolated)
+            out = out.last_hidden_state.mean(dim=1)   
+            out = F.normalize(out, p=2, dim=1)
+            out = out * 10
+        return out
+    
+    def get_combined_feature(self, inp, permute=True):
+        lpisps_feat = self.get_projected(inp, permute)
+        dino_feat = self.get_dino_features(inp, permute)
+        # print(f'LPIPS is {torch.norm(lpisps_feat, p=2, dim=1).mean()} \n')
+        # print(f'DINO is {torch.norm(dino_feat, p=2, dim=1).mean()} \n')
+        combined_feat = torch.cat((lpisps_feat, dino_feat), dim=1)
+        return combined_feat
 
     def init_projection(self, dataset):
 
@@ -163,6 +217,8 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'vae'):
                 self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
+            elif(self.H.search_type == 'combined'):
+                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
             else:
                 exit()
 
@@ -285,6 +341,8 @@ class Sampler:
                         proj = self.get_l2_feature(outputs, False)
                     elif self.H.search_type == 'vae':
                         proj = self.get_vae_features(outputs, False)
+                    elif self.H.search_type == 'combined':
+                        proj = self.get_combined_feature(outputs, False)
                     else:
                         proj = self.get_combined_feature(outputs, False)
                     local_pool_proj[batch_slice] = proj

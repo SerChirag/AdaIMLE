@@ -169,7 +169,11 @@ def load_imle(H, logprint):
     ema_imle.eval()
 
      
-    imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
+    imle = DDP(imle, device_ids=[local_rank], 
+               output_device=local_rank,
+               gradient_as_bucket_view=True,
+               static_graph=True
+               )
 
     if(H.compile):
         imle = torch.compile(imle) 
