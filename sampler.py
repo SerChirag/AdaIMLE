@@ -188,7 +188,7 @@ class Sampler:
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated
     
-    def get_dino_features(self, inp, permute=True):
+    def get_dino_features(self, inp, permute=True, scale_factor=10):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
         interpolated = self.preprocess_dino_tensor(inp)
@@ -196,7 +196,7 @@ class Sampler:
             out = self.dino_encoder(pixel_values=interpolated)
             out = out.last_hidden_state.mean(dim=1)   
             out = F.normalize(out, p=2, dim=1)
-            out = out * 10
+            out = out * scale_factor
         return out
     
     def get_combined_feature(self, inp, permute=True):
@@ -254,7 +254,12 @@ class Sampler:
 
                 res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
 
-            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean()
+            dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
+            tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
+            dino_loss = self.l2_loss(dino_feat, tar_feat)
+
+            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean() + self.H.dino_coef * dino_loss.mean()
+            
             if logging:
                 return loss, res.mean(), l2_loss.mean()
             else:
