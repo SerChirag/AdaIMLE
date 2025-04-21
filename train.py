@@ -312,7 +312,7 @@ def main():
     world_size = int(os.environ["WORLD_SIZE"])
 
     torch.cuda.set_device(local_rank)
-    dist.init_process_group("nccl", init_method="env://")
+    dist.init_process_group("nccl", init_method="env://", timeout=torch.timedelta(seconds=7200))
     
     H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
