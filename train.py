@@ -4,7 +4,6 @@ import time
 from comet_ml import Experiment, ExistingExperiment
 import imageio
 import torch
-import wandb
 import torch.nn as nn
 from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset

@@ -12,7 +12,6 @@ from torch.optim import AdamW
 from helpers.utils import ZippedDataset
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
-from knn_cuda import KNN
 from torch.cuda.amp import autocast
 from diffusers import AutoencoderTiny
 import faiss
@@ -58,8 +57,6 @@ class Sampler:
         self.vae.requires_grad_(False)
 
         self.l2_projection = None
-
-        self.knn = KNN(k=1, transpose_mode=True)
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size, device='cuda')
 
@@ -110,7 +107,6 @@ class Sampler:
         self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cuda')
         self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device='cuda')
 
-        self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
         self.resample_angle = H.resample_angle
 
