@@ -20,7 +20,7 @@ from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR, SequentialLR
 import random
 from helpers.utils import is_main_process, get_world_size, get_rank
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+import torch.nn as nn
 
 def update_ema(imle, ema_imle, ema_rate):
     for p1, p2 in zip(imle.parameters(), ema_imle.parameters()):
@@ -28,12 +28,39 @@ def update_ema(imle, ema_imle, ema_rate):
         p2.data.add_(p1.data * (1 - ema_rate))
 
 
+def as_plain_nn(model):
+    """Returns the model without optimization wrappers."""
+    if isinstance(model, torch._dynamo.eval_frame.OptimizedModule):
+        return as_plain_nn(model._orig_mod)
+    elif isinstance(model, torch.nn.parallel.distributed.DistributedDataParallel):
+        return as_plain_nn(model.module)
+    elif isinstance(model, nn.DataParallel):
+        return model.module
+    else:
+        return model
+
+def map_saved_by_type(x):
+    if isinstance(x, nn.Module):
+        return as_plain_nn(x).state_dict()
+    elif hasattr(x, "state_dict"):
+        return x.state_dict()
+    else:
+        return x
+
 def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
-    torch.save(imle.state_dict(), f'{path}-model.th')
-    torch.save(ema_imle.state_dict(), f'{path}-model-ema.th')
-    torch.save(optimizer.state_dict(), f'{path}-opt.th')
-    torch.save(scheduler.state_dict(), f'{path}-sched.th')
-    torch.save(scaler.state_dict(), f'{path}-scaler.th')
+
+    model_state   = map_saved_by_type(imle)
+    ema_state     = map_saved_by_type(ema_imle)
+    optim_state   = map_saved_by_type(optimizer)
+    sched_state   = map_saved_by_type(scheduler)
+    scaler_state  = map_saved_by_type(scaler)
+
+    torch.save(model_state,  f"{path}-model.th")
+    torch.save(ema_state,    f"{path}-model-ema.th")
+    torch.save(optim_state,  f"{path}-opt.th")
+    torch.save(sched_state,  f"{path}-sched.th")
+    torch.save(scaler_state, f"{path}-scaler.th")
+
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
     subprocess.check_output(['cp', from_log, to_log])
@@ -121,7 +148,7 @@ def set_up_hyperparams(s=None):
 
 
 def restore_params(model, path, local_rank, mpi_size, map_ddp=True, map_cpu=False, strict=True):
-    state_dict = torch.load(distributed_maybe_download(path, local_rank, mpi_size), map_location='cpu' if map_cpu else None)
+    state_dict = torch.load(distributed_maybe_download(path, local_rank, mpi_size), map_location='cpu')
     if map_ddp:
         new_state_dict = {}
         l = len('module.')
@@ -153,29 +180,28 @@ def load_imle(H, logprint):
     imle.to(device)
     
     if H.restore_path:
-        logprint(f'Restoring imle from {H.restore_path}')
+        if(is_main_process()):
+            logprint(f'Restoring imle from {H.restore_path}')
         restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
 
     ema_imle = IMLE(H)
     ema_imle = ema_imle.to(device)  # Move to the correct device.
 
     if H.restore_ema_path:
-        logprint(f'Restoring ema imle from {H.restore_ema_path}')
+        if(is_main_process()):
+            logprint(f'Restoring ema imle from {H.restore_ema_path}')
         restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
     else:
         ema_imle.load_state_dict(imle.state_dict())
 
     ema_imle.requires_grad_(False)
     ema_imle.eval()
-
      
     imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
 
     if(H.compile):
         imle = torch.compile(imle) 
         ema_imle = torch.compile(ema_imle)
-
-
 
     return imle, ema_imle
 
@@ -189,15 +215,20 @@ def load_opt(H, imle, logprint):
     scaler = torch.GradScaler(device="cuda")
     
     if H.restore_optimizer_path:
+        if(is_main_process()):
+            logprint(f'Restoring optimizer from {H.restore_optimizer_path}')
         optimizer.load_state_dict(
             torch.load(H.restore_optimizer_path, map_location='cpu'))
         
     if H.restore_scheduler_path:
-        
+        if(is_main_process()):
+            logprint(f'Restoring scheduler from {H.restore_scheduler_path}')
         scheduler.load_state_dict(
             torch.load(H.restore_scheduler_path, map_location='cpu', weights_only=False))
         
     if H.restore_scaler_path:
+        if(is_main_process()):
+            logprint(f'Restoring scaler from {H.restore_scaler_path}')
         scaler.load_state_dict(
             torch.load(H.restore_scaler_path, map_location='cpu'))
         
