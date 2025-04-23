@@ -13,6 +13,18 @@ class Hyperparams(dict):
     def __setattr__(self, attr, value):
         self[attr] = value
 
+cifar10 = Hyperparams()
+cifar10.width = 384
+cifar10.lr = 0.0002
+cifar10.wd = 0.01
+cifar10.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x10,32m16,32x21"
+cifar10.warmup_iters = 100
+cifar10.dataset = 'cifar10'
+cifar10.n_batch = 16
+cifar10.imle_batch = 32 
+cifar10.ema_rate = 0.9999
+cifar10.l2_search_downsample = 1.0
+HPARAMS_REGISTRY['cifar10'] = cifar10
 
 fewshot = Hyperparams()
 fewshot.width = 384

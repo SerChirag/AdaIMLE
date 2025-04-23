@@ -13,7 +13,7 @@ from models import IMLE
 import numpy as np
 from data import set_up_data
 from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
-from helpers.utils import ZippedDataset, is_main_process, get_world_size, get_rank
+from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank
 from sampler import Sampler
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_visualization,
@@ -39,7 +39,7 @@ def print_seed(device):
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    with autocast(device_type='cuda', dtype=torch.float16):
+    with autocast(device_type='cuda'):
 
         px_z = imle(latents)
         loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
@@ -47,31 +47,27 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
         num_resolutions = 1
 
         if(H.use_multi_res):
-            px_z_16 = F.interpolate(px_z, scale_factor = 0.0625, antialias=True, mode='bicubic')
             px_z_32 = F.interpolate(px_z, scale_factor = 0.125, antialias=True, mode='bicubic')
             px_z_64 = F.interpolate(px_z, scale_factor = 0.25, antialias=True, mode='bicubic')
             px_z_128 = F.interpolate(px_z, scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            targets_16 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.0625, antialias=True, mode='bicubic')
             targets_32 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.125, antialias=True, mode='bicubic')
             targets_64 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.25, antialias=True, mode='bicubic')
             targets_128 = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = 0.5, antialias=True, mode='bicubic')
 
-            loss_16 = loss_fn(px_z_16, targets_16, only_l2 = True)
             loss_32 = loss_fn(px_z_32, targets_32)
             loss_64 = loss_fn(px_z_64, targets_64)
             loss_128 = loss_fn(px_z_128, targets_128)
-            loss.add_(loss_16)
             loss.add_(loss_32)
             loss.add_(loss_64)
             loss.add_(loss_128)
-            num_resolutions = 5
+            num_resolutions = 4
 
             for scale in H['multi_res_scales']:
                 px_z_scale = F.interpolate(px_z, scale_factor = scale, antialias=True, mode='bicubic')
                 targets_scale = F.interpolate(targets.permute(0, 3, 1, 2), scale_factor = scale, antialias=True, mode='bicubic')
                 if(px_z_scale.shape[2] < 32):
-                    loss_scale = loss_fn(px_z_scale, targets_scale, only_l2 = True)
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
                 else:
                     loss_scale = loss_fn(px_z_scale, targets_scale)
                 loss.add_(loss_scale)
@@ -307,18 +303,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         epoch += 1
 
 def main():
-    rank = int(os.environ["RANK"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group("nccl", init_method="env://", timeout=datetime.timedelta(seconds=7200))
+    init_distributed_mode()
     
     H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
-    H.world_size = world_size
-    H.local_rank = local_rank
+    H.world_size = get_world_size()
+    H.local_rank = get_rank()
     # imle, ema_imle = load_imle(H, logprint)
 
     experiment = None
