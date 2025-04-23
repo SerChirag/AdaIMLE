@@ -235,35 +235,48 @@ class Sampler:
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
+    def get_lpips_loss(self, inp, tar, use_mean=True):
+        res = 0
+        if(inp.shape[2] < 32):
+            inp_interpolated = F.interpolate(inp, size=(32,32), mode='bicubic')
+            tar_interpolated = F.interpolate(tar, size=(32,32), mode='bicubic')
+        else:
+            inp_interpolated = inp
+            tar_interpolated = tar
+        inp_feat, inp_shape = self.lpips_net(inp_interpolated)
+        tar_feat, _ = self.lpips_net(tar_interpolated)
+        for i, g_feat in enumerate(inp_feat):
+            lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+
+            # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
+            #     lpips_feature_loss[bool_mask] = 0.0
+
+            res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
+        
+        if use_mean:
+            return res.mean()
+        else:
+            return res
+    
+    def get_dino_loss(self, inp, tar, use_mean=True):
+        dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
+        tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
+        dino_loss = self.l2_loss(dino_feat, tar_feat)
+        if use_mean:
+            return dino_loss.mean()
+        else:
+            return dino_loss
+
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
 
-        only_l2 = False
-        if (inp.shape[2] < 32):
-            only_l2 = True
-
         if use_mean:       
-            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
+            l2_loss = torch.mean(self.l2_loss(inp, tar))
             res = 0
+            
+            lpips_loss = self.get_lpips_loss(inp, tar)
+            dino_loss = self.get_dino_loss(inp, tar)
 
-            if only_l2:
-                return l2_loss.mean()
-
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
-        
-            for i, g_feat in enumerate(inp_feat):
-                lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
-
-                # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-                #     lpips_feature_loss[bool_mask] = 0.0
-
-                res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
-
-            dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
-            tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
-            dino_loss = self.l2_loss(dino_feat, tar_feat)
-
-            loss = self.H.lpips_coef * res.mean() + self.H.l2_coef * l2_loss.mean() + self.H.dino_coef * dino_loss.mean()
+            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
             
             if logging:
                 return loss, res.mean(), l2_loss.mean()
