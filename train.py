@@ -39,7 +39,7 @@ def print_seed(device):
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    with autocast(device_type='cuda', dtype=torch.float16):
+    with autocast(device_type='cuda'):
 
         px_z = imle(latents)
         loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))

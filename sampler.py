@@ -65,6 +65,7 @@ class Sampler:
         self.lpips_net = torch.compile(self.lpips_net)
 
         self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
+        # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
         self.vae.eval()
         self.vae.requires_grad_(False)
 
@@ -170,7 +171,7 @@ class Sampler:
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
-            with autocast(device_type='cuda', dtype=torch.float16):
+            with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
                 px_z = gen(latents, None).permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
@@ -178,7 +179,11 @@ class Sampler:
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False, only_l2 = False):
+    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+
+        only_l2 = False
+        if (inp.shape[2] < 32):
+            only_l2 = True
 
         if use_mean:       
             l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
@@ -239,7 +244,7 @@ class Sampler:
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
             cur_latents = latents[batch_slice]
             with torch.no_grad():
-                with autocast(device_type='cuda', dtype=torch.float16):
+                with autocast(device_type='cuda'):
                     out = gen(cur_latents, None)
                     if(logging):
                         dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
@@ -277,7 +282,7 @@ class Sampler:
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
             cur_latents = local_pool_latents[batch_slice]
             with torch.no_grad():
-                with autocast(device_type='cuda', dtype=torch.float16):
+                with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'lpips':
                         proj = self.get_projected(outputs, False)
@@ -312,6 +317,7 @@ class Sampler:
         """
         if is_main_process():
             t1 = time.time()
+            print("Starting pool resampling...")
 
         # Resample pool first (each process contributes its part);
         # this updates self.pool_samples_proj and self.pool_latents.

@@ -186,7 +186,7 @@ def load_opt(H, imle, logprint):
     cosine_iters = H.total_iters - H.warmup_iters
     scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
-    scaler = torch.amp.GradScaler()
+    scaler = torch.GradScaler(device="cuda")
     
     if H.restore_optimizer_path:
         optimizer.load_state_dict(
