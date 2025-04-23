@@ -163,8 +163,12 @@ def restore_params(model, path, local_rank, mpi_size, map_ddp=True, map_cpu=Fals
 
 def restore_log(path, local_rank, mpi_size):
     loaded = [json.loads(l) for l in open(distributed_maybe_download(path, local_rank, mpi_size))]
+
     try:
-        cur_eval_loss = min([z['best_fid'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
+        cur_eval_loss = float('inf')
+        for z in loaded:
+            if 'type' in z and z['type'] == 'train_loss' and 'best_fid' in z:
+                cur_eval_loss = min(cur_eval_loss, z['best_fid'])
     except:
         cur_eval_loss = float('inf')
     starting_epoch = max([z['epoch'] for z in loaded if 'type' in z and z['type'] == 'train_loss'])
@@ -197,25 +201,16 @@ def load_imle(H, logprint):
     ema_imle.requires_grad_(False)
     ema_imle.eval()
      
-    imle = DDP(imle, device_ids=[local_rank], output_device=local_rank)
-
+    imle = DDP(imle, device_ids=[local_rank], 
+                output_device=local_rank,
+                gradient_as_bucket_view=True,
+                static_graph=True
+                )
+    
     if(H.compile):
         imle = torch.compile(imle) 
         ema_imle = torch.compile(ema_imle)
-
-    if H.restore_path:
-        logprint(f'Restoring imle from {H.restore_path}')
-        restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
-
-
-    if H.restore_ema_path:
-        logprint(f'Restoring ema imle from {H.restore_ema_path}')
-        restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
-
     
-
-
-
     return imle, ema_imle
 
 

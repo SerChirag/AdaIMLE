@@ -112,6 +112,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     if(is_main_process()):
         latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
+    
+    metrics = {
+        'mean_loss': float('inf')
+    }
         
     while (epoch < H.num_epochs):
 
@@ -259,9 +263,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # ############ Can be removed ###############
 
-        metrics = {
+        metrics.update({
             'mean_loss': mean_loss,
-        }
+        })
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
@@ -270,14 +274,19 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             torch.cuda.empty_cache()
             if(is_main_process()):
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
-                if cur_fid < best_fid and (not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0):
+                
+                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                if cur_fid < best_fid:
                     best_fid = cur_fid
+                
+                metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+
+                if cur_fid == best_fid:
                     fp = os.path.join(H.save_dir, 'best_fid')
                     logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+                    logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
                     save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
 
-                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-                metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
             torch.distributed.barrier()
 
 
