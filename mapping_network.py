@@ -2,6 +2,7 @@ from math import sqrt
 
 import torch
 from torch import nn
+import numpy as np
 
 
 class PixelNorm(nn.Module):
@@ -11,38 +12,32 @@ class PixelNorm(nn.Module):
     def forward(self, input):
         return input / torch.sqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-6)
 
+class FullyConnectedLayer(torch.nn.Module):
+    def __init__(self,
+        in_features,                # Number of input features.
+        out_features,               # Number of output features.
+        bias            = True,     # Apply additive bias before the activation function?
+        activation      = 'linear', # Activation function: 'relu', 'lrelu', etc.
+        lr_multiplier   = 1,        # Learning rate multiplier.
+        bias_init       = 0,        # Initial value for the additive bias.
+    ):
+        super().__init__()
+        self.activation = activation
+        self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]) / lr_multiplier)
+        self.bias = torch.nn.Parameter(torch.full([out_features], np.float32(bias_init))) if bias else None
+        self.weight_gain = lr_multiplier / np.sqrt(in_features)
+        self.bias_gain = lr_multiplier
 
-class EqualLR:
-    def __init__(self, name):
-        self.name = name
+    def forward(self, x):
+        w = self.weight.to(x.dtype) * self.weight_gain
+        b = self.bias
+        if b is not None:
+            b = b.to(x.dtype)
+            if self.bias_gain != 1:
+                b = b * self.bias_gain
 
-    def compute_weight(self, module):
-        weight = getattr(module, self.name + '_orig')
-        fan_in = weight.data.size(1) * weight.data[0][0].numel()
-
-        return weight * sqrt(2 / fan_in)
-
-    @staticmethod
-    def apply(module, name):
-        fn = EqualLR(name)
-
-        weight = getattr(module, name)
-        del module._parameters[name]
-        module.register_parameter(name + '_orig', nn.Parameter(weight.data))
-        module.register_forward_pre_hook(fn)
-
-        return fn
-
-    def __call__(self, module, input):
-        weight = self.compute_weight(module)
-        setattr(module, self.name, weight)
-
-
-def equal_lr(module, name='weight'):
-    EqualLR.apply(module, name)
-
-    return module
-
+        x = torch.addmm(b.unsqueeze(0), x, w.t())
+        return x
 
 class EqualLinear(nn.Module):
     def __init__(self, in_dim, out_dim):
@@ -62,12 +57,12 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
 
 
 class MappingNetowrk(nn.Module):
-    def __init__(self, code_dim=512, n_mlp=8):
+    def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
         super().__init__()
 
         layers = [PixelNorm()]
         for i in range(n_mlp):
-            layers.append(EqualLinear(code_dim, code_dim))
+            layers.append(FullyConnectedLayer(code_dim, code_dim, lr_multiplier=lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
