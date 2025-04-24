@@ -68,14 +68,14 @@ class Sampler:
         self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
         self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
 
-        model = AutoModel.from_pretrained("facebook/dinov2-base").eval().to(self.device)
+        model = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
         self.dino_encoder = torch.compile(model)
 
 
-        self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
-        # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
-        self.vae.eval()
-        self.vae.requires_grad_(False)
+        # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
+        # # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
+        # self.vae.eval()
+        # self.vae.requires_grad_(False)
 
         self.l2_projection = None
 
@@ -102,11 +102,11 @@ class Sampler:
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
             sum_dims = H.proj_dim
 
-        elif(H.search_type == 'vae'):
-            interpolated = self.vae.encode(fake).latents
-            interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
-            sum_dims = H.proj_dim
+        # elif(H.search_type == 'vae'):
+        #     interpolated = self.vae.encode(fake).latents
+        #     interpolated = interpolated.reshape(interpolated.shape[0],-1)
+        #     self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
+        #     sum_dims = H.proj_dim
         
         elif(H.search_type == 'combined'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
@@ -159,12 +159,12 @@ class Sampler:
         x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
         return (x - self.dino_mean) / self.dino_std
 
-    def get_vae_features(self, inp, permute=True):
-        if(permute):
-            inp = inp.permute(0, 3, 1, 2)
-        interpolated = self.vae.encode(inp).latents
-        interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        return interpolated
+    # def get_vae_features(self, inp, permute=True):
+    #     if(permute):
+    #         inp = inp.permute(0, 3, 1, 2)
+    #     interpolated = self.vae.encode(inp).latents
+    #     interpolated = interpolated.reshape(interpolated.shape[0],-1)
+    #     return interpolated
 
     def get_projected(self, inp, permute=True):
         if(permute):
@@ -216,8 +216,8 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'l2'):
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
-            elif(self.H.search_type == 'vae'):
-                self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
+            # elif(self.H.search_type == 'vae'):
+            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'combined'):
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
             else:
@@ -362,8 +362,8 @@ class Sampler:
                         proj = self.get_projected(outputs, False)
                     elif self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
-                    elif self.H.search_type == 'vae':
-                        proj = self.get_vae_features(outputs, False)
+                    # elif self.H.search_type == 'vae':
+                    #     proj = self.get_vae_features(outputs, False)
                     elif self.H.search_type == 'combined':
                         proj = self.get_combined_feature(outputs, False)
                     else:
