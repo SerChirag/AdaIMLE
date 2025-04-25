@@ -274,7 +274,11 @@ class Sampler:
             res = 0
             
             lpips_loss = self.get_lpips_loss(inp, tar)
-            dino_loss = self.get_dino_loss(inp, tar)
+
+            if(inp.shape[2] < 32):
+                dino_loss = self.get_dino_loss(inp, tar)
+            else:
+                dino_loss = torch.tensor(0.0, device=self.device)
 
             loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
             

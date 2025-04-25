@@ -306,6 +306,7 @@ def main():
 
     experiment = None
     if(is_main_process()):
+        print(H)
         if H.use_comet and H.comet_api_key:
             if(H.comet_experiment_key):
                 print("Resuming experiment")

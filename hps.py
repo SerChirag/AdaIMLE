@@ -24,7 +24,7 @@ cifar10.n_batch = 16
 cifar10.imle_batch = 32 
 cifar10.ema_rate = 0.9999
 cifar10.l2_search_downsample = 1.0
-cifar10.multi_res_scales = '8,10,16,20,24'
+cifar10.multi_res_scales = '8,12,16,24,28'
 HPARAMS_REGISTRY['cifar10'] = cifar10
 
 fewshot = Hyperparams()
@@ -37,7 +37,7 @@ fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
-fewshot.multi_res_scales = '8,10,16,24,32,48,64,96,128,150,200,230'
+fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
 def parse_args_and_update_hparams(H, parser, s=None):
