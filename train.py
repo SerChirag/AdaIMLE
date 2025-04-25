@@ -27,6 +27,8 @@ import datetime
 import os
 import torch.distributed as dist
 
+def isValid(num):
+    return not num != num
 
 def cleanup():
     dist.destroy_process_group()
@@ -97,8 +99,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     if(is_main_process()):
         latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
     
+    mean_loss = float('inf')
     metrics = {
-        'mean_loss': float('inf')
+        'mean_loss': mean_loss
     }
         
     while (epoch < H.num_epochs):
@@ -186,7 +189,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
             iterate += 1
             
-            if iterate % H.iters_per_save == 0 and is_main_process():
+            if iterate % H.iters_per_save == 0 and is_main_process() and isValid(mean_loss):
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving latest model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
@@ -250,6 +253,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         metrics = {
             'mean_loss': mean_loss
         }
+
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
             generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
