@@ -37,6 +37,7 @@ fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
+fewshot.l2_search_downsample = 0.125
 fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
@@ -141,7 +142,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
     
-    parser.add_argument('--use_adaptive', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
+    parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
