@@ -74,7 +74,7 @@ class DecBlock(nn.Module):
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
-        self.resnet = ConvNeXtBlock(width, H, kernel_size=7)
+        self.resnet = ConvNeXtBlock(width, H, kernel_size=7, expansion=H.convnext_expansion)
 
     def forward(self, x, w):
         if self.mixin is not None:
