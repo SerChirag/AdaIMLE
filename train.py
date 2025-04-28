@@ -251,7 +251,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         # ############ Can be removed ###############
         
         metrics = {
-            'mean_loss': mean_loss
+            'mean_loss': mean_loss,
+            'curr_lr': optimizer.param_groups[0]['lr'],
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

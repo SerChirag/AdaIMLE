@@ -7,6 +7,7 @@ from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
 
+from helpers.utils import get_world_size
 from models import parse_layer_string
 
 
@@ -89,7 +90,9 @@ def set_up_data(H):
             break
         valid_data = train_data
         untranspose = False
-    H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.n_batch)
+        
+    H.global_batch_size = H.n_batch * get_world_size()
+    H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.global_batch_size)
 
 
 
