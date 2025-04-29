@@ -183,7 +183,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
-    parser.add_argument("--convnext_expansion", type=int, default=6, help="expansion factor for convnext")
+    parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
 
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
