@@ -341,7 +341,28 @@ def main():
 
     imle, ema_imle = load_imle(H, logprint)
 
-    train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+    if(H.mode == 'train'):
+
+        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+
+    elif H.mode == 'eval_fid':
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        sampler = Sampler(H, len(data_train), preprocess_fn)
+        # generate_and_save(H, imle, sampler, 5000)
+        torch.distributed.barrier()
+        
+        if(is_main_process()):
+            print("Generating samples for FID")
+
+        generate_and_save(H, ema_imle, sampler, 50000)
+        torch.distributed.barrier()
+        # if(is_main_process()):
+            
+        #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
+        #     print("FID: ", cur_fid)
+
 
     cleanup()
 
