@@ -38,3 +38,4 @@ transfer/
 *.sh
 transfer-narval/*
 transfer_rebuttal/*
+*.zip
