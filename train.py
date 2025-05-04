@@ -189,11 +189,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
             iterate += 1
             
-            if iterate % H.iters_per_save == 0 and is_main_process() and isValid(mean_loss):
-                fp = os.path.join(H.save_dir, 'latest')
-                logprint(f'Saving latest model@ {iterate} to {fp}')
-                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-            torch.distributed.barrier()
+            
 
             
             if iterate % H.iters_per_ckpt == 0 and is_main_process():
@@ -285,7 +281,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 50 == 0 and is_main_process()):
+        if (epoch % 25 == 0 and is_main_process()):
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
@@ -296,8 +292,22 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
+        
+        if epoch % H.epoch_per_save == 0 and is_main_process() and isValid(mean_loss):
+            fp = os.path.join(H.save_dir, 'latest')
+            logprint(f'Saving latest model@ {iterate} to {fp}')
+            save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+        torch.distributed.barrier()
 
         epoch += 1
+    
+    if is_main_process():
+        print("Training complete. Saving final model.")
+        fp = os.path.join(H.save_dir, 'final')
+        logprint(f'Saving final model@ {iterate} to {fp}')
+        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+    torch.distributed.barrier()
+
 
 def main():
     init_distributed_mode()
