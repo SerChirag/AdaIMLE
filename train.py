@@ -15,6 +15,7 @@ from data import set_up_data
 from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank
 from sampler import Sampler
+from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_for_NN,
                           generate_visualization,
                           get_sample_for_visualization)
@@ -373,7 +374,23 @@ def main():
         #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
         #     print("FID: ", cur_fid)
 
+    elif H.mode == 'interpolate':
+        if(is_main_process()):
+            print("Generating interpolations")
+            os.makedirs(f'{H.save_dir}/interp', exist_ok=True)
 
+        subset_len = H.subset_len
+        if subset_len == -1:
+            subset_len = len(data_train)
+        with torch.no_grad():
+            sampler = Sampler(H, subset_len, preprocess_fn)
+            torch.distributed.barrier()
+
+            rank = get_rank()
+            world_size = get_world_size()
+            for i in range(rank,H.num_images_to_generate, world_size):
+                random_interp(H, sampler, (0, 256, 256, 3), imle, f'{H.save_dir}/interp/{i}.png', logprint)
+                
     cleanup()
 
 

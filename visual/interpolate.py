@@ -10,27 +10,35 @@ def slerp(low, high, val):
     res = (torch.sin((1.0-val)*omega)/so).unsqueeze(1)*low + (torch.sin(val*omega)/so).unsqueeze(1) * high
     return res
 
-def random_interp(H, sampler, shape, imle, fname, logprint, lat1=None, lat2=None, sn1=None, sn2=None):
+def sample_from_out(px_z):
+    with torch.no_grad():
+        px_z = px_z.permute(0, 2, 3, 1)
+        xhat = (px_z + 1.0) * 127.5
+        xhat = xhat.detach().cpu().numpy()
+        xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
+        return xhat
+
+def random_interp(H, sampler, shape, imle, fname, logprint):
     num_lin = 1
     mb = 15
 
+    device = torch.device("cuda", torch.cuda.current_device())
     batches = []
     # step = (-f_latent + s_latent) / num_lin
     for t in range(num_lin):
-        f_latent = torch.randn([1, H.latent_dim], dtype=torch.float32).cuda()
-        s_latent = torch.randn([1, H.latent_dim], dtype=torch.float32).cuda()
-
-        if lat1 is not None:
-            print('loading from input')
-            f_latent = lat1
-            s_latent = lat2
+        f_latent = torch.randn([1, H.latent_dim], dtype=torch.float32, 
+                               device=device, 
+                               generator=sampler.generator_seed)
+        
+        s_latent = torch.randn([1, H.latent_dim], dtype=torch.float32, 
+                               device=device,
+                               generator=sampler.generator_seed)
   
-        sample_w = torch.cat([slerp(f_latent, s_latent, v) for v in torch.linspace(0, 1, mb).cuda()], dim=0)
+        sample_w = torch.cat([slerp(f_latent, s_latent, v) for v in torch.linspace(0, 1, mb, device=device)], dim=0)
 
-        # out = imle(sample_w, spatial_noise=snoise, input_is_w=True)
-        out = imle(sample_w, spatial_noise=None)
+        out = imle(sample_w)
        
-        batches.append(sampler.sample_from_out(out))
+        batches.append(sample_from_out(out))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
