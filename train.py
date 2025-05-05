@@ -352,6 +352,14 @@ def main():
 
     imle, ema_imle = load_imle(H, logprint)
 
+    if(is_main_process()):
+        num_params = sum(p.numel() for p in imle.parameters())
+        print("Number of parameters in IMLE: ", num_params)
+        logprint("Number of parameters in IMLE: ", num_params)
+        H.num_params = num_params
+        if(experiment is not None):
+            experiment.log_parameter("num_params", num_params)
+
     if(H.mode == 'train'):
 
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
@@ -367,7 +375,7 @@ def main():
         if(is_main_process()):
             print("Generating samples for FID")
 
-        generate_and_save(H, imle, sampler, 50000)
+        generate_and_save(H, imle, sampler, 5000)
         torch.distributed.barrier()
         # if(is_main_process()):
             
