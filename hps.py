@@ -28,6 +28,23 @@ cifar10.multi_res_scales = '8,12,16,24,28'
 cifar10.convnext_expansion = 6
 HPARAMS_REGISTRY['cifar10'] = cifar10
 
+
+stl10 = Hyperparams()
+stl10.width = 384
+stl10.lr = 0.0002
+stl10.wd = 0.01
+stl10.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,16,64m32,64x10"
+stl10.warmup_iters = 100
+stl10.dataset = 'stl10'
+stl10.n_batch = 8
+stl10.imle_batch = 32 
+stl10.ema_rate = 0.9999
+stl10.l2_search_downsample = 1.0
+stl10.multi_res_scales = '16,32,48'
+stl10.convnext_expansion = 4
+HPARAMS_REGISTRY['stl10'] = stl10
+
+
 fewshot = Hyperparams()
 fewshot.width = 384
 fewshot.lr = 0.0002

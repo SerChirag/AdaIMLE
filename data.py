@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 
 from helpers.utils import get_world_size
 from models import parse_layer_string
+from torchvision.datasets import CIFAR10, STL10
 
 
 def set_up_data(H):
@@ -56,6 +57,12 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -120.63838
         scale = 1. / 64.16736
+    elif H.dataset == "stl10":
+        trX, vaX, teX = stl10(H.data_root)
+        H.image_size = 64
+        H.image_channels = 3
+        shift = -0.5    
+        scale = 1.0 / 0.5
     else:
         raise ValueError('unknown dataset: ', H.dataset)
 
@@ -78,6 +85,14 @@ def set_up_data(H):
         train_data = ImageFolder(trX, transforms.ToTensor())
         valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
         untranspose = True
+    elif H.dataset == 'stl10':
+        train_data = trX
+        for data_train in DataLoader(train_data, batch_size=len(train_data)):
+            ds = torch.tensor((data_train[0] + 1)/2 * 255, dtype=torch.uint8)
+            train_data = TensorDataset(ds.permute(0, 2, 3, 1))
+            break
+        valid_data = train_data
+        untranspose = False
     elif H.dataset not in ['fewshot', 'fewshot512']:
         train_data = TensorDataset(torch.as_tensor(trX))
         valid_data = TensorDataset(torch.as_tensor(eval_dataset))
@@ -90,6 +105,7 @@ def set_up_data(H):
             break
         valid_data = train_data
         untranspose = False
+    
         
     H.global_batch_size = H.n_batch * get_world_size()
     H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.global_batch_size)
@@ -177,6 +193,15 @@ def ffhq256(data_root):
     # we did not significantly tune hyperparameters on ffhq-256, and so simply evaluate on the test set
     return train, valid, valid
 
+def stl10(data_root):
+
+    dataset = STL10("./data_stl", split="unlabeled", transform=transforms.Compose([
+                            transforms.Resize(64),
+                            transforms.RandomHorizontalFlip(),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]), download=True)
+    
+    return dataset, None, None
 
 def cifar10(data_root, one_hot=True):
     tr_data = [unpickle_cifar10(os.path.join(data_root, 'cifar-10-batches-py/', 'data_batch_%d' % i)) for i in range(1, 6)]
