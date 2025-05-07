@@ -26,6 +26,7 @@ cifar10.ema_rate = 0.9999
 cifar10.l2_search_downsample = 1.0
 cifar10.multi_res_scales = '8,12,16,24,28'
 cifar10.convnext_expansion = 6
+cifar10.latent_dim = 3072
 HPARAMS_REGISTRY['cifar10'] = cifar10
 
 

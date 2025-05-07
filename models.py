@@ -7,6 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
+from unet import UNet
 
 def parse_layer_string(s):
     layers = []
@@ -121,8 +122,10 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.decoder = UNet(
+            ch=128, ch_mult=[1, 2, 2, 2], attn=[1],
+            num_res_blocks=3, dropout=0.1)
 
     def forward(self, latents, input_is_w=False):
-        return self.decoder.forward(latents, input_is_w)
+        return self.decoder.forward(latents)
 
