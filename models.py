@@ -35,8 +35,25 @@ def get_width_settings(width, s):
             mapping[int(k)] = int(v)
     return mapping
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
 class ConvNeXtBlock(nn.Module):
-    def __init__(self, dim, H, expansion=4, kernel_size=7):
+    def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
@@ -46,6 +63,12 @@ class ConvNeXtBlock(nn.Module):
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
 
         ## single parameter for residual ratio
+        self.use_se = use_se
+        if use_se:
+            self.se = SEBlock(dim, reduction=reduction)  
+        else:
+            # Indentity layer if SE is not used
+            self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
     
     def forward(self, x):
@@ -62,6 +85,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
+        x = self.se(x)
         return x * self.sigmoid(self.residual_ratio) + residual
 
 
@@ -74,7 +98,10 @@ class DecBlock(nn.Module):
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
-        self.resnet = ConvNeXtBlock(width, H, kernel_size=7, expansion=H.convnext_expansion)
+        self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
+                                    expansion=H.convnext_expansion, 
+                                    use_se=H.use_se,
+                                    reduction=H.se_reduction)
 
     def forward(self, x, w):
         if self.mixin is not None:
