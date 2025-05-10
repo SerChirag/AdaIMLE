@@ -71,6 +71,8 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     indices = list(range(rank, n_samp, world_size))
     n_local = len(indices)
 
+    imle.eval()
+
     with torch.no_grad():
         # Process images in batches
         for i in range(0, n_local, H.imle_batch):
@@ -86,3 +88,5 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             for j in range(current_batch_size):
                 global_index = indices[i + j]
                 imageio.imwrite(f'{H.save_dir}/{subdir}/{global_index}.png', samp[j])
+    
+    imle.train()

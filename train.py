@@ -120,9 +120,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
+                imle.eval()
                 generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
+                imle.train()
 
         # Create a dataset that pairs images with their current latents.
         torch.distributed.barrier()
@@ -181,6 +183,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
+                    imle.eval()
                     with torch.no_grad():
                         generate_visualization(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
@@ -188,6 +191,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 latent_for_visualization,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
+                    imle.train()
             iterate += 1
             
             
@@ -283,6 +287,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 
         if (epoch % 25 == 0 and is_main_process()):
+            imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
@@ -290,6 +295,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                         latent_for_visualization,
                                         viz_batch_original.shape, imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
+            imle.train()
 
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
@@ -375,6 +381,7 @@ def main():
         if(is_main_process()):
             print("Generating samples for FID")
 
+        imle.eval()
         generate_and_save(H, imle, sampler, 5000)
         torch.distributed.barrier()
         # if(is_main_process()):
@@ -390,6 +397,8 @@ def main():
         subset_len = H.subset_len
         if subset_len == -1:
             subset_len = len(data_train)
+        
+        imle.eval()
         with torch.no_grad():
             sampler = Sampler(H, subset_len, preprocess_fn)
             torch.distributed.barrier()

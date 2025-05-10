@@ -53,7 +53,7 @@ class SEBlock(nn.Module):
         return x * y.expand_as(x)
 
 class ConvNeXtBlock(nn.Module):
-    def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16):
+    def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
@@ -70,6 +70,8 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
+
     
     def forward(self, x):
         residual = x
@@ -83,6 +85,9 @@ class ConvNeXtBlock(nn.Module):
         # Pointwise conv to expand channels
         x = self.pw_conv1(x)
         x = self.gelu(x)
+
+        # Apply dropout
+        x = self.dropout(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
         x = self.se(x)
@@ -101,7 +106,8 @@ class DecBlock(nn.Module):
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
                                     use_se=H.use_se,
-                                    reduction=H.se_reduction)
+                                    reduction=H.se_reduction,
+                                    dropout=H.dropout_p)
 
     def forward(self, x, w):
         if self.mixin is not None:

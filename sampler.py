@@ -341,7 +341,9 @@ class Sampler:
     ############### Can be removed ###########
 
 
-    def resample_pool(self, gen):   
+    def resample_pool(self, gen):
+
+        gen.eval()   
 
         # Determine local pool size
         local_pool_size = ceil(self.pool_size / self.world_size)
@@ -381,6 +383,8 @@ class Sampler:
 
         torch.distributed.all_gather(gathered_latents, local_pool_latents)
         torch.distributed.all_gather(gathered_proj, local_pool_proj)
+
+        gen.train()
 
         torch.distributed.barrier()
 
