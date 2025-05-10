@@ -248,6 +248,12 @@ class ManifoldEstimator:
             
 def calculate_precision_recall_from_activations(activates_ref, activations_sample):
     estimator = ManifoldEstimator()
+    if activations_sample.shape[0] > activates_ref.shape[0]:
+        print('Sample size is larger than reference size. Randomly sample from the sample set.')
+        rng = np.random.RandomState(0)
+        idx = rng.choice(activations_sample.shape[0], activates_ref.shape[0], replace=False)
+        activations_sample = activations_sample[idx]
+
     radii_1 = estimator.manifold_radii(activates_ref)
     radii_2 = estimator.manifold_radii(activations_sample)
     pr = estimator.evaluate_pr(activates_ref, radii_1, activations_sample, radii_2)
