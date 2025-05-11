@@ -382,7 +382,7 @@ def main():
             print("Generating samples for FID")
 
         imle.eval()
-        generate_and_save(H, imle, sampler, 5000)
+        generate_and_save(H, imle, sampler, 50000)
         torch.distributed.barrier()
         # if(is_main_process()):
             
