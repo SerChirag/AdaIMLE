@@ -205,7 +205,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
-    parser.add_argument("--use_se", default=False, type=lambda x: bool(strtobool(x)))  # whether to use se block
+    parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
