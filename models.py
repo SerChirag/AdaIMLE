@@ -7,6 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
+from torchvision.ops import StochasticDepth
 
 def parse_layer_string(s):
     layers = []
@@ -55,6 +56,7 @@ class SEBlock(nn.Module):
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
+        self.H = H
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
         self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
@@ -70,7 +72,12 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
-        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
+        # self.drop_path = StochasticDepth(dropout, mode="batch", training=H.use_drop_path)
+        if (H.use_drop_path):
+            self.drop_path = StochasticDepth(dropout, mode="batch")
+        else:
+            self.drop_path = nn.Identity()
+
 
     
     def forward(self, x):
@@ -85,17 +92,17 @@ class ConvNeXtBlock(nn.Module):
         # Pointwise conv to expand channels
         x = self.pw_conv1(x)
         x = self.gelu(x)
-
-        # Apply dropout
-        x = self.dropout(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
         x = self.se(x)
-        return x * self.sigmoid(self.residual_ratio) + residual
+        x = x * self.sigmoid(self.residual_ratio)
+        # Apply dropout
+        x = self.drop_path(x)
+        return x + residual
 
 
 class DecBlock(nn.Module):
-    def __init__(self, H, res, mixin, n_blocks):
+    def __init__(self, H, res, mixin, n_blocks, drop_path=0.0):
         super().__init__()
         self.base = res
         self.mixin = mixin
@@ -107,7 +114,7 @@ class DecBlock(nn.Module):
                                     expansion=H.convnext_expansion, 
                                     use_se=H.use_se,
                                     reduction=H.se_reduction,
-                                    dropout=H.dropout_p)
+                                    dropout=drop_path)
 
     def forward(self, x, w):
         if self.mixin is not None:
@@ -125,8 +132,21 @@ class Decoder(nn.Module):
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
         blocks = parse_layer_string(H.dec_blocks)
+
+        total = 0
         for idx, (res, mixin) in enumerate(blocks):
-            dec_blocks.append(DecBlock(H, res, mixin, n_blocks=len(blocks)))
+            if mixin is None:
+                total += 1
+
+        dp_index = 0
+        for idx, (res, mixin) in enumerate(blocks):
+            if mixin is not None:
+                dp_rate = 0.0
+            else:
+                dp_rate = H.drop_path_rate * (dp_index / total)
+                dp_index += 1
+            # print(f"Decoder block {idx}: res={res}, mixin={mixin}, drop_path_rate={dp_rate:.4f}")
+            dec_blocks.append(DecBlock(H, res, mixin, n_blocks=len(blocks), drop_path=dp_rate))
             resos.add(res)
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)
