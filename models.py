@@ -72,7 +72,9 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
-        # self.drop_path = StochasticDepth(dropout, mode="batch", training=H.use_drop_path)
+        
+        self.dropout = nn.Dropout(dropout)
+
         if (H.use_drop_path):
             self.drop_path = StochasticDepth(dropout, mode="batch")
         else:
@@ -95,9 +97,12 @@ class ConvNeXtBlock(nn.Module):
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
         x = self.se(x)
+
+        x = self.dropout(x)
+
         x = x * self.sigmoid(self.residual_ratio)
         # Apply dropout
-        x = self.drop_path(x)
+        # x = self.drop_path(x)
         return x + residual
 
 
