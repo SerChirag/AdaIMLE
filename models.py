@@ -73,7 +73,7 @@ class ConvNeXtBlock(nn.Module):
             self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(H.dropout_p)
 
         if (H.use_drop_path):
             self.drop_path = StochasticDepth(dropout, mode="batch")
