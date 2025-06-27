@@ -30,8 +30,14 @@ def init_distributed_mode():
         local_rank = int(os.environ["SLURM_LOCALID"])
         rank = node_id * gpus_per_node + local_rank
         world_size = int(os.environ["SLURM_NTASKS"])
+
     else:
-        raise RuntimeError("Distributed environment not properly set.")
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "12355"
+        # raise RuntimeError("Distributed environment not properly set.")
 
     # Set correct GPU
     torch.cuda.set_device(local_rank)

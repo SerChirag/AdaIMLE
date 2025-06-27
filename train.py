@@ -254,6 +254,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
+            'total_excluded_percentage': sampler.total_excluded_percentage,
+            'mean_distance_nn': sampler.mean_distance_nn,
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

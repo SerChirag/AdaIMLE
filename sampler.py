@@ -141,6 +141,11 @@ class Sampler:
 
         self.total_excluded = 0
         self.total_excluded_percentage = 0
+        self.ema_raw = 0.0
+        self.ema_factor = 0.99
+        self.ema_counter = 0
+        self.mean_distance_nn = None
+
         self.dataset_size = sz
         self.db_iter = 0
         self.generator_seed = torch.Generator(device=self.device)         
@@ -392,6 +397,25 @@ class Sampler:
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
+    def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
+        """Collect a tensor of (unique) indices from every rank and return the global union (broadcast to all)."""
+        send = local_tensor.cpu().tolist()
+        gathered = [None for _ in range(self.world_size)] if is_main_process() else None
+        torch.distributed.gather_object(send, gathered, dst=0)
+
+        if is_main_process():
+            union_set = set()
+            for item in gathered:
+                union_set.update(item)
+            global_union = torch.tensor(sorted(union_set), dtype=torch.long, device=self.device)
+        else:
+            global_union = torch.empty(0, dtype=torch.long, device=self.device)
+
+        torch.distributed.broadcast(global_union, src=0)
+
+        return global_union.to(torch.long)
+
+
     def imle_sample_force(self, dataset, gen, to_update=None):
         """
         Optimized force resampling routine using FAISS for batched nearest-neighbor search.
@@ -443,10 +467,35 @@ class Sampler:
 
             self.gpu_index_flat.add(pool_feats)  # add entire pool
 
+            if(self.H.use_rsimle):
+                # If using RSIMLE, we need to reset the index to avoid accumulating entries.
+                distances, indices = self.gpu_index_flat.search(local_ds_feats, self.H.rs_knn_ignore)
+                local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
+                local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+                easy_mask = local_distances < self.H.rs_radius
+                local_easy = torch.unique(local_indices[easy_mask])  # 1‑D tensor of pool indices to drop
+
+                global_easy = self._sync_union_indices(local_easy)
+
+                percent_curr = global_easy.numel() / self.pool_latents.shape[0]
+                self.ema_raw = self.ema_factor * self.ema_raw + (1 - self.ema_factor) * percent_curr
+                self.total_excluded_percentage = self.ema_raw / (1 - self.ema_factor ** (self.ema_counter + 1))  # apply correction only here
+                self.ema_counter += 1
+
+                if global_easy.numel() > 0:
+                    keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
+                    keep_mask[global_easy] = False
+                    pool_feats = pool_feats[keep_mask]
+                    self.pool_samples_proj = self.pool_samples_proj[keep_mask]
+                    self.pool_latents = self.pool_latents[keep_mask]
+                    self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
+                    self.gpu_index_flat.add(pool_feats)
+
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
             distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+            self.mean_distance_nn = local_distances.mean().item()
 
             # Get current temporary distances for the local slice.
             local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
