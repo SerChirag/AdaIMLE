@@ -398,22 +398,40 @@ class Sampler:
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
     def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
-        """Collect a tensor of (unique) indices from every rank and return the global union (broadcast to all)."""
+        """Synchronize a union of indices across ranks — works correctly under NCCL by broadcasting size and values separately."""
         send = local_tensor.cpu().tolist()
-        gathered = [None for _ in range(self.world_size)] if is_main_process() else None
+
+        if is_main_process():
+            gathered = [None for _ in range(self.world_size)]
+        else:
+            gathered = None
+
         torch.distributed.gather_object(send, gathered, dst=0)
 
         if is_main_process():
             union_set = set()
             for item in gathered:
                 union_set.update(item)
-            global_union = torch.tensor(sorted(union_set), dtype=torch.long, device=self.device)
+            sorted_union = sorted(union_set)
+            global_len = torch.tensor([len(sorted_union)], dtype=torch.long, device=self.device)
+            global_union = torch.tensor(sorted_union, dtype=torch.long, device=self.device)
         else:
-            global_union = torch.empty(0, dtype=torch.long, device=self.device)
+            global_len = torch.empty(1, dtype=torch.long, device=self.device)
+            global_union = None  # will be allocated after length broadcast
+
+        # Step 1: Broadcast length
+        torch.distributed.broadcast(global_len, src=0)
+        union_size = global_len.item()
+
+        # Step 2: Broadcast tensor
+        if not is_main_process():
+            global_union = torch.empty(union_size, dtype=torch.long, device=self.device)
 
         torch.distributed.broadcast(global_union, src=0)
+        torch.distributed.barrier()  # Optional sync point
 
-        return global_union.to(torch.long)
+        return global_union
+
 
 
     def imle_sample_force(self, dataset, gen, to_update=None):
@@ -474,6 +492,8 @@ class Sampler:
                 local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
                 easy_mask = local_distances < self.H.rs_radius
                 local_easy = torch.unique(local_indices[easy_mask])  # 1‑D tensor of pool indices to drop
+                # if is_main_process():
+                torch.distributed.barrier()  # Ensure all processes complete the search
 
                 global_easy = self._sync_union_indices(local_easy)
 
@@ -490,12 +510,22 @@ class Sampler:
                     self.pool_latents = self.pool_latents[keep_mask]
                     self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
                     self.gpu_index_flat.add(pool_feats)
+                
+                torch.distributed.barrier()  # Ensure synchronization before leaving the function
+
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
             distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
             self.mean_distance_nn = local_distances.mean().item()
+
+            # if is_main_process():
+            #     print(f"Mean distance NN: {self.mean_distance_nn:.4f}")
+            #     print(f"Min distance NN: {local_distances.min().item():.4f}")
+            #     print(f"Min distance NN: {local_distances.max().item():.4f}")
+            #     print(f"Total excluded percentage: {self.total_excluded_percentage:.4f}")
+
 
             # Get current temporary distances for the local slice.
             local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
