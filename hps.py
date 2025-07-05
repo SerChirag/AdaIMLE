@@ -52,7 +52,7 @@ fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
-# fewshot.dec_blocks = '1x4,2m1,2x2,4m2,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
+# fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
 fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
@@ -197,6 +197,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
+    parser.add_argument("--convnext_groups", type=int, default=1, help="number of groups for convnext")
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")

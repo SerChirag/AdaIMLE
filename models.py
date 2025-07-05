@@ -59,10 +59,10 @@ class ConvNeXtBlock(nn.Module):
         self.H = H
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
-        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
+        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1, groups=H.convnext_groups)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()
-        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1, groups=H.convnext_groups)
 
         ## single parameter for residual ratio
         self.use_se = use_se
