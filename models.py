@@ -164,8 +164,9 @@ class Decoder(nn.Module):
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
+        last_res = self.resolutions[-1]
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        self.resnet = get_1x1(H.width, H.image_channels)
+        self.resnet = get_1x1(self.widths[last_res], H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
 
