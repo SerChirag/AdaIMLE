@@ -111,7 +111,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            torch.cuda.empty_cache()
             sampler.imle_sample_force(split_x_tensor, imle)
+            torch.cuda.empty_cache()
 
         torch.distributed.barrier()
         

@@ -62,7 +62,7 @@ class ConvNeXtBlock(nn.Module):
         self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1, groups=H.convnext_groups)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()
-        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1, groups=H.convnext_groups)
+        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
 
         ## single parameter for residual ratio
         self.use_se = use_se
@@ -120,10 +120,18 @@ class DecBlock(nn.Module):
                                     use_se=H.use_se,
                                     reduction=H.se_reduction,
                                     dropout=drop_path)
+        if mixin is not None:
+            in_width = self.widths[mixin]
+            out_width = self.widths[res]
+            self.resnet_1x1 = get_1x1(in_width, out_width)
+
+
 
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+            x = self.resnet_1x1(x)
+            
         x = self.adaIN(x, w)
         x = self.resnet(x)
         return x
