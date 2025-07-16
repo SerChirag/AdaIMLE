@@ -215,7 +215,7 @@ class Sampler:
 
     def init_projection(self, dataset):
 
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset), batch_size=self.H.n_batch)):
+        for ind, x in enumerate(DataLoader(dataset, batch_size=self.H.n_batch)):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
@@ -434,7 +434,7 @@ class Sampler:
 
 
 
-    def imle_sample_force(self, dataset, gen, to_update=None):
+    def imle_sample_force(self, gen, to_update=None):
         """
         Optimized force resampling routine using FAISS for batched nearest-neighbor search.
         In a DDP setting, each process handles a different subset of the dataset features,

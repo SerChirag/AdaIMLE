@@ -70,9 +70,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     subset_len = len(data_train)
     if H.subset_len != -1:
         subset_len = H.subset_len
-    for data_train in DataLoader(data_train, batch_size=subset_len):
-        data_train = TensorDataset(data_train[0])
-        break
 
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
@@ -85,15 +82,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     device = torch.device("cuda", torch.cuda.current_device())
 
     epoch = starting_epoch 
-
-    split_x_tensor = data_train.tensors[0]
-    split_x = TensorDataset(split_x_tensor)
-
-    sampler.init_projection(split_x_tensor)
+    sampler.init_projection(data_train)
     
     torch.distributed.barrier()
 
-    viz_batch_original, _ = get_sample_for_visualization(split_x, preprocess_fn, H.num_images_visualize, H.dataset)
+    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
     latent_for_visualization = []
 
@@ -112,7 +105,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             torch.cuda.empty_cache()
-            sampler.imle_sample_force(split_x_tensor, imle)
+            sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
 
         torch.distributed.barrier()
@@ -123,14 +116,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
-                generate_for_NN(sampler, split_x_tensor[:H.num_images_visualize], latents,
+                generate_for_NN(sampler, viz_batch_original, latents,
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
 
         # Create a dataset that pairs images with their current latents.
         torch.distributed.barrier()
-        comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
+        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -228,7 +221,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
 
 
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(split_x_tensor, imle, 
+        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(data_train_tensor, imle, 
         #                                                                                     dists=cur_dists,  
         #                                                                                     dists_lpips=cur_dists_lpips,
         #                                                                                     dists_l2=cur_dists_l2, 
