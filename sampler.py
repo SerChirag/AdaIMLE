@@ -215,7 +215,14 @@ class Sampler:
 
     def init_projection(self, dataset):
 
-        for ind, x in enumerate(DataLoader(dataset, batch_size=self.H.n_batch)):
+        dataloader = DataLoader(
+            dataset,
+            batch_size=self.H.imle_batch,      # Get 32 samples per batch
+            shuffle=False,  # No need to shuffle for projection
+            num_workers=4      # Adjust based on your CPU
+        )
+
+        for ind, x in enumerate(dataloader):
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()

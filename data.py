@@ -6,6 +6,9 @@ from torch.utils.data import TensorDataset, DataLoader
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
+from PIL import Image
+from datasets import load_dataset
+from torch.utils.data import Dataset
 
 from helpers.utils import get_world_size
 from models import parse_layer_string
@@ -63,6 +66,12 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -0.5    
         scale = 1.0 / 0.5
+    elif H.dataset == 'lsun':
+        trX, vaX, teX = lsun_church(H.data_root)   # helper above
+        H.image_size     = 256
+        H.image_channels = 3
+        shift = -0.5               
+        scale = 1. / 0.5
     else:
         raise ValueError('unknown dataset: ', H.dataset)
 
@@ -81,22 +90,33 @@ def set_up_data(H):
     shift_loss = torch.tensor([shift_loss], device=device).view(1, 1, 1, 1)
     scale_loss = torch.tensor([scale_loss], device=device).view(1, 1, 1, 1)
 
-    if H.dataset == 'ffhq_1024':
-        train_data = ImageFolder(trX, transforms.ToTensor())
-        valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
-        untranspose = True
-    elif H.dataset == 'stl10':
+    # if H.dataset == 'ffhq_1024':
+    #     train_data = ImageFolder(trX, transforms.ToTensor())
+    #     valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
+    #     untranspose = True
+    train_len = None
+    if H.dataset == 'stl10':
         train_data = trX
         for data_train in DataLoader(train_data, batch_size=len(train_data)):
             ds = torch.tensor((data_train[0] + 1)/2 * 255, dtype=torch.uint8)
             train_data = TensorDataset(ds.permute(0, 2, 3, 1))
             break
         valid_data = train_data
-        untranspose = False
+        untranspose = True
+        train_len = len(train_data)
+    
+    elif H.dataset == 'lsun':
+        train_data = trX
+        valid_data = trX
+        train_len = train_data.ds.num_rows  
+        untranspose = True
+
     elif H.dataset not in ['fewshot', 'fewshot512']:
         train_data = TensorDataset(torch.as_tensor(trX))
         valid_data = TensorDataset(torch.as_tensor(eval_dataset))
         untranspose = False
+        train_len = len(train_data)
+
     else:
         train_data = trX
         for data_train in DataLoader(train_data, batch_size=len(train_data)):
@@ -105,11 +125,11 @@ def set_up_data(H):
             break
         valid_data = train_data
         untranspose = False
+        train_len = len(train_data)
     
         
     H.global_batch_size = H.n_batch * get_world_size()
-    H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.global_batch_size)
-
+    H.total_iters = H.num_epochs * np.ceil(train_len // H.global_batch_size)
 
 
     def preprocess_func(x):
@@ -202,6 +222,31 @@ def stl10(data_root):
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]), download=True)
     
     return dataset, None, None
+
+class HuggingFaceLSUNChurch(Dataset):
+    def __init__(self, data_root, split='train', image_size=256):
+        self.ds = load_dataset("tglcourse/lsun_church_train", split=split)
+        self.transform = transforms.Compose([
+            transforms.Resize(image_size + 32),
+            transforms.CenterCrop(image_size),
+            transforms.ToTensor(),
+        ])
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        example = self.ds[idx]
+        image = example["image"]
+        if not isinstance(image, Image.Image):
+            image = Image.fromarray(image)
+        image = self.transform(image) * 255.0
+        return [image]
+    
+def lsun_church(data_root):
+    train_ds = HuggingFaceLSUNChurch(data_root, split='train', image_size=256)
+    return train_ds, None, None  # No validation or test set in this case
+
 
 def cifar10(data_root, one_hot=True):
     tr_data = [unpickle_cifar10(os.path.join(data_root, 'cifar-10-batches-py/', 'data_batch_%d' % i)) for i in range(1, 6)]

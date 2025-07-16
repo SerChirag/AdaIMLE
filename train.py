@@ -77,6 +77,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
 
+    _ , viz_batch_original = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
+
     sampler = Sampler(H, subset_len, preprocess_fn)
     torch.distributed.barrier()
     device = torch.device("cuda", torch.cuda.current_device())
@@ -85,8 +87,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     sampler.init_projection(data_train)
     
     torch.distributed.barrier()
-
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
     latent_for_visualization = []
 
@@ -364,7 +364,6 @@ def main():
             experiment.log_parameter("num_params", num_params)
 
     if(H.mode == 'train'):
-
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
