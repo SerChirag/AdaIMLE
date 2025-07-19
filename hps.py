@@ -218,7 +218,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--drop_path_rate", type=float, default=0.0, help="dropout rate for convnext block")
     parser.add_argument("--use_drop_path", default=False, type=lambda x: bool(strtobool(x)))  # whether to use drop_path block
 
-    parser.add_argument("--latent_interpolate_step", type=float, default=0.01, help="dropout rate for convnext block")
+    parser.add_argument("--latent_interpolate_step", type=float, default=0.05, help="dropout rate for convnext block")
     parser.add_argument("--use_interpolate_latents", default=True, type=lambda x: bool(strtobool(x)))  # whether to use drop_path block
 
     # some metric args
