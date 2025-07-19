@@ -39,28 +39,18 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, sampler, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    targets_permuted = targets.permute(0, 3, 1, 2)
+
+    targets_permuted = sampler.get_image_feature(targets)
     with autocast(device_type='cuda'):
 
         px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss = loss_fn(px_z, targets_permuted)
         loss_measure = loss.clone()
-        num_resolutions = 1
 
-        if(H.use_multi_res):
-            
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                loss_scale = loss_fn(px_z_scale, targets_scale)
-                
-                loss.add_(loss_scale)
-                num_resolutions += 1
-
-    loss = loss / num_resolutions
+    # loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
@@ -162,7 +152,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             target = target.to(device)
             latents = latents.to(device)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
+            loss = training_step_imle(H, sampler, target, latents, imle, ema_imle,
                                optimizer, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()

@@ -64,7 +64,7 @@ fewshot = Hyperparams()
 fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
-fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
+fewshot.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,32x21"
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
 fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
@@ -157,7 +157,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
-    parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
+    parser.add_argument('--l2_coef', type=float, default=1.0)  # l2 loss coefficient
     parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
@@ -192,7 +192,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
-    parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
+    parser.add_argument('--search_type', type=str, default='l2', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
     parser.add_argument('--use_rsimle', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
@@ -217,6 +217,9 @@ def add_imle_arguments(parser):
 
     parser.add_argument("--drop_path_rate", type=float, default=0.0, help="dropout rate for convnext block")
     parser.add_argument("--use_drop_path", default=False, type=lambda x: bool(strtobool(x)))  # whether to use drop_path block
+
+    parser.add_argument("--latent_interpolate_step", type=float, default=0.01, help="dropout rate for convnext block")
+    parser.add_argument("--use_interpolate_latents", default=True, type=lambda x: bool(strtobool(x)))  # whether to use drop_path block
 
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
