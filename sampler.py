@@ -388,12 +388,6 @@ class Sampler:
                     device=self.device,
                     generator=self.generator_seed)
                 
-                if(self.H.use_interpolate_latents):
-                    if(self.first_time):
-                        self.first_time = False
-                    else:
-                        full_updated_latents = self.interpolate_latents(self.last_selected_latents, full_updated_latents, step=self.H.latent_interpolate_step)
-
                 full_updated_latents += perturbation
 
             else:
