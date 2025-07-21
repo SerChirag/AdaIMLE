@@ -39,15 +39,30 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, sampler, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, sampler, targets, latents, last_latents, imle, ema_imle, optimizer, loss_fn, scaler, can_interpolate):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
 
     targets_permuted = sampler.get_image_feature(targets)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents)
-        loss = loss_fn(px_z, targets_permuted)
+        if(H.use_interpolate_latents and can_interpolate):
+            loss = None
+            steps = np.linspace(0.0, 1.0, num=H.num_interpolate_steps)
+            for step in steps:
+                latents_interpolate = sampler.interpolate_latents(latents, last_latents, step=step)
+                px_z = imle(latents_interpolate)
+                if loss is None:
+                    loss = loss_fn(px_z, targets_permuted)
+                else:
+                    loss += loss_fn(px_z, targets_permuted)
+            
+            # Average the loss over the number of interpolation steps
+            loss = loss / H.num_interpolate_steps
+        else:
+            px_z = imle(latents)
+            loss = loss_fn(px_z, targets_permuted)
+
         loss_measure = loss.clone()
 
     # loss = loss / num_resolutions
@@ -81,6 +96,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 
     latent_for_visualization = []
+    can_interpolate = False
+    one_epoch_done = False
 
     if(is_main_process()):
         latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
@@ -99,12 +116,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
+            if(one_epoch_done):
+                can_interpolate = True
 
         torch.distributed.barrier()
         
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
@@ -115,7 +134,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Create a dataset that pairs images with their current latents.
         torch.distributed.barrier()
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
+        comb_dataset = ZippedDataset(data_train, 
+                                     TensorDataset(sampler.selected_latents), 
+                                     TensorDataset(sampler.last_selected_latents))
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -148,12 +169,18 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
+            last_latents = cur[2][0]
             _, target = preprocess_fn(x)
+
             target = target.to(device)
             latents = latents.to(device)
+            last_latents = last_latents.to(device)
 
-            loss = training_step_imle(H, sampler, target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, scaler)
+            if(last_latents is None):
+                last_latents = latents.clone()
+
+            loss = training_step_imle(H, sampler, target, latents, last_latents, imle, ema_imle,
+                               optimizer, sampler.calc_loss, scaler, can_interpolate)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -204,6 +231,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
+
+        one_epoch_done = True
 
         ############ Can be removed ###############
         # if(is_main_process() and epoch % 5 == 0):
