@@ -49,27 +49,21 @@ def training_step_imle(H, sampler, targets, latents, last_latents, imle, ema_iml
         if(H.use_interpolate_latents and can_interpolate):
             px_z = imle(latents)
             loss = loss_fn(px_z, targets_permuted)
-            del px_z; torch.cuda.empty_cache()
 
             px_z = imle(last_latents)
             loss += loss_fn(px_z, targets_permuted)
-            del px_z; torch.cuda.empty_cache()
-
 
             for j in range(H.num_interpolate_steps - 2):
                 step = np.random.uniform(size=1)[0]
                 latents_interpolate = sampler.interpolate_latents(latents, last_latents, step=step)
                 px_z = imle(latents_interpolate)
                 loss += loss_fn(px_z, targets_permuted)
-                del px_z; torch.cuda.empty_cache()
             
             # Average the loss over the number of interpolation steps
             loss = loss / H.num_interpolate_steps
         else:
             px_z = imle(latents)
             loss = loss_fn(px_z, targets_permuted)
-            del px_z; torch.cuda.empty_cache()
-
 
         loss_measure = loss.clone()
 
