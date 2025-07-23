@@ -47,15 +47,17 @@ def training_step_imle(H, sampler, targets, latents, last_latents, imle, ema_iml
     with autocast(device_type='cuda'):
 
         if(H.use_interpolate_latents and can_interpolate):
-            loss = None
-            steps = np.linspace(0.0, 1.0, num=H.num_interpolate_steps)
-            for step in steps:
+            px_z_og = imle(latents)
+            loss = loss_fn(px_z_og, targets_permuted)
+
+            px_z = imle(last_latents)
+            loss += loss_fn(px_z, targets_permuted)
+
+            for j in range(H.num_interpolate_steps - 2):
+                step = np.random.uniform(size=1)[0]
                 latents_interpolate = sampler.interpolate_latents(latents, last_latents, step=step)
                 px_z = imle(latents_interpolate)
-                if loss is None:
-                    loss = loss_fn(px_z, targets_permuted)
-                else:
-                    loss += loss_fn(px_z, targets_permuted)
+                loss += loss_fn(px_z, targets_permuted)
             
             # Average the loss over the number of interpolation steps
             loss = loss / H.num_interpolate_steps
