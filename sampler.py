@@ -250,12 +250,12 @@ class Sampler:
 
         return global_union
 
-    def interpolate_latents(self, old_latents, new_latents, step=0.1):
-        latents_interpolate = (1 - step) * old_latents.to(self.device) + step * new_latents
+    def interpolate_latents(self, new_latents,old_latents, step=0.1):
+        latents_interpolate = (1 - step) * new_latents + step * old_latents.to(self.device)
         normalized_latents = F.normalize(latents_interpolate, p=2, dim=1)
         old_latents_norm = torch.norm(old_latents, p=2, dim=1, keepdim=True)
         new_latents_norm = torch.norm(new_latents, p=2, dim=1, keepdim=True)
-        norms = (1-step) * old_latents_norm + step * new_latents_norm
+        norms = (1-step) * new_latents_norm + step * old_latents_norm
         normalized_latents = normalized_latents * norms
         return normalized_latents
 
