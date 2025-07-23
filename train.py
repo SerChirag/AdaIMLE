@@ -54,7 +54,7 @@ def training_step_imle(H, sampler, targets, latents, last_latents, imle, ema_iml
             loss += loss_fn(px_z, px_z_og)
 
             for j in range(H.num_interpolate_steps - 2):
-                step = rand_step = np.random.uniform(size=1)[0]
+                step = np.random.uniform(size=1)[0]
                 latents_interpolate = sampler.interpolate_latents(latents, last_latents, step=step)
                 px_z = imle(latents_interpolate)
                 loss += loss_fn(px_z, px_z_og)
