@@ -60,7 +60,7 @@ def training_step_imle(H, n, targets, latents, last_latents, imle, ema_imle, opt
         if(H.use_interpolate_latents and can_interpolate):
             
             px_z = imle(latents)
-            loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+            loss = loss_fn(px_z, targets_permuted)
             loss_measure = loss.clone()
             num_resolutions = 1
 
@@ -69,25 +69,22 @@ def training_step_imle(H, n, targets, latents, last_latents, imle, ema_imle, opt
                 for scale in H['multi_res_scales']:
                     px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
                     targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                    loss_scale = loss_fn(px_z_scale, targets_scale)
-                    
-                    loss.add_(loss_scale)
+                    loss += loss_fn(px_z_scale, targets_scale)
                     num_resolutions += 1
 
             steps = [0.5, 1.0]
 
             for step in steps:
-                latents = interpolate_latents(latents, last_latents, step=step)
-                px_z = imle(latents)
-                loss += loss_fn(px_z, targets.permute(0, 3, 1, 2))
+                interpolated_latents = interpolate_latents(latents, last_latents, step=step)
+                px_z = imle(interpolated_latents)
+                loss += loss_fn(px_z, targets_permuted)
+                num_resolutions += 1
 
                 if(H.use_multi_res):
                     for scale in H['multi_res_scales']:
                         px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
                         targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                        loss_scale = loss_fn(px_z_scale, targets_scale)
-                        
-                        loss.add_(loss_scale)
+                        loss += loss_fn(px_z_scale, targets_scale)
                         num_resolutions += 1
 
             loss = loss / 3
