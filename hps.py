@@ -71,7 +71,7 @@ fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
 fewshot.l2_search_downsample = 0.125
-fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
+fewshot.multi_res_scales = '16,32,64,128'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
 def parse_args_and_update_hparams(H, parser, s=None):

@@ -42,7 +42,7 @@ def print_seed(device):
 
 
 
-def interpolate_latents(self, new_latents, old_latents, step=0.1):
+def interpolate_latents(new_latents, old_latents, step=0.1):
     latents_interpolate = (1 - step) * new_latents + step * old_latents
     normalized_latents = F.normalize(latents_interpolate, p=2, dim=1)
     old_latents_norm = torch.norm(old_latents, p=2, dim=1, keepdim=True)
@@ -169,7 +169,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
