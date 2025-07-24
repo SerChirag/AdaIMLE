@@ -59,7 +59,7 @@ class ConvNeXtBlock(nn.Module):
         self.H = H
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
-        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1, groups=H.convnext_groups)
+        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()
         self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
@@ -72,14 +72,7 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
         self.residual_ratio = nn.Parameter(torch.zeros(1))
-        
-        self.dropout = nn.Dropout(H.dropout_p)
-
-        if (H.use_drop_path):
-            self.drop_path = StochasticDepth(dropout, mode="batch")
-        else:
-            self.drop_path = nn.Identity()
-
+    
 
     
     def forward(self, x):
@@ -98,11 +91,8 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv2(x)
         x = self.se(x)
 
-        x = self.dropout(x)
-
         x = x * self.sigmoid(self.residual_ratio)
-        # Apply dropout
-        # x = self.drop_path(x)
+
         return x + residual
 
 
