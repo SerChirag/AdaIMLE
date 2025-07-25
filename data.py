@@ -59,7 +59,7 @@ def set_up_data(H):
         scale = 1. / 64.16736
     elif H.dataset == "stl10":
         trX, vaX, teX = stl10(H.data_root)
-        H.image_size = 64
+        H.image_size = 32
         H.image_channels = 3
         shift = -0.5    
         scale = 1.0 / 0.5
@@ -196,7 +196,7 @@ def ffhq256(data_root):
 def stl10(data_root):
 
     dataset = STL10("./data_stl", split="unlabeled", transform=transforms.Compose([
-                            transforms.Resize(64),
+                            transforms.Resize(32),
                             transforms.RandomHorizontalFlip(),
                             transforms.ToTensor(),
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]), download=True)
