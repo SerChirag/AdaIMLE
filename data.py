@@ -62,7 +62,7 @@ def set_up_data(H):
         scale = 1. / 64.16736
     elif H.dataset == "stl10":
         trX, vaX, teX = stl10(H.data_root)
-        H.image_size = 64
+        H.image_size = 32
         H.image_channels = 3
         shift = -0.5    
         scale = 1.0 / 0.5
@@ -98,11 +98,11 @@ def set_up_data(H):
     if H.dataset == 'stl10':
         train_data = trX
         for data_train in DataLoader(train_data, batch_size=len(train_data)):
-            ds = torch.tensor((data_train[0] + 1)/2 * 255, dtype=torch.uint8)
+            ds = ((data_train[0] + 1) / 2 * 255).clone().detach().to(torch.uint8)
             train_data = TensorDataset(ds.permute(0, 2, 3, 1))
             break
         valid_data = train_data
-        untranspose = True
+        untranspose = False
         train_len = len(train_data)
     
     elif H.dataset == 'lsun':
@@ -216,7 +216,7 @@ def ffhq256(data_root):
 def stl10(data_root):
 
     dataset = STL10("./data_stl", split="unlabeled", transform=transforms.Compose([
-                            transforms.Resize(64),
+                            transforms.Resize(32),
                             transforms.RandomHorizontalFlip(),
                             transforms.ToTensor(),
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]), download=True)
