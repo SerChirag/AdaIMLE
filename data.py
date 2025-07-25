@@ -102,7 +102,7 @@ def set_up_data(H):
             train_data = TensorDataset(ds.permute(0, 2, 3, 1))
             break
         valid_data = train_data
-        untranspose = True
+        untranspose = False
         train_len = len(train_data)
     
     elif H.dataset == 'lsun':

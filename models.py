@@ -120,17 +120,10 @@ class DecBlock(nn.Module):
                                     use_se=H.use_se,
                                     reduction=H.se_reduction,
                                     dropout=drop_path)
-        if mixin is not None:
-            in_width = self.widths[mixin]
-            out_width = self.widths[res]
-            self.resnet_1x1 = get_1x1(in_width, out_width)
-
-
 
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
-            x = self.resnet_1x1(x)
             
         x = self.adaIN(x, w)
         x = self.resnet(x)
@@ -166,7 +159,7 @@ class Decoder(nn.Module):
         first_res = self.resolutions[0]
         last_res = self.resolutions[-1]
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        self.resnet = get_1x1(self.widths[last_res], H.image_channels)
+        self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
 
