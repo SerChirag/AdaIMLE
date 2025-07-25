@@ -39,28 +39,74 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+
+def interpolate_latents(new_latents, old_latents, step=0.1):
+    latents_interpolate = (1 - step) * new_latents + step * old_latents
+    normalized_latents = F.normalize(latents_interpolate, p=2, dim=1)
+    old_latents_norm = torch.norm(old_latents, p=2, dim=1, keepdim=True)
+    new_latents_norm = torch.norm(new_latents, p=2, dim=1, keepdim=True)
+    norms = (1-step) * new_latents_norm + step * old_latents_norm
+    normalized_latents = normalized_latents * norms
+    return normalized_latents
+
+
+def training_step_imle(H, targets, latents, last_latents, imle, loss_fn, scaler, can_interpolate):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
-        loss_measure = loss.clone()
-        num_resolutions = 1
-
-        if(H.use_multi_res):
+        if(H.use_interpolate_latents and can_interpolate):
             
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                loss_scale = loss_fn(px_z_scale, targets_scale)
+            px_z = imle(latents)
+            loss = loss_fn(px_z, targets_permuted)
+            loss_measure = loss.clone()
+            num_resolutions = 1
+
+            if(H.use_multi_res):
                 
-                loss.add_(loss_scale)
+                for scale in H['multi_res_scales']:
+                    px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
+                    targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
+                    loss += loss_fn(px_z_scale, targets_scale)
+                    num_resolutions += 1
+
+            steps = [0.5, 1.0]
+
+            for step in steps:
+                interpolated_latents = interpolate_latents(latents, last_latents, step=step)
+                px_z = imle(interpolated_latents)
+                loss += loss_fn(px_z, targets_permuted)
                 num_resolutions += 1
 
-    loss = loss / num_resolutions
+                if(H.use_multi_res):
+                    for scale in H['multi_res_scales']:
+                        px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
+                        targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
+                        loss += loss_fn(px_z_scale, targets_scale)
+                        num_resolutions += 1
+
+            loss = loss / 3
+            loss = loss / num_resolutions
+
+        else:
+            px_z = imle(latents)
+            loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+            loss_measure = loss.clone()
+            num_resolutions = 1
+
+            if(H.use_multi_res):
+                
+                for scale in H['multi_res_scales']:
+                    px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
+                    targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
+                    
+                    loss.add_(loss_scale)
+                    num_resolutions += 1
+
+            loss = loss / num_resolutions
+
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
@@ -104,7 +150,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     metrics = {
         'mean_loss': mean_loss
     }
-        
+
+    can_interpolate = False
+    one_epoch_done = False   
+
     while (epoch < H.num_epochs):
 
         torch.distributed.barrier()
@@ -112,6 +161,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             sampler.imle_sample_force(split_x_tensor, imle)
+            if(one_epoch_done):
+                can_interpolate = True
 
         torch.distributed.barrier()
         
@@ -128,7 +179,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Create a dataset that pairs images with their current latents.
         torch.distributed.barrier()
-        comb_dataset = ZippedDataset(split_x, TensorDataset(sampler.selected_latents))
+        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents), 
+                                     TensorDataset(sampler.last_selected_latents))
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -157,6 +209,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
 
+ 
 
         for cur, indices in data_loader:
             x = cur[0]
@@ -164,9 +217,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             _, target = preprocess_fn(x)
             target = target.to(device)
             latents = latents.to(device)
+            last_latents = cur[2][0].to(device)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, scaler)
+            loss = training_step_imle(H, target, latents, last_latents, imle, sampler.calc_loss, scaler, can_interpolate)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -307,6 +360,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         torch.distributed.barrier()
 
         epoch += 1
+        one_epoch_done = True
     
     if is_main_process():
         print("Training complete. Saving final model.")
