@@ -35,7 +35,6 @@ stl10.lr = 0.0002
 stl10.wd = 0.01
 stl10.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x15,32m16,32x31,64m32,64x12"
 # stl10.dec_blocks = "1x1,4m1,4x8,8m4,8x10,16m8,16x10,32m16,32x10,64m32,64x10"
-
 stl10.warmup_iters = 100
 stl10.dataset = 'stl10'
 stl10.n_batch = 8
