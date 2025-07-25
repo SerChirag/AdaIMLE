@@ -199,6 +199,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_wandb', type=int, default=0)
     parser.add_argument('--wandb_mode', type=str, default='online')
 
+    parser.add_argument('--use_interpolate_latents', default=True, type=lambda x: bool(strtobool(x)))  # whether to use ema
+
     parser.add_argument('--use_comet', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--comet_name', type=str, default='AdaptiveIMLE')  # used in comet.ml
     parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
