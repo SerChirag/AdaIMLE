@@ -71,7 +71,7 @@ def training_step_imle(H, targets, latents, last_latents, imle, loss_fn, scaler,
                     loss += loss_fn(px_z_scale, targets_scale)
                     num_resolutions += 1
 
-            steps = [0.5, 1.0]
+            steps = [0.25, 0.5, 0.75, 1.0]
 
             for step in steps:
                 interpolated_latents = interpolate_latents(latents, last_latents, step=step)
