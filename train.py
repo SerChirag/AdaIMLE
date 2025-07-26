@@ -51,66 +51,40 @@ def interpolate_latents(new_latents, old_latents, step=0.1):
 
 
 def training_step_imle(H, targets, latents, last_latents, imle, loss_fn, scaler, can_interpolate):
-    
-    # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    targets_permuted = targets.permute(0, 3, 1, 2)
+    targets_permuted = targets.permute(0, 3, 1, 2)  # [B, C, H, W]
+    B = latents.shape[0]
+
     with autocast(device_type='cuda'):
-
-        if(H.use_interpolate_latents and can_interpolate):
-            
-            px_z = imle(latents)
-            loss = loss_fn(px_z, targets_permuted)
-            loss_measure = loss.clone()
-            num_resolutions = 1
-
-            if(H.use_multi_res):
-                
-                for scale in H['multi_res_scales']:
-                    px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                    targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                    loss += loss_fn(px_z_scale, targets_scale)
-                    num_resolutions += 1
-
+        all_latents = [latents]
+        if H.use_interpolate_latents and can_interpolate:
             steps = [0.25, 0.5, 0.75, 1.0]
+            all_latents += [interpolate_latents(latents, last_latents, step=s) for s in steps]
 
-            for step in steps:
-                interpolated_latents = interpolate_latents(latents, last_latents, step=step)
-                px_z = imle(interpolated_latents)
-                loss += loss_fn(px_z, targets_permuted)
-                num_resolutions += 1
+        all_latents = torch.cat(all_latents, dim=0)  # shape [B * (1 + len(steps)), ...]
+        px_z_all = imle(all_latents)  # shape [B * N, C, H, W]
 
-                if(H.use_multi_res):
-                    for scale in H['multi_res_scales']:
-                        px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                        targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                        loss += loss_fn(px_z_scale, targets_scale)
-                        num_resolutions += 1
+        # Repeat targets accordingly
+        n_variants = 1 + (len(steps) if H.use_interpolate_latents and can_interpolate else 0)
+        targets_repeated = targets_permuted.repeat(n_variants, 1, 1, 1)  # [B * N, C, H, W]
 
-            loss = loss / 3
-            loss = loss / num_resolutions
+        total_loss = loss_fn(px_z_all, targets_repeated)
+        loss_measure = total_loss.detach().clone()
+        total_resolutions = 1
 
-        else:
-            px_z = imle(latents)
-            loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
-            loss_measure = loss.clone()
-            num_resolutions = 1
+        if H.use_multi_res:
+            for scale in H['multi_res_scales']:
+                px_z_scale = F.interpolate(px_z_all, size=(scale, scale), mode='bicubic', antialias=True)
+                targets_scale = F.interpolate(targets_repeated, size=(scale, scale), mode='bicubic', antialias=True)
+                total_loss += loss_fn(px_z_scale, targets_scale)
+                total_resolutions += 1
 
-            if(H.use_multi_res):
-                
-                for scale in H['multi_res_scales']:
-                    px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                    targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                    loss_scale = loss_fn(px_z_scale, targets_scale)
-                    
-                    loss.add_(loss_scale)
-                    num_resolutions += 1
+        total_loss /= total_resolutions
+        total_loss /= H.accumulation_steps
+        scaler.scale(total_loss).backward()
+        torch.cuda.empty_cache()
 
-            loss = loss / num_resolutions
+        return loss_measure  # return loss only for original (non-interpolated) batch
 
-    loss = loss / (H.accumulation_steps)
-    
-    scaler.scale(loss).backward()
-    return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
     subset_len = len(data_train)
