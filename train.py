@@ -110,6 +110,8 @@ def training_step_imle(H, targets, latents, last_latents, imle, loss_fn, scaler,
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
+    torch.cuda.empty_cache()
+
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
@@ -160,7 +162,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            torch.cuda.empty_cache()
             sampler.imle_sample_force(split_x_tensor, imle)
+            torch.cuda.empty_cache()
+
             if(one_epoch_done):
                 can_interpolate = True
 
