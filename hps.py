@@ -173,6 +173,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--load_strict', type=int, default=1)  # whether to load checkpoints strict
     parser.add_argument('--lpips_path', type=str, default='./lpips')  # path to lpips weights
     parser.add_argument('--image_size', type=int, default=256)  # image size of dataset -- possible to downsample the dataset
+    parser.add_argument('--output_channels', type=int, default=4)  # output channels of the model
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
     
