@@ -7,7 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
-from torchvision.ops import StochasticDepth
+from torchcfm.models.unet.unet import UNetModelWrapper
 
 def parse_layer_string(s):
     layers = []
@@ -188,7 +188,18 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        # self.decoder = Decoder(H)
+        self.decoder = UNetModelWrapper(
+            dim=(4, H.image_size // 8, H.image_size // 8),
+            num_res_blocks=2,
+            num_channels=128,
+            channel_mult=[1, 2, 2, 2],
+            num_heads=4,
+            num_head_channels=64,
+            attention_resolutions="16",
+            dropout=0.1
+        )
+    
 
     def forward(self, latents, input_is_w=False):
         return self.decoder.forward(latents, input_is_w)
