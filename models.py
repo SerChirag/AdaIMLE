@@ -87,7 +87,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
 
         # Apply dropout
-        x = self.dropout(x)
+        # x = self.dropout(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
         x = self.se(x)
