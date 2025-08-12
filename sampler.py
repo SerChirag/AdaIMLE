@@ -218,8 +218,6 @@ class Sampler:
         dataloader = DataLoader(
             dataset,
             batch_size=self.H.imle_batch,      # Get 32 samples per batch
-            shuffle=False,  # No need to shuffle for projection
-            num_workers=4      # Adjust based on your CPU
         )
 
         for ind, x in enumerate(dataloader):
@@ -404,42 +402,6 @@ class Sampler:
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
-    def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
-        """Synchronize a union of indices across ranks — works correctly under NCCL by broadcasting size and values separately."""
-        send = local_tensor.cpu().tolist()
-
-        if is_main_process():
-            gathered = [None for _ in range(self.world_size)]
-        else:
-            gathered = None
-
-        torch.distributed.gather_object(send, gathered, dst=0)
-
-        if is_main_process():
-            union_set = set()
-            for item in gathered:
-                union_set.update(item)
-            sorted_union = sorted(union_set)
-            global_len = torch.tensor([len(sorted_union)], dtype=torch.long, device=self.device)
-            global_union = torch.tensor(sorted_union, dtype=torch.long, device=self.device)
-        else:
-            global_len = torch.empty(1, dtype=torch.long, device=self.device)
-            global_union = None  # will be allocated after length broadcast
-
-        # Step 1: Broadcast length
-        torch.distributed.broadcast(global_len, src=0)
-        union_size = global_len.item()
-
-        # Step 2: Broadcast tensor
-        if not is_main_process():
-            global_union = torch.empty(union_size, dtype=torch.long, device=self.device)
-
-        torch.distributed.broadcast(global_union, src=0)
-        torch.distributed.barrier()  # Optional sync point
-
-        return global_union
-
-
 
     def imle_sample_force(self, gen, to_update=None):
         """
@@ -491,35 +453,6 @@ class Sampler:
             # Build FAISS index on global pool features.
 
             self.gpu_index_flat.add(pool_feats)  # add entire pool
-
-            if(self.H.use_rsimle):
-                # If using RSIMLE, we need to reset the index to avoid accumulating entries.
-                distances, indices = self.gpu_index_flat.search(local_ds_feats, self.H.rs_knn_ignore)
-                local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
-                local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-                easy_mask = local_distances < self.H.rs_radius
-                local_easy = torch.unique(local_indices[easy_mask])  # 1‑D tensor of pool indices to drop
-                # if is_main_process():
-                torch.distributed.barrier()  # Ensure all processes complete the search
-
-                global_easy = self._sync_union_indices(local_easy)
-
-                percent_curr = global_easy.numel() / self.pool_latents.shape[0]
-                self.ema_raw = self.ema_factor * self.ema_raw + (1 - self.ema_factor) * percent_curr
-                self.total_excluded_percentage = self.ema_raw / (1 - self.ema_factor ** (self.ema_counter + 1))  # apply correction only here
-                self.ema_counter += 1
-
-                if global_easy.numel() > 0:
-                    keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
-                    keep_mask[global_easy] = False
-                    pool_feats = pool_feats[keep_mask]
-                    self.pool_samples_proj = self.pool_samples_proj[keep_mask]
-                    self.pool_latents = self.pool_latents[keep_mask]
-                    self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
-                    self.gpu_index_flat.add(pool_feats)
-                
-                torch.distributed.barrier()  # Ensure synchronization before leaving the function
-
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
             distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
