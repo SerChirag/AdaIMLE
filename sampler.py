@@ -141,10 +141,6 @@ class Sampler:
 
         self.total_excluded = 0
         self.total_excluded_percentage = 0
-        self.ema_raw = 0.0
-        self.ema_factor = 0.99
-        self.ema_counter = 0
-        self.mean_distance_nn = None
 
         self.dataset_size = sz
         self.db_iter = 0
