@@ -217,7 +217,7 @@ class Sampler:
         )
 
         for ind, x in enumerate(dataloader):
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
+            batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'l2'):
