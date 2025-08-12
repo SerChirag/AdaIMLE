@@ -10,7 +10,8 @@ from sklearn.model_selection import train_test_split
 from helpers.utils import get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
-
+import tqdm
+import torchvision 
 
 def set_up_data(H):
     
@@ -110,7 +111,20 @@ def set_up_data(H):
     H.global_batch_size = H.n_batch * get_world_size()
     H.total_iters = H.num_epochs * np.ceil(len(train_data) // H.global_batch_size)
 
+    # # make dataloader
+    # dl = DataLoader(train_data, batch_size=64, shuffle=False, num_workers=4)
 
+    # save_dir = './datasets/stl/img'
+
+    # idx = 0
+    # for images in tqdm.tqdm(dl, desc="Saving STL10 images"):
+    #     images = images[0] / 255.0
+    #     for b in range(len(images)):
+    #         img_path = os.path.join(save_dir, f'image_{idx:08d}.png')
+    #         torchvision.utils.save_image(images[b].to(torch.float32).permute(2,0,1), img_path)
+    #         idx += 1
+    
+    # exit(0)
 
     def preprocess_func(x):
         nonlocal shift
