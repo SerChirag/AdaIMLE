@@ -125,13 +125,11 @@ class Sampler:
 
         dataloader = DataLoader(
             dataset,
-            batch_size=self.H.imle_batch,      # Get 32 samples per batch
-            shuffle=False,  # No need to shuffle for projection
-            num_workers=4      # Adjust based on your CPU
+            batch_size=self.H.imle_batch,      # Get 32 samples per batch     # Adjust based on your CPU
         )
 
         for ind, x in enumerate(dataloader):
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
+            batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             with autocast(device_type='cuda'):
                 with torch.no_grad():
                     if(self.H.search_type == 'l2'):
