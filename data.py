@@ -55,7 +55,7 @@ def set_up_data(H):
         shift_loss = -0.5
         scale_loss = 2.0
     elif H.dataset == 'cifar10':
-        (trX, _), (vaX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
+        (trX, trY), (vaX, trY), (teX, trY) = cifar10(H.data_root, one_hot=False)
         H.image_size = 32
         H.image_channels = 3
         shift = -120.63838
