@@ -131,7 +131,7 @@ class Sampler:
         )
 
         for ind, x in enumerate(dataloader):
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
+            batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             with autocast(device_type='cuda'):
                 with torch.no_grad():
                     if(self.H.search_type == 'l2'):
