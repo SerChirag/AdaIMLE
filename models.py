@@ -188,6 +188,7 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
+        self.H = H
         # self.decoder = Decoder(H)
         self.decoder = UNetModelWrapper(
             dim=(4, H.image_size // 8, H.image_size // 8),
@@ -202,5 +203,7 @@ class IMLE(nn.Module):
     
 
     def forward(self, latents, input_is_w=False):
-        return self.decoder.forward(latents, input_is_w)
+        t = torch.zeros(latents.shape[0], device=latents.device, dtype=torch.long)
+        x = torch.reshape(latents, (latents.shape[0], 4, self.H.image_size // 8, self.H.image_size // 8))  # Reshape to match UNet input
+        return self.decoder.forward(t, x)
 
