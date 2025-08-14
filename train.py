@@ -47,7 +47,7 @@ def training_step_imle(H, sampler, targets, latents, last_latents, imle, ema_iml
     with autocast(device_type='cuda'):
 
         if(H.use_interpolate_latents and can_interpolate):
-            steps = torch.rand((latents.shape[0],), device=latents.device)
+            steps = torch.rand((latents.shape[0],1), device=latents.device)
             latents_interpolate = sampler.interpolate_latents(latents, last_latents, step=steps)
             px_z = imle(latents_interpolate)
             loss = loss_fn(px_z, targets_permuted)
