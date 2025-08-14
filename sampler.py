@@ -149,7 +149,8 @@ class Sampler:
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, self.rank, index_flat)
+        dev_id = torch.cuda.current_device()
+        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]

@@ -178,7 +178,7 @@ def restore_log(path, local_rank, mpi_size):
 
 def load_imle(H, logprint):
     local_rank = get_rank()
-    device = torch.device(f"cuda:{local_rank}")
+    device = torch.device("cuda")
 
     imle = IMLE(H)
     imle.to(device)
@@ -200,9 +200,10 @@ def load_imle(H, logprint):
 
     ema_imle.requires_grad_(False)
     ema_imle.eval()
-     
-    imle = DDP(imle, device_ids=[local_rank], 
-                output_device=local_rank,
+
+    ddp_dev = torch.cuda.current_device()
+    imle = DDP(imle, device_ids=[ddp_dev], 
+                output_device=ddp_dev,
                 gradient_as_bucket_view=True,
                 static_graph=True
                 )
