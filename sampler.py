@@ -63,13 +63,16 @@ class Sampler:
         self.lpips_net.requires_grad_(False)
 
         ## TODO: check this is required or not
-        self.lpips_net = torch.compile(self.lpips_net)
+        if(self.H.compile):
+            self.lpips_net = torch.compile(self.lpips_net)
 
         self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
         self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
 
-        model = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
-        self.dino_encoder = torch.compile(model)
+        self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
+
+        if(self.H.compile):
+            self.dino_encoder = torch.compile(self.dino_encoder)
 
 
         # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
@@ -223,7 +226,7 @@ class Sampler:
         )
 
         for ind, x in enumerate(dataloader):
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + x[0].shape[0])
+            batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'l2'):
