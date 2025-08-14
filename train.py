@@ -13,7 +13,7 @@ from models import IMLE
 import numpy as np
 from data import set_up_data
 from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
-from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank
+from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_for_NN,
@@ -79,14 +79,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 
     sampler = Sampler(H, subset_len, preprocess_fn)
-    torch.distributed.barrier()
+    safe_barrier()    
     device = torch.device("cuda", torch.cuda.current_device())
 
     epoch = starting_epoch 
     sampler.init_projection(data_train)
     
-    torch.distributed.barrier()
-
+    safe_barrier()
     viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
 
@@ -102,16 +101,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         
     while (epoch < H.num_epochs):
 
-        torch.distributed.barrier()
-
+        safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
 
-        torch.distributed.barrier()
-        
+        safe_barrier()        
 
 
         if (epoch % 20 == 0 and is_main_process()):
@@ -124,7 +121,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 imle.train()
 
         # Create a dataset that pairs images with their current latents.
-        torch.distributed.barrier()
+        safe_barrier()        
         comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
 
         # Use a DistributedSampler if in distributed training.
@@ -146,8 +143,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if(is_main_process()):
             start_time = time.time()
 
-        torch.distributed.barrier()
-        # Main training loop.
+        safe_barrier()        # Main training loop.
 
         epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
         epoch_iter_count = 0
@@ -198,8 +194,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 fp = os.path.join(H.save_dir, f'iter-{iterate}')
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-            torch.distributed.barrier()
-
+            safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
             scaler.step(optimizer)
@@ -256,7 +251,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
             generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
-            torch.distributed.barrier()
+            safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
@@ -273,8 +268,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
                     save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
 
-            torch.distributed.barrier()
-
+            safe_barrier()
 
         if(is_main_process()):
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
@@ -301,8 +295,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             fp = os.path.join(H.save_dir, 'latest')
             logprint(f'Saving latest model@ {iterate} to {fp}')
             save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-        torch.distributed.barrier()
-
+        safe_barrier()
         epoch += 1
     
     if is_main_process():
@@ -310,8 +303,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         fp = os.path.join(H.save_dir, 'final')
         logprint(f'Saving final model@ {iterate} to {fp}')
         save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-    torch.distributed.barrier()
-
+    safe_barrier()
 
 def main():
     init_distributed_mode()
@@ -348,8 +340,7 @@ def main():
 
         os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
 
-    torch.distributed.barrier()
-
+    safe_barrier()
     if(is_main_process()):
         logprint('training model', H.desc, 'on', H.dataset)
 
@@ -372,15 +363,13 @@ def main():
             subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
         # generate_and_save(H, imle, sampler, 5000)
-        torch.distributed.barrier()
-        
+        safe_barrier()        
         if(is_main_process()):
             print("Generating samples for FID")
 
         imle.eval()
         generate_and_save(H, imle, sampler, 50000)
-        torch.distributed.barrier()
-        # if(is_main_process()):
+        safe_barrier()        # if(is_main_process()):
             
         #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
         #     print("FID: ", cur_fid)
@@ -397,8 +386,7 @@ def main():
         imle.eval()
         with torch.no_grad():
             sampler = Sampler(H, subset_len, preprocess_fn)
-            torch.distributed.barrier()
-
+            safe_barrier()
             rank = get_rank()
             world_size = get_world_size()
             for i in range(rank,H.num_images_to_generate, world_size):
