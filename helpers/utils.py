@@ -10,26 +10,24 @@ import subprocess
 import torch.distributed as dist
 import torch.utils.data as data
 
-import torch.distributed as dist
+def init_distributed_mode(timeout_sec=4800):
+    # Default: single process
+    rank, world_size, local_rank = 0, 1, 0
+    distributed = False
 
-def init_distributed_mode():
-    if "MASTER_ADDR" in os.environ and "MASTER_PORT" in os.environ:
-        dist_url = f"tcp://{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
-    else:
-        dist_url = "env://"
-
-    # Detect env variables
-    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+    # Prefer torchrun env (present when using torchrun)
+    if all(k in os.environ for k in ["RANK", "WORLD_SIZE", "LOCAL_RANK"]):
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        
-    elif "SLURM_NODEID" in os.environ:
-        gpus_per_node = torch.cuda.device_count()
-        node_id = int(os.environ["SLURM_NODEID"])
-        local_rank = int(os.environ["SLURM_LOCALID"])
-        rank = node_id * gpus_per_node + local_rank
+        local_rank = int(os.environ["LOCAL_RANK"])
+        distributed = True
+
+    # Fallback: SLURM-only (if you ever run without torchrun)
+    elif all(k in os.environ for k in ["SLURM_PROCID", "SLURM_NTASKS", "SLURM_LOCALID"]):
+        rank = int(os.environ["SLURM_PROCID"])
         world_size = int(os.environ["SLURM_NTASKS"])
+        local_rank = int(os.environ["SLURM_LOCALID"])
+        distributed = True
 
     else:
         rank = 0
@@ -37,26 +35,91 @@ def init_distributed_mode():
         local_rank = 0
         os.environ["MASTER_ADDR"] = "localhost"
         os.environ["MASTER_PORT"] = "12355"
-        # raise RuntimeError("Distributed environment not properly set.")
+        distributed = False
+    # Set device early (safe even if not distributed)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
 
-    # Set correct GPU
-    torch.cuda.set_device(local_rank)
-
-    # Initialize DDP
-    dist.init_process_group(
-        backend="nccl",
-        init_method=dist_url,
-        world_size=world_size,
-        rank=rank,
-        timeout=timedelta(seconds=4800)
-    )
+    if distributed:
+        # torchrun provides env:// rendezvous; no need to pass rank/world_size
+        dist.init_process_group(
+            backend="nccl" if torch.cuda.is_available() else "gloo",
+            init_method="env://",
+            timeout=timedelta(seconds=timeout_sec),
+        )
+    else:
+        dist.init_process_group(
+            backend="nccl" if torch.cuda.is_available() else "gloo",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
+            timeout=timedelta(seconds=timeout_sec)
+        )
 
     dist.barrier()
+
+
+# def init_distributed_mode():
+#     if "MASTER_ADDR" in os.environ and "MASTER_PORT" in os.environ:
+#         dist_url = f"tcp://{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}"
+#     else:
+#         dist_url = "env://"
+
+#     if "SLURM_NODEID" in os.environ:
+#         print("SLURM_NODEID found")
+#         gpus_per_node = torch.cuda.device_count()
+#         node_id = int(os.environ["SLURM_NODEID"])
+#         local_rank = int(os.environ["SLURM_LOCALID"])
+#         rank = node_id * gpus_per_node + local_rank
+#         world_size = int(os.environ["WORLD_SIZE"])
+#     # Detect env variables
+#     elif "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+#         print("Using 1")
+#         rank = int(os.environ["RANK"])
+#         world_size = int(os.environ["WORLD_SIZE"])
+#         local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+#     else:
+#         print("Using default")
+#         rank = 0
+#         world_size = 1
+#         local_rank = 0
+#         os.environ["MASTER_ADDR"] = "localhost"
+#         os.environ["MASTER_PORT"] = "12355"
+#         # raise RuntimeError("Distributed environment not properly set.")
+
+#     # Set correct GPU
+#     torch.cuda.set_device(local_rank)
+
+#     print(f"Initializing DDP with rank {rank}, world size {world_size}, local rank {local_rank}, dist_url {dist_url}")
+
+#     # Initialize DDP
+#     dist.init_process_group(
+#         backend="nccl",
+#         init_method=dist_url,
+#         world_size=world_size,
+#         rank=rank,
+#         timeout=timedelta(seconds=4800)
+#     )
+
+#     dist.barrier()
 
 def is_dist_avail_and_initialized(): return dist.is_available() and dist.is_initialized()
 def get_world_size(): return dist.get_world_size() if is_dist_avail_and_initialized() else 1
 def get_rank(): return dist.get_rank() if is_dist_avail_and_initialized() else 0
 def is_main_process(): return get_rank() == 0
+
+def safe_barrier():
+    if is_dist_avail_and_initialized():
+        dist.barrier()
+
+def safe_destroy():
+    if is_dist_avail_and_initialized():
+        try:
+            dist.barrier()
+        finally:
+            dist.destroy_process_group()
+
 
 def allreduce(x, average):
     if mpi_size() > 1:

@@ -16,6 +16,7 @@ import numpy as np
 import scipy.linalg
 import torch
 import dnnlib
+from helpers.utils import is_dist_avail_and_initialized, safe_barrier
 from torch_utils import distributed as dist
 from training import dataset
 
@@ -30,9 +31,8 @@ def calculate_activations(
     num_workers=3, prefetch_factor=2, device=torch.device('cuda'),
 ):
     # Rank 0 goes first.
-    if dist.get_rank() != 0:
-        torch.distributed.barrier()
-    
+    if is_dist_avail_and_initialized() and dist.get_rank() != 0:
+        safe_barrier()  
     # Load Inception-v3 model.
     # This is a direct PyTorch translation of http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz
     dist.print0('Loading Inception-v3 model...')
@@ -58,9 +58,8 @@ def calculate_activations(
         raise click.ClickException(f'Found {len(dataset_obj)} images, but need at least 2 to compute statistics')
 
     # Other ranks follow.
-    if dist.get_rank() == 0:
-        torch.distributed.barrier()
-    
+    if is_dist_avail_and_initialized() and dist.get_rank() != 0:
+        safe_barrier()     
     # Divide images into batches.
     num_batches = ((len(dataset_obj) - 1) // (max_batch_size * dist.get_world_size()) + 1) * dist.get_world_size()
     all_batches = torch.arange(len(dataset_obj)).tensor_split(num_batches)
@@ -70,7 +69,7 @@ def calculate_activations(
     
     s_features, features, indices = [], [], []
     for i, (images, _labels) in enumerate(tqdm.tqdm(data_loader, unit='batch', disable=(dist.get_rank() != 0))):
-        torch.distributed.barrier()
+        safe_barrier()        
         if images.shape[0] == 0:
             continue
         if images.shape[1] == 1:
@@ -91,8 +90,7 @@ def calculate_activations(
 def calculate_inception_stats_from_activations(
     activations, batch_size=64, device=torch.device('cuda')
 ):
-    torch.distributed.barrier()
-    
+    safe_barrier()    
     data_num, feature_dim = activations.shape
     mu = torch.zeros([feature_dim], dtype=torch.float64, device=device)
     sigma = torch.zeros([feature_dim, feature_dim], dtype=torch.float64, device=device)
@@ -104,6 +102,7 @@ def calculate_inception_stats_from_activations(
     # Calculate grand totals.
     torch.distributed.all_reduce(mu)
     torch.distributed.all_reduce(sigma)
+
     mu /= data_num
     sigma -= mu.ger(mu) * data_num
     sigma /= data_num - 1
@@ -346,8 +345,7 @@ def calc(metrics, activations_sample, activations_ref, batch):
             precision, recall = calculate_precision_recall_from_activations(feats_ref, feats_sample)
             print(f'Precision: {precision:g}')
             print(f'Recall: {recall:g}')
-    torch.distributed.barrier()
-
+    safe_barrier()
 #----------------------------------------------------------------------------
 
 @main.command()
@@ -372,8 +370,7 @@ def activations(dataset_path, dest_path, batch):
     
     np.savez(os.path.join(temp_dir, f'rank_{dist.get_rank()}.npz'), feat=features, s_feat=s_features, ind=indices)
     del features, s_features, indices
-    torch.distributed.barrier()
-    
+    safe_barrier()    
     dist.print0(f'Saving dataset activations to "{dest_path}"...')
     if dist.get_rank() == 0:
         # combine results from ranks
@@ -391,7 +388,7 @@ def activations(dataset_path, dest_path, batch):
         os.system(f'rm -r {temp_dir}')
         np.savez(dest_path, feat=features, s_feat=s_features)
             
-    torch.distributed.barrier()
+    safe_barrier()    
     dist.print0('Done.')
 
 #----------------------------------------------------------------------------

@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoImageProcessor, AutoModel
 
 from LPNet import LPNet
-from helpers.utils import is_main_process, get_world_size, get_rank
+from helpers.utils import is_dist_avail_and_initialized, is_main_process, get_world_size, get_rank, safe_barrier
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from torch import autocast
@@ -63,14 +63,16 @@ class Sampler:
         self.lpips_net.requires_grad_(False)
 
         ## TODO: check this is required or not
-        self.lpips_net = torch.compile(self.lpips_net)
+        if(self.H.compile):
+            self.lpips_net = torch.compile(self.lpips_net)
 
         self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
         self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
 
-        model = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
-        self.dino_encoder = torch.compile(model)
-
+        self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
+        
+        if(self.H.compile):
+            self.dino_encoder = torch.compile(self.dino_encoder)
 
         # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
         # # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
@@ -81,8 +83,7 @@ class Sampler:
 
         fake = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
 
-        torch.distributed.barrier()
-
+        safe_barrier()
         if(H.search_type == 'lpips'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             out, shapes = self.lpips_net(interpolated)
@@ -149,7 +150,8 @@ class Sampler:
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, self.rank, index_flat)
+        dev_id = torch.cuda.current_device()
+        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]
@@ -382,8 +384,7 @@ class Sampler:
                         proj = self.get_combined_feature(outputs, False)
                     local_pool_proj[batch_slice] = proj
 
-        torch.distributed.barrier()
-
+        safe_barrier()
         gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
         gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
 
@@ -392,8 +393,7 @@ class Sampler:
 
         gen.train()
 
-        torch.distributed.barrier()
-
+        safe_barrier()
         # Aggregate the full pool latents and projected features
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
@@ -413,7 +413,7 @@ class Sampler:
         # Resample pool first (each process contributes its part);
         # this updates self.pool_samples_proj and self.pool_latents.
         self.resample_pool(gen)
-        torch.distributed.barrier()  # Ensure all processes complete the pool resample
+        safe_barrier()  # Ensure all processes complete the pool resample
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
@@ -490,7 +490,7 @@ class Sampler:
             torch.distributed.gather_object(local_updated_dists, gathered_dists, dst=0)
             torch.distributed.gather_object(local_updated_latents, gathered_latents, dst=0)
 
-            torch.distributed.barrier()  # Ensure all processes complete the gather
+            safe_barrier()  # Ensure all processes complete the gather
 
             if is_main_process():
                 full_updated_dists = torch.cat(gathered_dists, dim=0).to(self.device)
@@ -504,13 +504,12 @@ class Sampler:
                 full_updated_dists = torch.empty(self.sz, dtype=torch.float32, device=self.device)
                 full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
 
-            torch.distributed.barrier()
+            safe_barrier()
 
             torch.distributed.broadcast(full_updated_dists, src=0)
             torch.distributed.broadcast(full_updated_latents, src=0)
 
-            torch.distributed.barrier()
-
+            safe_barrier()
 
             # Move the broadcasted results to CPU if desired.
             self.selected_dists_tmp = full_updated_dists.cpu()
@@ -523,5 +522,5 @@ class Sampler:
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
-        torch.distributed.barrier()  # Ensure synchronization before leaving the function
+        safe_barrier()  # Ensure synchronization before leaving the function
         self.gpu_index_flat.reset()

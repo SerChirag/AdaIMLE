@@ -8,7 +8,7 @@ import os
 import json
 import subprocess
 from hps import Hyperparams, parse_args_and_update_hparams, add_imle_arguments
-from helpers.utils import (logger, maybe_download)
+from helpers.utils import (is_dist_avail_and_initialized, logger, maybe_download)
 from data import mkdir_p
 from contextlib import contextmanager
 import torch.distributed as dist
@@ -178,7 +178,7 @@ def restore_log(path, local_rank, mpi_size):
 
 def load_imle(H, logprint):
     local_rank = get_rank()
-    device = torch.device(f"cuda:{local_rank}")
+    device = torch.device("cuda")
 
     imle = IMLE(H)
     imle.to(device)
@@ -200,12 +200,15 @@ def load_imle(H, logprint):
 
     ema_imle.requires_grad_(False)
     ema_imle.eval()
-     
-    imle = DDP(imle, device_ids=[local_rank], 
-                output_device=local_rank,
-                gradient_as_bucket_view=True,
-                static_graph=True
-                )
+
+    ddp_dev = torch.cuda.current_device()
+
+    if(is_dist_avail_and_initialized()):
+        imle = DDP(imle, device_ids=[ddp_dev], 
+                    output_device=ddp_dev,
+                    gradient_as_bucket_view=True,
+                    static_graph=True
+                    )
     
     if(H.compile):
         imle = torch.compile(imle) 

@@ -15,6 +15,7 @@ import numpy as np
 import scipy.linalg
 import torch
 import dnnlib
+from helpers.utils import is_dist_avail_and_initialized, safe_barrier
 from torch_utils import distributed as dist
 from training import dataset
 
@@ -25,9 +26,8 @@ def calculate_inception_stats(
     num_workers=3, prefetch_factor=2, device=torch.device('cuda'),
 ):
     # Rank 0 goes first.
-    if dist.get_rank() != 0:
-        torch.distributed.barrier()
-
+    if is_dist_avail_and_initialized() and dist.get_rank() != 0:
+        safe_barrier()
     # Load Inception-v3 model.
     # This is a direct PyTorch translation of http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz
     dist.print0('Loading Inception-v3 model...')
@@ -46,9 +46,8 @@ def calculate_inception_stats(
         raise click.ClickException(f'Found {len(dataset_obj)} images, but need at least 2 to compute statistics')
 
     # Other ranks follow.
-    if dist.get_rank() == 0:
-        torch.distributed.barrier()
-
+    if is_dist_avail_and_initialized() and dist.get_rank() != 0:
+        safe_barrier()  
     # Divide images into batches.
     num_batches = ((len(dataset_obj) - 1) // (max_batch_size * dist.get_world_size()) + 1) * dist.get_world_size()
     all_batches = torch.arange(len(dataset_obj)).tensor_split(num_batches)
@@ -60,7 +59,7 @@ def calculate_inception_stats(
     mu = torch.zeros([feature_dim], dtype=torch.float64, device=device)
     sigma = torch.zeros([feature_dim, feature_dim], dtype=torch.float64, device=device)
     for images, _labels in tqdm.tqdm(data_loader, unit='batch', disable=(dist.get_rank() != 0)):
-        torch.distributed.barrier()
+        safe_barrier()        
         if images.shape[0] == 0:
             continue
         if images.shape[1] == 1:
@@ -72,6 +71,7 @@ def calculate_inception_stats(
     # Calculate grand totals.
     torch.distributed.all_reduce(mu)
     torch.distributed.all_reduce(sigma)
+
     mu /= len(dataset_obj)
     sigma -= mu.ger(mu) * len(dataset_obj)
     sigma /= len(dataset_obj) - 1
@@ -133,8 +133,7 @@ def calc(image_path, ref_path, num_expected, seed, batch):
     if dist.get_rank() == 0:
         fid = calculate_fid_from_inception_stats(mu, sigma, ref['mu'], ref['sigma'])
         print(f'{fid:g}')
-    torch.distributed.barrier()
-
+    safe_barrier()
 #----------------------------------------------------------------------------
 
 @main.command()
@@ -154,7 +153,7 @@ def ref(dataset_path, dest_path, batch):
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         np.savez(dest_path, mu=mu, sigma=sigma)
 
-    torch.distributed.barrier()
+    safe_barrier()    
     dist.print0('Done.')
 
 #----------------------------------------------------------------------------
