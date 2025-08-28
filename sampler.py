@@ -15,6 +15,7 @@ from helpers.angle_sampler import Angle_Generator
 from torch import autocast
 from diffusers import AutoencoderTiny
 import faiss
+from tqdm import tqdm
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -218,7 +219,10 @@ class Sampler:
             batch_size=self.H.imle_batch,      # Get 32 samples per batch
         )
 
-        for ind, x in enumerate(dataloader):
+        if(is_main_process()):
+            print("Starting Initialization")
+
+        for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
