@@ -98,6 +98,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     metrics = {
         'mean_loss': mean_loss
     }
+
+    can_interpolate = False
+    one_epoch_done = False
         
     while (epoch < H.num_epochs):
 
@@ -107,11 +110,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
+            if(one_epoch_done):
+                can_interpolate = True
 
         safe_barrier()        
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
@@ -122,7 +127,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Create a dataset that pairs images with their current latents.
         safe_barrier()        
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
+        comb_dataset = ZippedDataset(data_train, 
+                                     TensorDataset(sampler.selected_latents), 
+                                     TensorDataset(sampler.last_selected_latents))
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -153,10 +160,18 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         for cur, indices in data_loader:
             x = cur[0]
-            latents = cur[1][0]
+            cur_latents = cur[1][0]
+            last_latents = cur[2][0]
+
             _, target = preprocess_fn(x)
             target = target.to(device)
-            latents = latents.to(device)
+
+            if(H.use_interpolate_latents and can_interpolate):
+                alpha = torch.rand(cur_latents.shape[0], 1)
+                latents = sampler.interpolate_latents(cur_latents, last_latents, alpha)
+                latents = latents.to(device)
+            else:
+                latents = cur_latents.to(device)
 
             loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
                                optimizer, sampler.calc_loss, scaler)
@@ -296,7 +311,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             logprint(f'Saving latest model@ {iterate} to {fp}')
             save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
         safe_barrier()
+        
         epoch += 1
+        one_epoch_done = True
+
     
     if is_main_process():
         print("Training complete. Saving final model.")

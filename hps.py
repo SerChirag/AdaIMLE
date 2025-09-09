@@ -223,7 +223,9 @@ def add_imle_arguments(parser):
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
-    
+
+    parser.add_argument("--use_interpolate_latents", default=True, type=lambda x: bool(strtobool(x)))  
+
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
     parser.add_argument("--batch", type=int, default=16, help="batch size for the models")
