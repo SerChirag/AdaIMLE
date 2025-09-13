@@ -75,7 +75,7 @@ lsun.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['lsun'] = lsun
 
 fewshot = Hyperparams()
-fewshot.width = 384
+fewshot.width = 361
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
