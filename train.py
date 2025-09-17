@@ -39,7 +39,7 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, targets, latents, imle, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     targets_permuted = targets.permute(0, 3, 1, 2)
@@ -66,7 +66,7 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     scaler.scale(loss).backward()
     return loss_measure.detach()
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
+def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, experiment=None):
     subset_len = len(data_train)
     if H.subset_len != -1:
         subset_len = H.subset_len
@@ -158,8 +158,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             target = target.to(device)
             latents = latents.to(device)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, scaler)
+            loss = training_step_imle(H, target, latents, imle, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -187,9 +186,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     imle.train()
             iterate += 1
             
-            
-
-            
             if iterate % H.iters_per_ckpt == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, f'iter-{iterate}')
                 logprint(f'Saving model@ {iterate} to {fp}')
@@ -209,39 +205,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-
-        ############ Can be removed ###############
-        # if(is_main_process() and epoch % 5 == 0):
-            
-        #     cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-
-
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(data_train_tensor, imle, 
-        #                                                                                     dists=cur_dists,  
-        #                                                                                     dists_lpips=cur_dists_lpips,
-        #                                                                                     dists_l2=cur_dists_l2, 
-        #                                                                                     logging=True)
-
-        #     # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                    
-        #     metrics = {
-        #         'mean_loss': torch.mean(cur_dists).item(),
-        #         'std_loss': torch.std(cur_dists).item(),
-        #         'max_loss': torch.max(cur_dists).item(),
-        #         'min_loss': torch.min(cur_dists).item(),
-        #         'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-        #         'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-        #         'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-        #         'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-        #         'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-        #         'std_loss_l2': torch.std(cur_dists_l2).item(),
-        #         'max_loss_l2': torch.max(cur_dists_l2).item(),
-        #         'min_loss_l2': torch.min(cur_dists_l2).item(),
-        #     }
-
-        # ############ Can be removed ###############
         
         metrics = {
             'mean_loss': mean_loss,
@@ -355,7 +318,7 @@ def main():
             experiment.log_parameter("num_params", num_params)
 
     if(H.mode == 'train'):
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+        train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
         subset_len = H.subset_len
