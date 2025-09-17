@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import AutoImageProcessor, AutoModel
-
 from LPNet import LPNet
 from helpers.utils import is_dist_avail_and_initialized, is_main_process, get_world_size, get_rank, safe_barrier
 from models import parse_layer_string
@@ -25,6 +24,7 @@ class Sampler:
         self.rank = get_rank()
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.reverse_pool_size = ceil(int(sz * 0.5) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
@@ -43,20 +43,14 @@ class Sampler:
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
-        ############
-        #  Can be removed
-        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_lpips[:] = np.inf
-
-        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_l2[:] = np.inf 
-        #############
 
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
 
         self.pool_latents = None
+        self.reverse_pool_latents = None
+        self.reverse_indices = None
 
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
@@ -136,6 +130,7 @@ class Sampler:
 
         self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
         self.pool_samples_proj = None
+        self.reverse_pool_samples_proj = None
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -401,7 +396,90 @@ class Sampler:
         # Aggregate the full pool latents and projected features
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+    
+    def resample_reverse_pool(self, gen):
 
+        gen.eval()   
+
+        # Determine local pool size
+        local_reverse_pool_size = ceil(self.reverse_pool_size / self.world_size)
+
+
+        # Generate local pool latents and prepare container for projected features
+        local_reverse_pool_latents = torch.randn((local_reverse_pool_size, self.H.latent_dim), 
+                                         device=self.device, 
+                                         generator=self.generator_seed)
+        # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
+
+        local_reverse_pool_proj = torch.empty((local_reverse_pool_size, self.dci_dim), device=self.device)
+
+        # Process local chunk in batches
+        for j in range(local_reverse_pool_size // self.H.imle_batch):
+            batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
+            cur_latents = local_reverse_pool_latents[batch_slice]
+            with torch.no_grad():
+                with autocast(device_type='cuda'):
+                    outputs = gen(cur_latents, None)
+                    if self.H.search_type == 'lpips':
+                        proj = self.get_projected(outputs, False)
+                    elif self.H.search_type == 'l2':
+                        proj = self.get_l2_feature(outputs, False)
+                    # elif self.H.search_type == 'vae':
+                    #     proj = self.get_vae_features(outputs, False)
+                    elif self.H.search_type == 'combined':
+                        proj = self.get_combined_feature(outputs, False)
+                    else:
+                        proj = self.get_combined_feature(outputs, False)
+                    local_reverse_pool_proj[batch_slice] = proj
+
+        safe_barrier()
+        gathered_latents = [torch.empty_like(local_reverse_pool_latents) for _ in range(self.world_size)]
+        gathered_proj = [torch.empty_like(local_reverse_pool_proj) for _ in range(self.world_size)]
+
+        torch.distributed.all_gather(gathered_latents, local_reverse_pool_latents)
+        torch.distributed.all_gather(gathered_proj, local_reverse_pool_proj)
+
+        gen.train()
+
+        safe_barrier()
+        # Aggregate the full pool latents and projected features
+        self.reverse_pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
+        self.reverse_pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+
+    def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
+        """Synchronize a union of indices across ranks — works correctly under NCCL by broadcasting size and values separately."""
+        send = local_tensor.cpu().tolist()
+
+        if is_main_process():
+            gathered = [None for _ in range(self.world_size)]
+        else:
+            gathered = None
+
+        torch.distributed.gather_object(send, gathered, dst=0)
+
+        if is_main_process():
+            union_set = set()
+            for item in gathered:
+                union_set.update(item)
+            sorted_union = sorted(union_set)
+            global_len = torch.tensor([len(sorted_union)], dtype=torch.long, device=self.device)
+            global_union = torch.tensor(sorted_union, dtype=torch.long, device=self.device)
+        else:
+            global_len = torch.empty(1, dtype=torch.long, device=self.device)
+            global_union = None  # will be allocated after length broadcast
+
+        # Step 1: Broadcast length
+        torch.distributed.broadcast(global_len, src=0)
+        union_size = global_len.item()
+
+        # Step 2: Broadcast tensor
+        if not is_main_process():
+            global_union = torch.empty(union_size, dtype=torch.long, device=self.device)
+
+        torch.distributed.broadcast(global_union, src=0)
+        torch.distributed.barrier()  # Optional sync point
+
+        return global_union
 
     def imle_sample_force(self, gen, to_update=None):
         """
@@ -460,13 +538,6 @@ class Sampler:
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
             self.mean_distance_nn = local_distances.mean().item()
 
-            # if is_main_process():
-            #     print(f"Mean distance NN: {self.mean_distance_nn:.4f}")
-            #     print(f"Min distance NN: {local_distances.min().item():.4f}")
-            #     print(f"Min distance NN: {local_distances.max().item():.4f}")
-            #     print(f"Total excluded percentage: {self.total_excluded_percentage:.4f}")
-
-
             # Get current temporary distances for the local slice.
             local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
             # Determine which samples need update.
@@ -523,6 +594,121 @@ class Sampler:
             self.last_selected_latents = self.selected_latents.clone()
             self.selected_latents = self.selected_latents_tmp.clone()
 
+            if is_main_process():
+                print(f"Force resampling took {time.time() - t1:.2f} seconds")
+
+        safe_barrier()  # Ensure synchronization before leaving the function
+        self.gpu_index_flat.reset()
+
+    def sync_concat_indices(self, local_indices):
+        local_list = local_indices.cpu().tolist()
+        gathered = [None for _ in range(self.world_size)] if is_main_process() else None
+        torch.distributed.gather_object(local_list, gathered, dst=0)
+        if is_main_process():
+            concat = []
+            for item in gathered:
+                concat.extend(item)
+            concat_tensor = torch.tensor(concat, dtype=torch.long, device=self.device)
+            concat_len = torch.tensor([len(concat)], dtype=torch.long, device=self.device)
+        else:
+            concat_tensor = None
+            concat_len = torch.empty(1, dtype=torch.long, device=self.device)
+        torch.distributed.broadcast(concat_len, src=0)
+        if not is_main_process():
+            concat_tensor = torch.empty(concat_len.item(), dtype=torch.long, device=self.device)
+        torch.distributed.broadcast(concat_tensor, src=0)
+        torch.distributed.barrier()
+        return concat_tensor
+
+
+    def imle_sample_force_reverse(self, gen, to_update=None):
+        """
+        Optimized force resampling routine using FAISS for batched nearest-neighbor search.
+        In a DDP setting, each process handles a different subset of the dataset features,
+        performs NN search locally, and then the results are merged and broadcast so that
+        all processes end up with the complete global results.
+        """
+        if is_main_process():
+            t1 = time.time()
+            print("Starting reverse pool resampling...")
+
+        # Resample pool first (each process contributes its part);
+        # this updates self.pool_samples_proj and self.pool_latents.
+        self.resample_reverse_pool(gen)
+        safe_barrier()  # Ensure all processes complete the pool resample
+
+        if(is_main_process()):
+            print(f"Resampling pool took {time.time() - t1:.2f} seconds")
+        
+        torch.cuda.empty_cache()
+
+        with torch.no_grad():
+            # Total number of dataset samples.
+            total_queries = self.reverse_pool_latents.shape[0]
+
+            # --------------------
+            # Partition the dataset features so each process works on a different chunk.
+            chunk_size = total_queries // self.world_size
+            remainder = total_queries % self.world_size
+            if self.rank < remainder:
+                local_size = chunk_size + 1
+                local_start = self.rank * local_size
+            else:
+                local_size = chunk_size
+                local_start = self.rank * local_size + remainder
+            local_end = min(local_start + local_size, self.sz)
+
+            # Obtain the full dataset features (on CPU) and then slice locally.
+            local_ds_feats = self.reverse_pool_samples_proj[local_start:local_end]
+
+            # Pool features (as computed from resample_pool).
+            pool_feats = self.dataset_proj
+            sample_feats = self.reverse_pool_samples_proj.cpu().numpy().astype(np.float32)
+
+
+            # --------------------
+            # Build FAISS index on global pool features.
+
+            self.gpu_index_flat.add(pool_feats)  # add entire pool
+
+            
+            if(self.H.use_rsimle):
+                # If using RSIMLE, we need to reset the index to avoid accumulating entries.
+                distances, indices = self.gpu_index_flat.search(sample_feats, self.H.rs_knn_ignore)
+                local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
+                local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+                easy_mask = local_distances < self.H.rs_radius
+                local_easy = torch.unique(local_indices[easy_mask])  # 1‑D tensor of pool indices to drop
+                # if is_main_process():
+                torch.distributed.barrier()  # Ensure all processes complete the search
+
+                global_easy = self._sync_union_indices(local_easy)
+
+                percent_curr = global_easy.numel() / self.pool_latents.shape[0]
+                # self.ema_raw = self.ema_factor * self.ema_raw + (1 - self.ema_factor) * percent_curr
+                # self.total_excluded_percentage = self.ema_raw / (1 - self.ema_factor ** (self.ema_counter + 1))  # apply correction only here
+                # self.ema_counter += 1
+
+                if global_easy.numel() > 0:
+                    keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
+                    keep_mask[global_easy] = False
+                    pool_feats = pool_feats[keep_mask]
+                    self.pool_samples_proj = self.pool_samples_proj[keep_mask]
+                    self.pool_latents = self.pool_latents[keep_mask]
+                    self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
+                    self.gpu_index_flat.add(pool_feats)
+                
+                torch.distributed.barrier()  # Ensure synchronization before leaving the function
+
+            # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
+            distances, indices = self.gpu_index_flat.search(sample_feats, 1)
+            local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
+            local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+            self.mean_distance_nn = local_distances.mean().item()
+
+            global_indices = self.sync_concat_indices(local_indices)
+
+            self.reverse_indices = global_indices
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 

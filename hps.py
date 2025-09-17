@@ -204,6 +204,11 @@ def add_imle_arguments(parser):
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
+    ## RS-IMLE related arguments
+    parser.add_argument('--use_rsimle', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--rs_radius', type=float, default=10.0)  # angle to splatter
+    parser.add_argument('--rs_knn_ignore', type=int, default=10)  # whether to use spatial noise
+
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
