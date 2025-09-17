@@ -1,5 +1,8 @@
 import os
+from torch.utils.data import Subset
 import time
+
+from torch.utils.data import ConcatDataset
 
 from comet_ml import Experiment, ExistingExperiment
 import imageio
@@ -109,10 +112,11 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             torch.cuda.empty_cache()
             sampler.imle_sample_force_reverse(imle)
 
-        safe_barrier()        
+        safe_barrier()
 
+        reverse_dataset = Subset(data_train, sampler.reverse_indices)
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
@@ -123,7 +127,11 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
         # Create a dataset that pairs images with their current latents.
         safe_barrier()        
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
+
+        images_dataset = ConcatDataset([data_train, reverse_dataset])
+        latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
+        latents_dataset = TensorDataset(latents_dataset)    
+        comb_dataset = ZippedDataset(images_dataset, latents_dataset)
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -241,7 +249,7 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 25 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
