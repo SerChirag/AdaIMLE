@@ -53,7 +53,7 @@ def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler):
         loss_weighted_forward = labels * loss_raw
         loss_weighted_reverse = (1 - labels) * loss_raw * H.reverse_loss_weight
         loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
-        loss_measure = loss.clone()
+        loss_measure = loss_weighted_forward.mean().clone().detach()
         num_resolutions = 1
 
         if(H.use_multi_res):

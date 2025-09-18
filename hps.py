@@ -209,7 +209,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--rs_radius', type=float, default=150.0)  # angle to splatter
     parser.add_argument('--rs_knn_ignore', type=int, default=10)  # whether to use spatial noise
 
-    parser.add_argument('--reverse_loss_weight', type=float, default=0.1) # downsample factor for l2 search
+    parser.add_argument('--reverse_loss_weight', type=float, default=0.5) # downsample factor for l2 search
+    parser.add_argument('--reverse_force_factor', type=float, default=0.2) # downsample factor for l2 search
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 

@@ -24,7 +24,8 @@ class Sampler:
         self.rank = get_rank()
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
-        self.reverse_pool_size = ceil(int(sz * 0.5) / H.imle_db_size) * H.imle_db_size
+        self.reverse_pool_size = ceil(int(H.reverse_force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.total_reverse_count = int(H.reverse_force_factor * sz)
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
@@ -430,8 +431,8 @@ class Sampler:
         self.reverse_pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.reverse_pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
-        self.reverse_pool_latents = self.reverse_pool_latents[:self.sz]
-        self.reverse_pool_samples_proj = self.reverse_pool_samples_proj[:self.sz]
+        self.reverse_pool_latents = self.reverse_pool_latents[:self.total_reverse_count]
+        self.reverse_pool_samples_proj = self.reverse_pool_samples_proj[:self.total_reverse_count]
 
     def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
         """Synchronize a union of indices across ranks — works correctly under NCCL by broadcasting size and values separately."""
