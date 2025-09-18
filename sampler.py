@@ -430,6 +430,9 @@ class Sampler:
         self.reverse_pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.reverse_pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
 
+        self.reverse_pool_latents = self.reverse_pool_latents[:self.sz]
+        self.reverse_pool_samples_proj = self.reverse_pool_samples_proj[:self.sz]
+
     def _sync_union_indices(self, local_tensor: torch.Tensor) -> torch.Tensor:
         """Synchronize a union of indices across ranks — works correctly under NCCL by broadcasting size and values separately."""
         send = local_tensor.cpu().tolist()
@@ -658,7 +661,7 @@ class Sampler:
             
             if(self.H.use_rsimle):
                 # If using RSIMLE, we need to reset the index to avoid accumulating entries.
-                distances, indices = self.gpu_index_flat.search(sample_feats, self.H.rs_knn_ignore)
+                distances, indices = self.gpu_index_flat.search(local_ds_feats, self.H.rs_knn_ignore)
                 local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
                 local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
                 easy_mask = local_distances < self.H.rs_radius
@@ -686,7 +689,7 @@ class Sampler:
                 torch.distributed.barrier()  # Ensure synchronization before leaving the function
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-            distances, indices = self.gpu_index_flat.search(sample_feats, 1)
+            distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
 
