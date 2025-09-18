@@ -646,12 +646,10 @@ class Sampler:
             local_end = min(local_start + local_size, self.sz)
 
             # Obtain the full dataset features (on CPU) and then slice locally.
-            local_ds_feats = self.reverse_pool_samples_proj[local_start:local_end]
+            local_ds_feats = self.reverse_pool_samples_proj[local_start:local_end].numpy().astype(np.float32)
 
             # Pool features (as computed from resample_pool).
             pool_feats = self.dataset_proj
-            sample_feats = self.reverse_pool_samples_proj.cpu().numpy().astype(np.float32)
-
 
             # --------------------
             # Build FAISS index on global pool features.
