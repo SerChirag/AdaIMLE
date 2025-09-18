@@ -42,14 +42,17 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets, latents, imle, loss_fn, scaler):
+def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
         px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_raw = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_weighted_forward = labels * loss_raw
+        loss_weighted_reverse = (1 - labels) * loss_raw * H.reverse_loss_weight
+        loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
         loss_measure = loss.clone()
         num_resolutions = 1
 
@@ -59,6 +62,10 @@ def training_step_imle(H, targets, latents, imle, loss_fn, scaler):
                 px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
                 targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
                 loss_scale = loss_fn(px_z_scale, targets_scale)
+
+                loss_weighted_forward = labels * loss_scale
+                loss_weighted_reverse = (1 - labels) * loss_scale * H.reverse_loss_weight
+                loss_scale = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
                 
                 loss.add_(loss_scale)
                 num_resolutions += 1
@@ -110,9 +117,11 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
-            sampler.imle_sample_force_reverse(imle)
 
         safe_barrier()
+
+        sampler.imle_sample_force_reverse(imle)
+        torch.cuda.empty_cache()
 
         reverse_dataset = Subset(data_train, sampler.reverse_indices)
 
@@ -131,7 +140,12 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         images_dataset = ConcatDataset([data_train, reverse_dataset])
         latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
         latents_dataset = TensorDataset(latents_dataset)    
-        comb_dataset = ZippedDataset(images_dataset, latents_dataset)
+        
+        array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int)
+        array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int)
+        array_of_labels = torch.cat([array_of_1, array_of_0], dim=0)
+        labels_dataset = TensorDataset(array_of_labels)
+        comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -163,11 +177,13 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
+            labels = cur[2][0]
             _, target = preprocess_fn(x)
             target = target.to(device)
             latents = latents.to(device)
+            labels = labels.to(device)
 
-            loss = training_step_imle(H, target, latents, imle, sampler.calc_loss, scaler)
+            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -218,6 +234,9 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
+            'nn_mean': sampler.mean_distance_nn,
+            'nn_min': sampler.min_distance_nn,
+            'nn_max': sampler.max_distance_nn,
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

@@ -261,7 +261,7 @@ class Sampler:
             res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
         
         if use_mean:
-            return res.mean()
+            return res.mean(dim=tuple(range(1, res.ndim)))
         else:
             return res
     
@@ -270,42 +270,26 @@ class Sampler:
         tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
         dino_loss = self.l2_loss(dino_feat, tar_feat)
         if use_mean:
-            return dino_loss.mean()
+            return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
         else:
             return dino_loss
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def calc_loss(self, inp, tar, logging=False):
 
-        if use_mean:       
-            l2_loss = torch.mean(self.l2_loss(inp, tar))
-            res = 0
-            
-            lpips_loss = self.get_lpips_loss(inp, tar)
+        l2_loss = self.l2_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
+        res = 0
+        
+        lpips_loss = self.get_lpips_loss(inp, tar)
 
-            if(inp.shape[2] < 32):
-                dino_loss = self.get_dino_loss(inp, tar)
-            else:
-                dino_loss = torch.tensor(0.0, device=self.device)
-
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-            
-            if logging:
-                return loss, res.mean(), l2_loss.mean()
-            else:
-                return loss
-
+        if(inp.shape[2] < 32):
+            dino_loss = self.get_dino_loss(inp, tar)
         else:
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
-            res = 0
-            for i, g_feat in enumerate(inp_feat):
-                res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-            loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
-            if logging:
-                return loss, res.mean(), l2_loss
-            else:
-                return loss
+            dino_loss = torch.tensor(0.0, device=self.device)
+
+        loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
+        
+        return loss
+
             
     ############### Can be removed ###########
     
@@ -689,6 +673,9 @@ class Sampler:
                 # self.total_excluded_percentage = self.ema_raw / (1 - self.ema_factor ** (self.ema_counter + 1))  # apply correction only here
                 # self.ema_counter += 1
 
+                if(is_main_process()):
+                    print(f"Global rejection: {global_easy.numel()}")
+
                 if global_easy.numel() > 0:
                     keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
                     keep_mask[global_easy] = False
@@ -704,7 +691,11 @@ class Sampler:
             distances, indices = self.gpu_index_flat.search(sample_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+
             self.mean_distance_nn = local_distances.mean().item()
+            self.min_distance_nn = local_distances.min().item()
+            self.max_distance_nn = local_distances.max().item()
+
 
             global_indices = self.sync_concat_indices(local_indices)
 
