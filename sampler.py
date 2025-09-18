@@ -680,8 +680,6 @@ class Sampler:
                     keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
                     keep_mask[global_easy] = False
                     pool_feats = pool_feats[keep_mask]
-                    self.pool_samples_proj = self.pool_samples_proj[keep_mask]
-                    self.pool_latents = self.pool_latents[keep_mask]
                     self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
                     self.gpu_index_flat.add(pool_feats)
                 
