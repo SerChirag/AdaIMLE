@@ -698,7 +698,7 @@ class Sampler:
 
             global_indices = self.sync_concat_indices(local_indices)
 
-            self.reverse_indices = global_indices
+            self.reverse_indices = global_indices.to('cpu')
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 

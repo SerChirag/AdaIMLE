@@ -120,6 +120,7 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
         safe_barrier()
 
+        torch.cuda.empty_cache()
         sampler.imle_sample_force_reverse(imle)
         torch.cuda.empty_cache()
 
@@ -141,8 +142,8 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
         latents_dataset = TensorDataset(latents_dataset)    
         
-        array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int)
-        array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int)
+        array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
+        array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int, device='cpu')
         array_of_labels = torch.cat([array_of_1, array_of_0], dim=0)
         labels_dataset = TensorDataset(array_of_labels)
         comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
@@ -153,12 +154,16 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
                                            num_replicas=H.world_size,
                                            rank=H.local_rank,
                                            seed=H.seed)
-        
-        data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                    pin_memory=True, num_workers=4, 
+
+        data_loader = DataLoader(comb_dataset, 
+                                    batch_size=H.n_batch, 
+                                    sampler=train_sampler,
+                                    pin_memory=True, 
+                                    num_workers=4, 
                                     persistent_workers=True, 
                                     multiprocessing_context="spawn",
-                                    shuffle=False)
+                                    shuffle=False
+                                )
 
         # If using distributed sampler, set the epoch for shuffling
         train_sampler.set_epoch(epoch)
