@@ -398,10 +398,15 @@ class Sampler:
 
         local_reverse_pool_proj = torch.empty((local_reverse_pool_size, self.dci_dim), device=self.device)
 
-        # Process local chunk in batches
-        for j in range(local_reverse_pool_size // self.H.imle_batch):
+        # print(f'Local reverse pool size is {local_reverse_pool_size}')
+        # print(f'Reverse pool size is {self.reverse_pool_size}')
+
+        num_batches = (local_reverse_pool_size + self.H.imle_batch - 1) // self.H.imle_batch
+
+        for j in range(num_batches):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
             cur_latents = local_reverse_pool_latents[batch_slice]
+
             with torch.no_grad():
                 with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
@@ -654,8 +659,10 @@ class Sampler:
 
             # --------------------
             # Build FAISS index on global pool features.
-
+            self.gpu_index_flat.reset()
             self.gpu_index_flat.add(pool_feats)  # add entire pool
+
+            safe_barrier()
 
             
             if(self.H.use_rsimle):
@@ -684,8 +691,7 @@ class Sampler:
                     pool_feats = pool_feats[keep_mask]
                     self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
                     self.gpu_index_flat.add(pool_feats)
-                
-                torch.distributed.barrier()  # Ensure synchronization before leaving the function
+                    safe_barrier()  # Ensure all processes complete the index update
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
             distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
