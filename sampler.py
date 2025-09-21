@@ -708,6 +708,7 @@ class Sampler:
             self.reverse_indices = global_indices.to('cpu')
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
+                print(f"Unique indices count: {self.reverse_indices.unique().shape[0]}")
 
         safe_barrier()  # Ensure synchronization before leaving the function
         self.gpu_index_flat.reset()
