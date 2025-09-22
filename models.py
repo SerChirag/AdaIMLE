@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import MappingNetwork, AdaptiveInstanceNorm, NoiseInjection
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -120,7 +120,7 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetowrk(code_dim=H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetwork(code_dim=H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -135,13 +135,15 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        self.embedding = nn.Embedding(100, H.latent_dim)
 
-    def forward(self, latent_code, input_is_w=False):
-        if not input_is_w:
-            w = self.mapping_network(latent_code)
-        else:
-            w = latent_code
-        
+    def forward(self, latent_code, condition):
+            
+        w = self.mapping_network(latent_code)
+        if self.embedding is not None:
+            class_emb = self.embedding(condition)
+            w = w + class_emb
+
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
@@ -156,5 +158,6 @@ class IMLE(nn.Module):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, input_is_w=False):
-        return self.decoder.forward(latents, input_is_w)
+    def forward(self, latents, condition):
+        condition = torch.ones(latents.shape[0], dtype=torch.long).to(latents.device)
+        return self.decoder.forward(latents, condition)

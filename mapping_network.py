@@ -56,7 +56,7 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
 
-class MappingNetowrk(nn.Module):
+class MappingNetwork(nn.Module):
     def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
         super().__init__()
 
