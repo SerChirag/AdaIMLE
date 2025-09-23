@@ -159,5 +159,6 @@ class IMLE(nn.Module):
         self.decoder = Decoder(H)
 
     def forward(self, latents, condition):
-        condition = torch.ones(latents.shape[0], dtype=torch.long).to(latents.device)
+        if(condition is None):
+            condition = torch.zeros(latents.shape[0], dtype=torch.long, device=latents.device)
         return self.decoder.forward(latents, condition)

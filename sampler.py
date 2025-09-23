@@ -225,13 +225,13 @@ class Sampler:
         for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
-                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x[0])).cpu()
             elif(self.H.search_type == 'l2'):
-                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x[0])).cpu()
             # elif(self.H.search_type == 'vae'):
-            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
+            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x[0])[1]).cpu()
             elif(self.H.search_type == 'combined'):
-                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x[0])).cpu()
             else:
                 exit()
 

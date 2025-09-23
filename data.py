@@ -148,8 +148,8 @@ def set_up_data(H):
         'takes in a data example and returns the preprocessed input'
         'as well as the input processed for the loss'
         if untranspose:
-            x[0] = x[0].permute(0, 2, 3, 1)
-        inp = x[0].to(device=device, non_blocking=True).float()
+            x = x.permute(0, 2, 3, 1)
+        inp = x.to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
         # out = inp.clone()
         # inp.add_(shift).mul_(scale)
@@ -157,7 +157,7 @@ def set_up_data(H):
         #     5 bits of precision
         #     out.mul_(1. / 8.).floor_().mul_(8.)
         # out.add_(shift_loss).mul_(scale_loss)
-        return inp, inp
+        return inp
 
     return H, train_data, valid_data, preprocess_func
 
