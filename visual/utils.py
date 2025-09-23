@@ -18,7 +18,7 @@ def delete_content_of_dir(folder):
             print('Failed to delete %s. Reason: %s' % (file_path, e))
 
 def get_sample_for_visualization(data, preprocess_fn, num, dataset):
-    for x in DataLoader(data, batch_size=num):
+    for x in DataLoader(data, batch_size=num, shuffle=False):
         break
     orig_image = (x[0]).to(torch.uint8).permute(0, 2, 3, 1) if dataset == 'lsun' else x[0]
     preprocessed = preprocess_fn(x[0])
