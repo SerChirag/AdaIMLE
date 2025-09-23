@@ -28,6 +28,9 @@ import datetime
 import os
 import torch.distributed as dist
 
+
+torch.set_float32_matmul_precision('high')
+
 def isValid(num):
     return not num != num
 

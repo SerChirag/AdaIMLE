@@ -24,7 +24,7 @@ class Sampler:
         self.world_size = get_world_size()
         self.rank = get_rank()
 
-        self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.pool_size = ceil(int(H.pool_size_per_class) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
@@ -312,96 +312,6 @@ class Sampler:
             else:
                 return loss
             
-    ############### Can be removed ###########
-    
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
-        if dists is None:
-            dists = self.selected_dists
-        if dists_lpips is None:
-            dists_lpips = self.selected_dists_lpips
-        if dists_l2 is None:
-            dists_l2 = self.selected_dists_l2
-        if latents is None:
-            latents = self.selected_latents
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
-            with torch.no_grad():
-                with autocast(device_type='cuda'):
-                    out = gen(cur_latents, None)
-                    if(logging):
-                        dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
-                        dists[batch_slice] = torch.squeeze(dist)
-                        dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
-                        dists_l2[batch_slice] = torch.squeeze(dist_l2)
-                    else:
-                        dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                        dists[batch_slice] = torch.squeeze(dist)
-        
-        if(logging):
-            return dists, dists_lpips, dists_l2
-        else:
-            return dists
-    
-    ############### Can be removed ###########
-
-
-    def resample_pool(self, gen):
-
-        gen.eval()   
-
-        # Determine local pool size
-        local_pool_size = ceil(self.pool_size / self.world_size)
-
-
-        # Generate local pool latents and prepare container for projected features
-        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), 
-                                         device=self.device, 
-                                         generator=self.generator_seed)
-        # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
-
-        local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
-
-        # Process local chunk in batches
-        for j in range(local_pool_size // self.H.imle_batch):
-            batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
-            cur_latents = local_pool_latents[batch_slice]
-            with torch.no_grad():
-                with autocast(device_type='cuda'):
-                    outputs = gen(cur_latents, None)
-                    if self.H.search_type == 'lpips':
-                        proj = self.get_projected(outputs, False)
-                    elif self.H.search_type == 'l2':
-                        proj = self.get_l2_feature(outputs, False)
-                    # elif self.H.search_type == 'vae':
-                    #     proj = self.get_vae_features(outputs, False)
-                    elif self.H.search_type == 'combined':
-                        proj = self.get_combined_feature(outputs, False)
-                    else:
-                        proj = self.get_combined_feature(outputs, False)
-                    local_pool_proj[batch_slice] = proj
-
-        safe_barrier()
-        gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
-        gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
-
-        torch.distributed.all_gather(gathered_latents, local_pool_latents)
-        torch.distributed.all_gather(gathered_proj, local_pool_proj)
-
-        gen.train()
-
-        safe_barrier()
-        # Aggregate the full pool latents and projected features
-        self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
-        self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
-
 
     def imle_sample_force(self, gen, to_update=None):
         """
