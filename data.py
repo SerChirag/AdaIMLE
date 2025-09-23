@@ -110,6 +110,12 @@ def set_up_data(H):
         valid_data = trX
         train_len = train_data.ds.num_rows  
         untranspose = True
+    
+    elif H.dataset == 'imagenet32':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
 
     elif H.dataset not in ['fewshot', 'fewshot512']:
         train_data = TensorDataset(torch.as_tensor(trX), torch.as_tensor(trY))
@@ -183,12 +189,25 @@ def few_shot_image_folder(data_root, image_size):
 
 
 def imagenet32(data_root):
-    trX = np.load(os.path.join(data_root, 'imagenet32-train.npy'), mmap_mode='r')
-    tr_va_split_indices = np.random.permutation(trX.shape[0])
-    train = trX[tr_va_split_indices[:-5000]]
-    valid = trX[tr_va_split_indices[-5000:]]
-    test = np.load(os.path.join(data_root, 'imagenet32-valid.npy'), mmap_mode='r')
-    return train, valid, test
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+        
+        # reshape to (N, 3, 32, 32)
+        X = X.reshape(-1, 3, 32, 32)
+        images.append(X)
+        labels.append(Y)
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) - 1
+
+    return images, None, None
 
 
 def imagenet64(data_root):
