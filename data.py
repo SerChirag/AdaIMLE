@@ -10,7 +10,7 @@ from PIL import Image
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-from helpers.utils import get_world_size
+from helpers.utils import ZippedDataset, get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
 
@@ -55,7 +55,7 @@ def set_up_data(H):
         shift_loss = -0.5
         scale_loss = 2.0
     elif H.dataset == 'cifar10':
-        (trX, trY), (vaX, trY), (teX, trY) = cifar10(H.data_root, one_hot=False)
+        (trX, trY), (vaX, varY), (teX, teY) = cifar10(H.data_root, one_hot=False)
         H.image_size = 32
         H.image_channels = 3
         shift = -120.63838
@@ -112,7 +112,7 @@ def set_up_data(H):
         untranspose = True
 
     elif H.dataset not in ['fewshot', 'fewshot512']:
-        train_data = TensorDataset(torch.as_tensor(trX))
+        train_data = TensorDataset(torch.as_tensor(trX), torch.as_tensor(trY))
         valid_data = TensorDataset(torch.as_tensor(eval_dataset))
         untranspose = False
         train_len = len(train_data)
