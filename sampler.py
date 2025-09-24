@@ -43,7 +43,7 @@ class Sampler:
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
 
-        self.pool_latents = None
+        self.pool_latents = torch.empty([self.pool_size, H.latent_dim], dtype=torch.float32, device=self.device)
 
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
@@ -140,6 +140,28 @@ class Sampler:
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
         dev_id = torch.cuda.current_device()
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.num_classes = H.num_classes
+        self.local_classes = self._distribute_classes_across_gpus()
+
+
+    def _distribute_classes_across_gpus(self):
+        """Distribute classes across GPUs for load balancing."""
+        classes_per_gpu = self.num_classes // self.world_size
+        remainder = self.num_classes % self.world_size
+        
+        if self.rank < remainder:
+            local_classes_count = classes_per_gpu + 1
+            start_class = self.rank * local_classes_count
+        else:
+            local_classes_count = classes_per_gpu
+            start_class = self.rank * local_classes_count + remainder
+        
+        local_classes = list(range(start_class, start_class + local_classes_count))
+        
+        if is_main_process():
+            print(f"GPU {self.rank}: handling classes {local_classes}")
+        
+        return local_classes
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]
@@ -341,12 +363,14 @@ class Sampler:
 
         all_pool_latents = []
 
-        for i in range(10):
+        for i in range(len(self.local_classes)):
             self.resample_pool(gen, i)
         
             torch.cuda.empty_cache()
 
             with torch.no_grad():
+                self.gpu_index_flat.reset()
+
                 # Total number of dataset samples.
                 total_datapoints = self.dataset_proj.shape[0]
 
@@ -372,42 +396,41 @@ class Sampler:
                 new_latents = self.pool_latents[local_indices].clone()
                 all_pool_latents.append(new_latents)
             
-            all_pool_latents = torch.cat(all_pool_latents, dim=0)
+        all_pool_latents = torch.cat(all_pool_latents, dim=0)
                 
-            if is_main_process():
-                gathered_latents = [None for _ in range(self.world_size)]
-            else:
-                gathered_latents = None
+        if is_main_process():
+            gathered_latents = [None for _ in range(self.world_size)]
+        else:
+            gathered_latents = None
 
-            torch.distributed.gather_object(new_latents, gathered_latents, dst=0)
+        torch.distributed.gather_object(new_latents, gathered_latents, dst=0)
 
-            safe_barrier()  # Ensure all processes complete the gather
+        safe_barrier()  # Ensure all processes complete the gather
 
-            if is_main_process():
-                full_updated_latents = torch.cat(gathered_latents, dim=0).to(self.device)
-                perturbation = self.H.imle_perturb_coef * torch.randn(
-                    (self.sz, self.H.latent_dim), 
-                    device=self.device,
-                    generator=self.generator_seed)
-                full_updated_latents += perturbation
-            else:
-                full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
+        if is_main_process():
+            full_updated_latents = torch.cat(gathered_latents, dim=0).to(self.device)
+            perturbation = self.H.imle_perturb_coef * torch.randn(
+                (self.sz, self.H.latent_dim), 
+                device=self.device,
+                generator=self.generator_seed)
+            full_updated_latents += perturbation
+        else:
+            full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
 
-            safe_barrier()
+        safe_barrier()
 
-            torch.distributed.broadcast(full_updated_latents, src=0)
+        torch.distributed.broadcast(full_updated_latents, src=0)
 
-            safe_barrier()
+        safe_barrier()
 
-            # Move the broadcasted results to CPU if desired.
-            self.selected_latents_tmp = full_updated_latents.cpu()
+        # Move the broadcasted results to CPU if desired.
+        self.selected_latents_tmp = full_updated_latents.cpu()
 
-            # Update last and current selected latents on all processes.
-            self.last_selected_latents = self.selected_latents.clone()
-            self.selected_latents = self.selected_latents_tmp.clone()
+        # Update last and current selected latents on all processes.
+        self.last_selected_latents = self.selected_latents.clone()
+        self.selected_latents = self.selected_latents_tmp.clone()
 
-            if is_main_process():
-                print(f"Force resampling took {time.time() - t1:.2f} seconds")
+        if is_main_process():
+            print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         safe_barrier()  # Ensure synchronization before leaving the function
-        self.gpu_index_flat.reset()
