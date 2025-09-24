@@ -89,13 +89,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     sampler.init_projection(data_train)
     
     safe_barrier()
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
-
+    viz_batch_original, viz_labels, viz_indices = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
     latent_for_visualization = []
 
     if(is_main_process()):
         latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
+        labels_random = torch.randint(0, H.num_classes, (H.num_rows_visualize, H.num_images_visualize)).to(device)
     
     mean_loss = float('inf')
     metrics = {
@@ -114,11 +114,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()        
 
 
-        if (epoch % 20 == 0 and is_main_process()):
-            latents = sampler.selected_latents[:H.num_images_visualize]
+        if (epoch % 5 == 0 and is_main_process()):
+            latents = sampler.selected_latents[viz_indices]
             with torch.no_grad():
                 imle.eval()
-                generate_for_NN(sampler, viz_batch_original, latents,
+                generate_for_NN(sampler, viz_batch_original, latents, viz_labels, 
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
@@ -182,9 +182,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     imle.eval()
                     with torch.no_grad():
                         generate_visualization(H, sampler, viz_batch_original,
-                                                sampler.selected_latents[0: H.num_images_visualize],
-                                                sampler.last_selected_latents[0: H.num_images_visualize],
+                                                sampler.selected_latents[viz_indices],
+                                                sampler.last_selected_latents[viz_indices],
+                                                viz_labels,
                                                 latent_for_visualization,
+                                                labels_random,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
                     imle.train()
@@ -244,14 +246,17 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 25 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
-                                        sampler.selected_latents[0: H.num_images_visualize],
-                                        sampler.last_selected_latents[0: H.num_images_visualize],
+                                        sampler.selected_latents[viz_indices],
+                                        sampler.last_selected_latents[viz_indices],
+                                        viz_labels,
                                         latent_for_visualization,
-                                        viz_batch_original.shape, imle,
+                                        labels_random,
+                                        viz_batch_original.shape, 
+                                        imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
             imle.train()
 

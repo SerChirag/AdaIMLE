@@ -17,20 +17,36 @@ def delete_content_of_dir(folder):
         except Exception as e:
             print('Failed to delete %s. Reason: %s' % (file_path, e))
 
+class DatasetWithIndex(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+    def __len__(self):
+        return len(self.dataset)
+    def __getitem__(self, idx):
+        data, label = self.dataset[idx]
+        return data, label, idx   # return index too
+
+
 def get_sample_for_visualization(data, preprocess_fn, num, dataset):
-    for x in DataLoader(data, batch_size=num, shuffle=False):
+    indexed_data = DatasetWithIndex(data)
+    for x in DataLoader(indexed_data, batch_size=num, shuffle=True):
         break
-    orig_image = (x[0]).to(torch.uint8).permute(0, 2, 3, 1) if dataset == 'lsun' else x[0]
-    preprocessed = preprocess_fn(x[0])
+
+    images, labels, indices = x
+    orig_image = (images).to(torch.uint8).permute(0, 2, 3, 1) if dataset == 'lsun' else images
+    preprocessed = preprocess_fn(images)
     preprocessed = preprocessed.cpu().numpy()
-    return orig_image, preprocessed
+
+    return orig_image, labels, indices
 
 
 
-def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
+
+def generate_for_NN(sampler, orig, initial, labels, shape, ema_imle, fname, logprint):
     mb = shape[0]
     initial = initial[:mb].to(ema_imle.device)
-    nns = sampler.sample(initial, ema_imle, None)
+    labels = labels[:mb].to(ema_imle.device)
+    nns = sampler.sample(initial, labels, ema_imle, None)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -40,14 +56,14 @@ def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     imageio.imwrite(fname, im)
 
 
-def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_visualization, shape, imle, fname, logprint, experiment=None):
+def generate_visualization(H, sampler, orig, initial, last_latents, labels_NN, latent_for_visualization, labels_random, shape, imle, fname, logprint, experiment=None):
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
-    batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
+    batches = [orig[:mb], sampler.sample(initial, labels_NN, imle, None), sampler.sample(last_latents, labels_NN, imle, None)]
 
     for t in range(H.num_rows_visualize):
-        batches.append(sampler.sample(latent_for_visualization[t], imle, None))
+        batches.append(sampler.sample(latent_for_visualization[t], labels_random[t], imle, None))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
