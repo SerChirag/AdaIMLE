@@ -5,7 +5,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 from transformers import AutoImageProcessor, AutoModel
 
 from LPNet import LPNet
@@ -121,7 +121,7 @@ class Sampler:
 
         self.dci_dim = sum_dims
 
-        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
+        self.dataset_proj = None
         self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device='cpu')
 
         self.knn_ignore = H.knn_ignore
@@ -141,7 +141,9 @@ class Sampler:
         dev_id = torch.cuda.current_device()
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
         self.num_classes = H.num_classes
+
         self.local_classes = self._distribute_classes_across_gpus()
+        self.class_ranges = None
 
 
     def _distribute_classes_across_gpus(self):
@@ -222,14 +224,36 @@ class Sampler:
         return combined_feat
 
     def init_projection(self, dataset):
+        # Filter indices for local classes only
+        indices = [i for i, (_, y) in enumerate(dataset) if y in self.local_classes]
+        subset = Subset(dataset, indices)
+
+            # Step 2: build class_ranges directly from labels
+        self.class_ranges = {}
+        start = 0
+        prev_cls = None
+
+        for j, idx in enumerate(indices):
+            _, y = dataset[idx]
+            lbl = int(y if not isinstance(y, (list, tuple)) else y[0])  # flatten
+            if lbl != prev_cls:
+                if prev_cls is not None:
+                    self.class_ranges[prev_cls] = (start, j)  # close previous class
+                start = j
+                prev_cls = lbl
+        # close the last class
+        if prev_cls is not None:
+            self.class_ranges[prev_cls] = (start, len(indices))
+        
+        self.dataset_proj = torch.empty([len(indices), self.dci_dim], dtype=torch.float32, device='cpu')
 
         dataloader = DataLoader(
-            dataset,
-            batch_size=self.H.imle_batch,      # Get 32 samples per batch
+            subset,
+            batch_size=self.H.imle_batch,
         )
 
-        if(is_main_process()):
-            print("Starting Initialization")
+        if is_main_process():
+            print(f"Starting Initialization for classes {self.local_classes}")
 
         for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
@@ -244,7 +268,9 @@ class Sampler:
             else:
                 exit()
 
-        self.dataset_proj = self.dataset_proj.cpu().numpy().astype(np.float32)
+        # Convert to numpy
+        self.dataset_proj = self.dataset_proj.numpy().astype(np.float32)
+
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
@@ -371,11 +397,9 @@ class Sampler:
             with torch.no_grad():
                 self.gpu_index_flat.reset()
 
-                # Total number of dataset samples.
-                total_datapoints = self.dataset_proj.shape[0]
 
                 # Obtain the full dataset features (on CPU) and then slice locally.
-                local_ds_feats = self.dataset_proj[:]
+                local_ds_feats = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
 
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
@@ -402,8 +426,10 @@ class Sampler:
             gathered_latents = [None for _ in range(self.world_size)]
         else:
             gathered_latents = None
+        
+        safe_barrier()  # Ensure all processes complete the gather
 
-        torch.distributed.gather_object(new_latents, gathered_latents, dst=0)
+        torch.distributed.gather_object(all_pool_latents, gathered_latents, dst=0)
 
         safe_barrier()  # Ensure all processes complete the gather
 

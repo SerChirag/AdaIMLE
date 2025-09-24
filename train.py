@@ -153,7 +153,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
 
-
         for cur, indices in data_loader:
             x = cur[0][0]
             labels = torch.squeeze(cur[0][1])
@@ -190,10 +189,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
                     imle.train()
             iterate += 1
-            
-            
-
-            
+                       
             if iterate % H.iters_per_ckpt == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, f'iter-{iterate}')
                 logprint(f'Saving model@ {iterate} to {fp}')
@@ -213,39 +209,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-
-        ############ Can be removed ###############
-        # if(is_main_process() and epoch % 5 == 0):
-            
-        #     cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-
-
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(data_train_tensor, imle, 
-        #                                                                                     dists=cur_dists,  
-        #                                                                                     dists_lpips=cur_dists_lpips,
-        #                                                                                     dists_l2=cur_dists_l2, 
-        #                                                                                     logging=True)
-
-        #     # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                    
-        #     metrics = {
-        #         'mean_loss': torch.mean(cur_dists).item(),
-        #         'std_loss': torch.std(cur_dists).item(),
-        #         'max_loss': torch.max(cur_dists).item(),
-        #         'min_loss': torch.min(cur_dists).item(),
-        #         'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-        #         'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-        #         'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-        #         'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-        #         'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-        #         'std_loss_l2': torch.std(cur_dists_l2).item(),
-        #         'max_loss_l2': torch.max(cur_dists_l2).item(),
-        #         'min_loss_l2': torch.min(cur_dists_l2).item(),
-        #     }
-
-        # ############ Can be removed ###############
         
         metrics = {
             'mean_loss': mean_loss,
