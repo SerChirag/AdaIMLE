@@ -37,7 +37,7 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
     preprocessed = preprocess_fn(images)
     preprocessed = preprocessed.cpu().numpy()
 
-    return orig_image, labels, indices
+    return orig_image, torch.squeeze(labels), torch.squeeze(indices)
 
 
 
