@@ -270,6 +270,7 @@ class Sampler:
 
         # Convert to numpy
         self.dataset_proj = self.dataset_proj.numpy().astype(np.float32)
+        # print(f"Rank {self.rank} class ranges: {self.class_ranges}")
 
 
     def sample(self, latents, gen, snoise=None):
@@ -389,7 +390,7 @@ class Sampler:
 
         all_pool_latents = []
 
-        for i in range(len(self.local_classes)):
+        for i in self.local_classes:
             self.resample_pool(gen, i)
         
             torch.cuda.empty_cache()
@@ -434,6 +435,7 @@ class Sampler:
         safe_barrier()  # Ensure all processes complete the gather
 
         if is_main_process():
+            gathered_latents = [t.cpu() for t in gathered_latents]
             full_updated_latents = torch.cat(gathered_latents, dim=0).to(self.device)
             perturbation = self.H.imle_perturb_coef * torch.randn(
                 (self.sz, self.H.latent_dim), 
