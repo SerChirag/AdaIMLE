@@ -22,6 +22,8 @@ from helpers.utils import is_main_process, get_world_size, get_rank
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 
+from models_monarch import IMLE_Monarch
+
 def update_ema(imle, ema_imle, ema_rate):
     for p1, p2 in zip(imle.parameters(), ema_imle.parameters()):
         p2.data.mul_(ema_rate)
@@ -176,11 +178,32 @@ def restore_log(path, local_rank, mpi_size):
     return cur_eval_loss, iterate, starting_epoch
 
 
+def load_teacher(H):
+    local_rank = get_rank()
+    device = torch.device("cuda")
+
+    teacher_imle = IMLE(H)
+    teacher_imle = teacher_imle.to(device)  # Move to the correct device.
+
+    if H.restore_teacher_path:
+        if(is_main_process()):
+            print(f'Restoring teacher imle from {H.restore_teacher_path}')
+        restore_params(teacher_imle, H.restore_teacher_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+
+    teacher_imle.requires_grad_(False)
+    teacher_imle.eval()
+
+    if(H.compile):
+        teacher_imle = torch.compile(teacher_imle)
+    
+    return teacher_imle
+
+
 def load_imle(H, logprint):
     local_rank = get_rank()
     device = torch.device("cuda")
 
-    imle = IMLE(H)
+    imle = IMLE_Monarch(H)
     imle.to(device)
     
     if H.restore_path:
@@ -188,7 +211,7 @@ def load_imle(H, logprint):
             logprint(f'Restoring imle from {H.restore_path}')
         restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
 
-    ema_imle = IMLE(H)
+    ema_imle = IMLE_Monarch(H)
     ema_imle = ema_imle.to(device)  # Move to the correct device.
 
     if H.restore_ema_path:

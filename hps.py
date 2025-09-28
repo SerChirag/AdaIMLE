@@ -123,6 +123,8 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--restore_path', type=str, default=None)  # restore from checkpoint
     parser.add_argument('--restore_ema_path', type=str, default=None)  # restore ema from checkpoint
+    parser.add_argument('--restore_teacher_path', type=str, default=None)  # restore teacher
+
     parser.add_argument('--restore_log_path', type=str, default=None)  # restore log from checkpoint
     parser.add_argument('--restore_optimizer_path', type=str, default=None)  # restore optimizer from checkpoint
     parser.add_argument('--restore_scheduler_path', type=str, default=None)  # restore optimizer from scheduler

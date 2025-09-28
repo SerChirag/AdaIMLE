@@ -7,6 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
+from src.models.layers.monarch_linear import MonarchLinear
 
 def parse_layer_string(s):
     layers = []
@@ -57,10 +58,12 @@ class ConvNeXtBlock(nn.Module):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.norm = nn.LayerNorm(dim, eps=1e-3)
-        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
+        self.pw_conv1 = MonarchLinear(in_features=dim, 
+                                      out_features=expansion * dim)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()
-        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+        self.pw_conv2 = MonarchLinear(in_features=expansion * dim, 
+                                      out_features=dim)
 
         ## single parameter for residual ratio
         self.use_se = use_se
@@ -81,7 +84,6 @@ class ConvNeXtBlock(nn.Module):
         x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
         # Permute back to channels-first
-        x = x.permute(0, 3, 1, 2)
         # Pointwise conv to expand channels
         x = self.pw_conv1(x)
         x = self.gelu(x)
@@ -90,6 +92,8 @@ class ConvNeXtBlock(nn.Module):
         # x = self.dropout(x)
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
+        x = x.permute(0, 3, 1, 2)
+
         x = self.se(x)
         return x * self.sigmoid(self.residual_ratio) + residual
 
@@ -142,8 +146,8 @@ class Decoder(nn.Module):
         else:
             w = latent_code
         
-        outputs = []
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        outputs = []
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
@@ -154,7 +158,7 @@ class Decoder(nn.Module):
         return outputs
 
 
-class IMLE(nn.Module):
+class IMLE_Monarch(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.decoder = Decoder(H)
