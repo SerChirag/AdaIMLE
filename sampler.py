@@ -147,8 +147,7 @@ class Sampler:
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.gpu_index_flat = index_flat
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]
@@ -349,8 +348,10 @@ class Sampler:
 
         local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
 
+        num_batches = (local_pool_size + self.H.imle_batch - 1) // self.H.imle_batch
+
         # Process local chunk in batches
-        for j in range(local_pool_size // self.H.imle_batch):
+        for j in range(num_batches):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
             cur_latents = local_pool_latents[batch_slice]
             with torch.no_grad():
@@ -470,7 +471,7 @@ class Sampler:
             global_union = torch.empty(union_size, dtype=torch.long, device=self.device)
 
         torch.distributed.broadcast(global_union, src=0)
-        torch.distributed.barrier()  # Optional sync point
+        safe_barrier()  # Ensure all processes complete before returning
 
         return global_union
 
@@ -514,22 +515,21 @@ class Sampler:
             local_end = min(local_start + local_size, self.sz)
 
             # Obtain the full dataset features (on CPU) and then slice locally.
-            local_ds_feats = self.dataset_proj[local_start:local_end]
+            local_ds_feats = np.ascontiguousarray(self.dataset_proj[local_start:local_end], dtype=np.float32)
 
             # Pool features (as computed from resample_pool).
-            pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
+            pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
             feature_dim = pool_feats.shape[1]
 
             # --------------------
             # Build FAISS index on global pool features.
-
+            self.gpu_index_flat.reset()  # Clear previous index data
             self.gpu_index_flat.add(pool_feats)  # add entire pool
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
             distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-            self.mean_distance_nn = local_distances.mean().item()
 
             # Get current temporary distances for the local slice.
             local_current_dists = self.selected_dists_tmp[local_start:local_end].clone()
@@ -587,6 +587,11 @@ class Sampler:
             self.last_selected_latents = self.selected_latents.clone()
             self.selected_latents = self.selected_latents_tmp.clone()
 
+            self.mean_distance_nn = full_updated_dists.mean().item()
+            self.min_distance_nn = full_updated_dists.min().item()
+            self.max_distance_nn = full_updated_dists.max().item()
+
+
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
@@ -610,7 +615,7 @@ class Sampler:
         if not is_main_process():
             concat_tensor = torch.empty(concat_len.item(), dtype=torch.long, device=self.device)
         torch.distributed.broadcast(concat_tensor, src=0)
-        torch.distributed.barrier()
+        safe_barrier()  # Ensure all processes complete before returning
         return concat_tensor
 
 
@@ -629,6 +634,8 @@ class Sampler:
         # this updates self.pool_samples_proj and self.pool_latents.
         self.resample_reverse_pool(gen)
         safe_barrier()  # Ensure all processes complete the pool resample
+        # self.reverse_pool_latents = self.pool_latents
+        # self.reverse_pool_samples_proj = self.pool_samples_proj
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
@@ -649,59 +656,55 @@ class Sampler:
             else:
                 local_size = chunk_size
                 local_start = self.rank * local_size + remainder
-            local_end = min(local_start + local_size, self.sz)
+            local_end = min(local_start + local_size, total_queries)
 
             # Obtain the full dataset features (on CPU) and then slice locally.
-            local_ds_feats = self.reverse_pool_samples_proj[local_start:local_end].numpy().astype(np.float32)
+            local_query_feats = np.ascontiguousarray(
+                self.reverse_pool_samples_proj[local_start:local_end].cpu().numpy(),
+                dtype=np.float32
+            )
 
             # Pool features (as computed from resample_pool).
-            pool_feats = self.dataset_proj
+            dataset_feats = np.ascontiguousarray(self.dataset_proj.copy(), dtype=np.float32)
 
             # --------------------
             # Build FAISS index on global pool features.
             self.gpu_index_flat.reset()
-            self.gpu_index_flat.add(pool_feats)  # add entire pool
+            self.gpu_index_flat.add(dataset_feats)  # add entire dataset
 
             safe_barrier()
 
             
             if(self.H.use_rsimle):
                 # If using RSIMLE, we need to reset the index to avoid accumulating entries.
-                distances, indices = self.gpu_index_flat.search(local_ds_feats, self.H.rs_knn_ignore)
+                distances, indices = self.gpu_index_flat.search(local_query_feats, self.H.rs_knn_ignore)
                 local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
                 local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
                 easy_mask = local_distances < self.H.rs_radius
                 local_easy = torch.unique(local_indices[easy_mask])  # 1‑D tensor of pool indices to drop
                 # if is_main_process():
-                torch.distributed.barrier()  # Ensure all processes complete the search
+                safe_barrier()  # Ensure all processes complete before syncing
 
                 global_easy = self._sync_union_indices(local_easy)
 
                 percent_curr = global_easy.numel() / self.pool_latents.shape[0]
-                # self.ema_raw = self.ema_factor * self.ema_raw + (1 - self.ema_factor) * percent_curr
-                # self.total_excluded_percentage = self.ema_raw / (1 - self.ema_factor ** (self.ema_counter + 1))  # apply correction only here
-                # self.ema_counter += 1
 
                 if(is_main_process()):
                     print(f"Global rejection: {global_easy.numel()}")
 
                 if global_easy.numel() > 0:
-                    keep_mask = torch.ones(pool_feats.shape[0], dtype=torch.bool)
+                    keep_mask = torch.ones(dataset_feats.shape[0], dtype=torch.bool)
                     keep_mask[global_easy] = False
-                    pool_feats = pool_feats[keep_mask]
+                    dataset_feats = dataset_feats[keep_mask]
                     self.gpu_index_flat.reset()  # Reset the index to avoid accumulating entries
-                    self.gpu_index_flat.add(pool_feats)
+                    self.gpu_index_flat.add(dataset_feats)
                     safe_barrier()  # Ensure all processes complete the index update
 
             # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-            distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
+
+            distances, indices = self.gpu_index_flat.search(local_query_feats, 1)
             local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
             local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-
-            self.mean_distance_nn = local_distances.mean().item()
-            self.min_distance_nn = local_distances.min().item()
-            self.max_distance_nn = local_distances.max().item()
-
 
             global_indices = self.sync_concat_indices(local_indices)
 
