@@ -102,7 +102,7 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
-        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
+        self.adaIN = AdaptiveInstanceNorm(width, 2 * H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
                                     use_se=H.use_se,
@@ -120,7 +120,7 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetwork(code_dim=H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetwork(code_dim=2*H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -138,13 +138,11 @@ class Decoder(nn.Module):
         self.embedding = nn.Embedding(100, H.latent_dim)
 
     def forward(self, latent_code, condition):
-            
-        w = self.mapping_network(latent_code)
-        if self.embedding is not None:
-            class_emb = self.embedding(condition)
-            w = w + class_emb
-
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        
+        class_emb = self.embedding(condition)
+        latent_code_2 = torch.cat([latent_code, class_emb], dim=1)
+        w = self.mapping_network(latent_code_2)
+        x = self.constant.repeat(latent_code_2.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
