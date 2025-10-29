@@ -281,7 +281,7 @@ class Sampler:
             return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
     
     def pseudo_huber(self, diff):
-        return self.delta**2 * (torch.sqrt(1 + (diff / self.delta)**2) - 1)
+        return self.delta**2 * (torch.sqrt(1 + (diff / (self.delta)**2)) - 1)
 
 
     def calc_loss(self, inp, tar):
