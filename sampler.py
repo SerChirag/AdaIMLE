@@ -22,6 +22,7 @@ class Sampler:
         self.device = torch.device("cuda", torch.cuda.current_device())
         self.world_size = get_world_size()
         self.rank = get_rank()
+        self.nn_search_batch = H.nn_search_batch
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.reverse_pool_size = ceil(int(H.reverse_force_factor * sz) / H.imle_db_size) * H.imle_db_size
@@ -476,7 +477,7 @@ class Sampler:
         return global_union
 
 
-    def nn_search_batched(self, queries, dataset, batch_size: int = 16):
+    def nn_search_batched(self, queries, dataset):
         """
         Perform nearest-neighbor search in batches using self.gpu_index_flat (FAISS).
         Each dataset sample can be matched only once (greedy removal).
@@ -510,8 +511,8 @@ class Sampler:
 
         self.gpu_index_flat.reset()
 
-        for start in range(0, Nq, batch_size):
-            end = min(start + batch_size, Nq)
+        for start in range(0, Nq, self.nn_search_batch):
+            end = min(start + self.nn_search_batch, Nq)
             batch_ids = perm[start:end]
             q_batch = q_np[batch_ids]
 
