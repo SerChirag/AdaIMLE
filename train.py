@@ -239,9 +239,6 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
-            'nn_mean': sampler.mean_distance_nn,
-            'nn_min': sampler.min_distance_nn,
-            'nn_max': sampler.max_distance_nn,
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
