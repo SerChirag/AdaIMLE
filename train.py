@@ -197,6 +197,8 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
             # When we have accumulated enough mini-batches, perform the step.
             if accum_counter % H.accumulation_steps == 0:
+                scaler.unscale_(optimizer)  # Unscale gradients before clipping
+                torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
@@ -223,6 +225,8 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
+            scaler.unscale_(optimizer)  # Unscale gradients before clipping
+            torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()

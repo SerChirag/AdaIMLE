@@ -145,6 +145,7 @@ class Sampler:
         self.db_iter = 0
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
+        self.delta = H.huber_delta
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
@@ -264,7 +265,7 @@ class Sampler:
         if use_mean:
             return res.mean(dim=tuple(range(1, res.ndim)))
         else:
-            return res
+            return res.mean(dim=tuple(range(1, res.ndim)))
     
     def get_dino_loss(self, inp, tar, use_mean=True):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
@@ -273,25 +274,32 @@ class Sampler:
         if use_mean:
             return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
         else:
-            return dino_loss
+            return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
+    
+    def pseudo_huber(self, diff):
+        return self.delta**2 * (torch.sqrt(1 + (diff / (self.delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, logging=False):
+
+    def calc_loss(self, inp, tar):
 
         l2_loss = self.l2_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
         res = 0
         
-        lpips_loss = self.get_lpips_loss(inp, tar)
+        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=False)
 
         if(inp.shape[2] < 32):
-            dino_loss = self.get_dino_loss(inp, tar)
+            dino_loss = self.get_dino_loss(inp, tar, use_mean=False)
         else:
             dino_loss = torch.tensor(0.0, device=self.device)
 
-        loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-        
-        return loss
+        residuals = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
 
-            
+        loss = self.pseudo_huber(residuals).mean()
+        return loss
+        
+        
+        
+
     ############### Can be removed ###########
     
     def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
