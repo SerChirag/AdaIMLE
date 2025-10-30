@@ -120,11 +120,12 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
         safe_barrier()
 
-        torch.cuda.empty_cache()
-        sampler.imle_sample_force_reverse(imle)
-        torch.cuda.empty_cache()
+        if (H.use_reverse_sampling):
 
-        reverse_dataset = Subset(data_train, sampler.reverse_indices)
+            torch.cuda.empty_cache()
+            sampler.imle_sample_force_reverse(imle)
+            torch.cuda.empty_cache()
+            reverse_dataset = Subset(data_train, sampler.reverse_indices)
 
         if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
@@ -136,17 +137,26 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
                 imle.train()
 
         # Create a dataset that pairs images with their current latents.
-        safe_barrier()        
+        safe_barrier()      
 
-        images_dataset = ConcatDataset([data_train, reverse_dataset])
-        latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
-        latents_dataset = TensorDataset(latents_dataset)    
+        if(H.use_reverse_sampling):  
+
+            images_dataset = ConcatDataset([data_train, reverse_dataset])
+            latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
+            latents_dataset = TensorDataset(latents_dataset)    
+            
+            array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
+            array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int, device='cpu')
+            array_of_labels = torch.cat([array_of_1, array_of_0], dim=0)
+            labels_dataset = TensorDataset(array_of_labels)
+            comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
         
-        array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
-        array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int, device='cpu')
-        array_of_labels = torch.cat([array_of_1, array_of_0], dim=0)
-        labels_dataset = TensorDataset(array_of_labels)
-        comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
+        else:
+            images_dataset = data_train
+            latents_dataset = TensorDataset(sampler.selected_latents)    
+            array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
+            labels_dataset = TensorDataset(array_of_1)
+            comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
