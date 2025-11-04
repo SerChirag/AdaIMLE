@@ -42,35 +42,19 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler):
+def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler, sampler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    targets_permuted = targets.permute(0, 3, 1, 2)
+    # targets_permuted = sampler.get_image_feature(targets)
     with autocast(device_type='cuda'):
 
         px_z = imle(latents)
-        loss_raw = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        loss_raw = loss_fn(px_z, targets)
         loss_weighted_forward = labels * loss_raw
         loss_weighted_reverse = (1 - labels) * loss_raw * H.reverse_loss_weight
         loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
         loss_measure = loss_weighted_forward.mean().clone().detach()
-        num_resolutions = 1
 
-        if(H.use_multi_res):
-            
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                loss_scale = loss_fn(px_z_scale, targets_scale)
-
-                loss_weighted_forward = labels * loss_scale
-                loss_weighted_reverse = (1 - labels) * loss_scale * H.reverse_loss_weight
-                loss_scale = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
-                
-                loss.add_(loss_scale)
-                num_resolutions += 1
-
-    loss = loss / num_resolutions
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
@@ -94,6 +78,9 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
     epoch = starting_epoch 
     sampler.init_projection(data_train)
+
+    safe_barrier()
+    embeddings = TensorDataset(torch.from_numpy(sampler.dataset_proj).clone())
     
     safe_barrier()
     viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
@@ -125,9 +112,9 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             torch.cuda.empty_cache()
             sampler.imle_sample_force_reverse(imle)
             torch.cuda.empty_cache()
-            reverse_dataset = Subset(data_train, sampler.reverse_indices)
+            reverse_dataset = Subset(embeddings, sampler.reverse_indices)
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
@@ -141,7 +128,8 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
         if(H.use_reverse_sampling):  
 
-            images_dataset = ConcatDataset([data_train, reverse_dataset])
+            images_dataset = ConcatDataset([embeddings, reverse_dataset])
+            # images_dataset = ConcatDataset([data_train, reverse_dataset])
             latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
             latents_dataset = TensorDataset(latents_dataset)    
             
@@ -152,7 +140,8 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
         
         else:
-            images_dataset = data_train
+            images_dataset = embeddings
+            # images_dataset = data_train
             latents_dataset = TensorDataset(sampler.selected_latents)    
             array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
             labels_dataset = TensorDataset(array_of_1)
@@ -190,15 +179,15 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
 
         for cur, indices in data_loader:
-            x = cur[0]
+            x = cur[0][0]
             latents = cur[1][0]
             labels = cur[2][0]
-            _, target = preprocess_fn(x)
+            target = x
             target = target.to(device)
             latents = latents.to(device)
             labels = labels.to(device)
 
-            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler)
+            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler, sampler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1

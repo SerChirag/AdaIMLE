@@ -78,13 +78,13 @@ fewshot = Hyperparams()
 fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
-fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
+fewshot.dec_blocks = "1x1,4m1,4x8,8m4,8x8,16m8,16x8,32m16,32x11"
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
 fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
-fewshot.l2_search_downsample = 0.125
+fewshot.l2_search_downsample = 1.0
 fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
@@ -211,13 +211,13 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--reverse_loss_weight', type=float, default=1.0) 
     parser.add_argument('--reverse_force_factor', type=float, default=1.0) 
-    parser.add_argument('--nn_search_batch', type=int, default=32) 
-    parser.add_argument('--use_reverse_sampling', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--nn_search_batch', type=int, default=16) 
+    parser.add_argument('--use_reverse_sampling', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
-    parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
-    parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
+    parser.add_argument('--search_type', type=str, default='l2', choices=['l2']) # search type for nearest neighbour search
+    parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
@@ -238,7 +238,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
     parser.add_argument("--batch", type=int, default=16, help="batch size for the models")
     parser.add_argument("--n_sample", type=int, default=5000, help="number of the samples for calculating PPL",)
-    parser.add_argument("--size", type=int, default=256, help="output image sizes of the generator")
+    parser.add_argument("--size", type=int, default=32, help="output image sizes of the generator")
     parser.add_argument("--eps", type=float, default=1e-4, help="epsilon for numerical stability")
     parser.add_argument("--ppl_snoise", type=int, default=0, help="whether to interpolate spatial noise in PPL")
     parser.add_argument("--sampling", default="end", choices=["end", "full"], help="set endpoint sampling method",)
