@@ -248,7 +248,8 @@ def load_opt(H, imle, logprint):
     else:
         cur_eval_loss, iterate, starting_epoch = float('inf'), 0, 0
 
-    logprint('starting at epoch', starting_epoch, 'iterate', iterate, 'eval loss', cur_eval_loss)
+    if(is_main_process()):
+        logprint('starting at epoch', starting_epoch, 'iterate', iterate, 'eval loss', cur_eval_loss)
     return optimizer, scheduler, scaler, cur_eval_loss, iterate, starting_epoch
 
 
