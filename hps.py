@@ -55,7 +55,7 @@ tinyimagenet64.n_batch = 32
 tinyimagenet64.imle_batch = 32
 tinyimagenet64.ema_rate = 0.9999
 tinyimagenet64.l2_search_downsample = 1.0
-tinyimagenet64.multi_res_scales = '8,12,16,24,28'
+tinyimagenet64.multi_res_scales = '16,24,32,48'
 tinyimagenet64.convnext_expansion = 6
 HPARAMS_REGISTRY['tinyimagenet64'] = tinyimagenet64
 
