@@ -24,7 +24,9 @@ def set_up_data(H):
     shift_loss = -127.5
     scale_loss = 1. / 127.5
     if H.dataset == 'imagenet32':
-        trX, vaX, teX = imagenet32(H.data_root)
+        (trX, trY) = imagenet32(H.data_root)
+        vaX = None
+        teX = None
         H.image_size = 32
         H.image_channels = 3
         shift = -116.2373
@@ -35,7 +37,17 @@ def set_up_data(H):
         shift = -116.2373
         scale = 1. / 69.37404
     elif H.dataset == 'imagenet64':
-        trX, vaX, teX = imagenet64(H.data_root)
+        (trX, trY) = imagenet64(H.data_root)
+        vaX = None
+        teX = None
+        H.image_size = 64
+        H.image_channels = 3
+        shift = -115.92961967
+        scale = 1. / 69.37404
+    elif H.dataset == 'tinyimagenet64':
+        (trX, trY) = tinyimagenet64(H.data_root)
+        vaX = None
+        teX = None
         H.image_size = 64
         H.image_channels = 3
         shift = -115.92961967
@@ -112,7 +124,19 @@ def set_up_data(H):
         untranspose = True
     
     elif H.dataset == 'imagenet32':
-        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'tinyimagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'imagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
         untranspose = False
@@ -205,19 +229,59 @@ def imagenet32(data_root):
         labels.append(Y)
 
     images = np.concatenate(images)
-    labels = np.concatenate(labels) - 1
+    labels = np.concatenate(labels) 
 
-    return images, None, None
-
+    return (images, labels)
 
 def imagenet64(data_root):
-    trX = np.load(os.path.join(data_root, 'imagenet64-train.npy'), mmap_mode='r')
-    tr_va_split_indices = np.random.permutation(trX.shape[0])
-    train = trX[tr_va_split_indices[:-5000]]
-    valid = trX[tr_va_split_indices[-5000:]]
-    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')  # this is test.
-    return train, valid, test
 
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+        
+        X = X.reshape(-1, 3, 64, 64)
+        images.append(X)
+        labels.append(Y)
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) 
+
+
+    return (images, labels)
+
+
+def tinyimagenet64(data_root):
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+        
+        X = X.reshape(-1, 3, 64, 64)
+        images.append(X)
+        labels.append(Y)
+
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) 
+
+  # Select first 100 classes
+    chosen_classes = np.arange(100)
+    mask = np.isin(labels, chosen_classes)
+    images = images[mask]
+    labels = labels[mask]
+
+
+    return (images, labels)
 
 def ffhq1024(data_root):
     # we did not significantly tune hyperparameters on ffhq-1024, and so simply evaluate on the test set
