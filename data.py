@@ -229,7 +229,11 @@ def imagenet32(data_root):
         labels.append(Y)
 
     images = np.concatenate(images)
-    labels = np.concatenate(labels) 
+    labels = np.concatenate(labels) - 1
+
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
 
     return (images, labels)
 
@@ -249,7 +253,11 @@ def imagenet64(data_root):
         labels.append(Y)
 
     images = np.concatenate(images)
-    labels = np.concatenate(labels) 
+    labels = np.concatenate(labels) - 1
+
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
 
 
     return (images, labels)
@@ -265,14 +273,19 @@ def tinyimagenet64(data_root):
         batch = np.load(os.path.join(data_root, f))
         X = batch["data"]        # shape (N, 3072)
         Y = batch["labels"]      # shape (N,)
-        
+
         X = X.reshape(-1, 3, 64, 64)
         images.append(X)
         labels.append(Y)
 
 
     images = np.concatenate(images)
-    labels = np.concatenate(labels) 
+    labels = np.concatenate(labels) - 1
+
+    # sort by labels
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
 
   # Select first 100 classes
     chosen_classes = np.arange(100)
