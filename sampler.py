@@ -138,6 +138,21 @@ class Sampler:
                 exit()
 
         self.dataset_proj = self.dataset_proj.cpu().detach().numpy().astype(np.float32)
+        self.init_pca()
+    
+    def init_pca(self):
+        flattened_data = torch.from_numpy(self.dataset_proj).to(self.device)
+        flattened_data = flattened_data.view(flattened_data.shape[0], -1)
+        data_mean = torch.mean(flattened_data, dim=0)
+        centered = flattened_data - data_mean
+        cov = centered.T @ centered / (centered.shape[0] - 1)
+        eigenvalues, eigenvectors = torch.linalg.eigh(cov)
+        idx = torch.argsort(eigenvalues, descending=True)
+        self.pca_components = eigenvectors[:, idx].T        
+        self.pca_mean = data_mean
+        self.pca_eigenvalues = eigenvalues[idx].clamp(min=0)
+
+
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
@@ -154,9 +169,27 @@ class Sampler:
     def calc_loss(self, inp, tar, logging=False):
 
         # l2_loss = self.l2_loss(inp.reshape(inp.shape[0], -1), tar).mean()
-        input_reshaped = inp.reshape(inp.shape[0], -1)
-        l2_loss = self.l2_loss(input_reshaped, tar)
-        return l2_loss
+        if(self.H.loss_type == 'l2'):
+            input_reshaped = inp.reshape(inp.shape[0], -1)
+            l2_loss = self.l2_loss(input_reshaped, tar)
+            return l2_loss
+        elif(self.H.loss_type == 'pca'):
+            pca_loss = self.pca_loss(inp, tar)
+            return pca_loss
+        else:
+            exit()
+
+
+    def pca_loss(self, inp, tar):
+        inp_reshaped = inp.reshape(inp.shape[0], -1)
+        tar_reshaped = tar.reshape(tar.shape[0], -1)
+        inp_centered = inp_reshaped - self.pca_mean
+        tar_centered = tar_reshaped - self.pca_mean
+        inp_pca = inp_centered @ self.pca_components    
+        tar_pca = tar_centered @ self.pca_components
+        weights = self.pca_eigenvalues / self.pca_eigenvalues.sum()
+        weighted_diff = ((inp_pca - tar_pca) ** 2 * weights).sum(dim=1)
+        return weighted_diff.mean()
 
             
     def resample_pool(self, gen):

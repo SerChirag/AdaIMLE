@@ -189,6 +189,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--image_size', type=int, default=256)  # image size of dataset -- possible to downsample the dataset
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
+
+    parser.add_argument('--loss_type', type=str, default='pca', choices=['l2', 'pca'])  # type of loss to use
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
@@ -212,7 +214,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--reverse_loss_weight', type=float, default=1.0) 
     parser.add_argument('--reverse_force_factor', type=float, default=1.0) 
     parser.add_argument('--nn_search_batch', type=int, default=16) 
-    parser.add_argument('--use_reverse_sampling', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
+    parser.add_argument('--use_reverse_sampling', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
