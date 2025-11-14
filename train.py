@@ -42,11 +42,14 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler, sampler):
+def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler, sampler, epoch_ratio):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     # targets_permuted = sampler.get_image_feature(targets)
     with autocast(device_type='cuda'):
+
+
+        latents = latents + torch.randn_like(latents) * sampler.H.gaussian_noise * (1 - epoch_ratio)
 
         px_z = imle(latents)
         loss_raw = loss_fn(px_z, targets)
@@ -187,7 +190,9 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             latents = latents.to(device)
             labels = labels.to(device)
 
-            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler, sampler)
+            epoch_ratio = epoch / H.num_epochs
+
+            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler, sampler, epoch_ratio)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1

@@ -191,6 +191,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
 
     parser.add_argument('--loss_type', type=str, default='l2', choices=['l2', 'pca'])  # type of loss to use
+    parser.add_argument('--gaussian_noise', type=float, default=0.5)  # angle to splatter
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
