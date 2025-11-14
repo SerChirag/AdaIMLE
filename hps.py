@@ -214,7 +214,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--reverse_loss_weight', type=float, default=1.0) 
     parser.add_argument('--reverse_force_factor', type=float, default=1.0) 
-    parser.add_argument('--nn_search_batch', type=int, default=16) 
+    parser.add_argument('--nn_search_batch', type=int, default=64) 
     parser.add_argument('--use_reverse_sampling', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
