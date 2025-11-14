@@ -190,7 +190,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
 
-    parser.add_argument('--loss_type', type=str, default='pca', choices=['l2', 'pca'])  # type of loss to use
+    parser.add_argument('--loss_type', type=str, default='l2', choices=['l2', 'pca'])  # type of loss to use
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
