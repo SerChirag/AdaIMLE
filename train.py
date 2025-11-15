@@ -110,7 +110,7 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
 
         safe_barrier()
 
-        if (H.use_reverse_sampling):
+        if (H.use_reverse_sampling and epoch % H.imle_force_resample == 0):
 
             torch.cuda.empty_cache()
             sampler.imle_sample_force_reverse(imle)
