@@ -190,7 +190,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
 
-    parser.add_argument('--loss_type', type=str, default='l2', choices=['l2', 'pca'])  # type of loss to use
+    parser.add_argument('--loss_type', type=str, default='huber', choices=['l2', 'pca', 'huber'])  # type of loss to use
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
@@ -210,6 +210,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_rsimle', default=True, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
     parser.add_argument('--rs_radius', type=float, default=20.0)  # angle to splatter
     parser.add_argument('--rs_knn_ignore', type=int, default=10)  # whether to use spatial noise
+
+    parser.add_argument('--huber_beta', type=float, default=1.0)  # beta parameter for pseudo-Huber loss
 
     parser.add_argument('--reverse_loss_weight', type=float, default=1.0) 
     parser.add_argument('--reverse_force_factor', type=float, default=1.0) 

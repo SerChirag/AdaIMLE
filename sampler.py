@@ -14,6 +14,8 @@ import faiss
 from tqdm import tqdm
 from diffusers import AutoencoderKL
 
+from training.pseudo_huber import PseudoHuberLoss
+
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
         
@@ -27,6 +29,7 @@ class Sampler:
         self.total_reverse_count = int(H.reverse_force_factor * sz)
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce='mean').to(self.device)
+        self.pseudo_huber_loss = PseudoHuberLoss(beta=H.huber_beta, reduction='mean').to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
@@ -178,6 +181,9 @@ class Sampler:
                 return xhat
 
 
+    def pseudo_huber(self, diff):
+        return self.delta**2 * (torch.sqrt(1 + (diff / (self.delta)**2)) - 1)
+
 
     def calc_loss(self, inp, tar, logging=False):
 
@@ -186,9 +192,15 @@ class Sampler:
             input_reshaped = inp.reshape(inp.shape[0], -1)
             l2_loss = self.l2_loss(input_reshaped, tar)
             return l2_loss
-        elif(self.H.loss_type == 'pca'):
-            pca_loss = self.pca_loss(inp, tar)
-            return pca_loss
+        
+        elif(self.H.loss_type == 'huber'):
+            input_reshaped = inp.reshape(inp.shape[0], -1)
+            huber_loss = self.pseudo_huber_loss(input_reshaped, tar)
+            return huber_loss
+        
+        # elif(self.H.loss_type == 'pca'):
+        #     pca_loss = self.pca_loss(inp, tar)
+        #     return pca_loss
         else:
             exit()
 
