@@ -40,6 +40,19 @@ def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     imageio.imwrite(fname, im)
 
 
+def generate_for_NN_reverse(sampler, initial, reverse_datapoint, shape, ema_imle, fname):
+    mb = shape[0]
+    initial = initial[:mb].to(ema_imle.device)
+    reverse_datapoint = reverse_datapoint.to(ema_imle.device)
+    nns = sampler.sample(initial, ema_imle, None)
+    reverse_images = sampler.sample_from_decoder(reverse_datapoint)
+    batches = [reverse_images, nns]
+    n_rows = len(batches)
+    im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
+        [n_rows * shape[1], mb * shape[2], 3])
+
+    imageio.imwrite(fname, im)
+
 def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_visualization, shape, imle, fname, logprint, experiment=None):
     mb = shape[0]
     initial = initial[:mb]

@@ -165,6 +165,19 @@ class Sampler:
                 xhat = xhat.detach().cpu().numpy()
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
+            
+    def sample_from_decoder(self, latents):
+        with torch.no_grad():
+            with autocast(device_type='cuda'):
+                dtype = next(self.vae.parameters()).dtype
+                z = (latents / self.vae.config.scaling_factor).to(dtype)
+                z = z.reshape(z.shape[0], 4, 32, 32)
+                x_hat = self.vae.decode(z).sample
+                x_hat = x_hat.permute(0, 2, 3, 1)
+                xhat = ((x_hat + 1.0) * 127.5).clamp(0, 255).byte().cpu().numpy()
+                return xhat
+
+
 
     def calc_loss(self, inp, tar, logging=False):
 
@@ -185,8 +198,8 @@ class Sampler:
         tar_reshaped = tar.reshape(tar.shape[0], -1)
         inp_centered = inp_reshaped - self.pca_mean
         tar_centered = tar_reshaped - self.pca_mean
-        inp_pca = inp_centered @ self.pca_components    
-        tar_pca = tar_centered @ self.pca_components
+        inp_pca = inp_centered @ self.pca_components.T    
+        tar_pca = tar_centered @ self.pca_components.T
         weights = self.pca_eigenvalues / self.pca_eigenvalues.sum()
         weighted_diff = ((inp_pca - tar_pca) ** 2 * weights).sum(dim=1)
         return weighted_diff.mean()

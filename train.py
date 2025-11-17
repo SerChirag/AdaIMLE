@@ -19,7 +19,7 @@ from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyper
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
-from visual.utils import (generate_and_save, generate_for_NN,
+from visual.utils import (generate_and_save, generate_for_NN, generate_for_NN_reverse,
                           generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
@@ -123,29 +123,44 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
 
+
+        if (epoch % 5 == 0 and is_main_process() and H.use_reverse_sampling):
+            latents = sampler.reverse_pool_latents[:H.num_images_visualize]
+            reverse_dataset_extract = embeddings.tensors[0][sampler.reverse_indices[:H.num_images_visualize]]
+            with torch.no_grad():
+                imle.eval()
+                generate_for_NN_reverse(sampler, latents, reverse_dataset_extract,
+                                viz_batch_original.shape, imle,
+                                f'{H.save_dir}/NN-samples_reverse_{epoch}-imle.png')
+                imle.train()
         # Create a dataset that pairs images with their current latents.
         safe_barrier()      
 
-        if(H.use_reverse_sampling):  
+        safe_barrier()
 
-            images_dataset = ConcatDataset([embeddings, reverse_dataset])
-            # images_dataset = ConcatDataset([data_train, reverse_dataset])
-            latents_dataset = torch.cat([sampler.selected_latents, sampler.reverse_pool_latents], dim=0)
-            latents_dataset = TensorDataset(latents_dataset)    
-            
-            array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
-            array_of_0 = torch.zeros(sampler.reverse_pool_latents.shape[0], dtype=torch.int, device='cpu')
-            array_of_labels = torch.cat([array_of_1, array_of_0], dim=0)
-            labels_dataset = TensorDataset(array_of_labels)
-            comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
-        
+        features_forward = embeddings.tensors[0]          # [N, D]
+        latents_forward = sampler.selected_latents        # [N, L]
+
+        if H.use_reverse_sampling:
+            # features for reverse branch
+            features_reverse = embeddings.tensors[0][sampler.reverse_indices]  # [K, D]
+            latents_reverse = sampler.reverse_pool_latents                      # [K, L]
+
+            # concat forward + reverse
+            features_all = torch.cat([features_forward, features_reverse], dim=0)   # [N+K, D]
+            latents_all  = torch.cat([latents_forward, latents_reverse], dim=0)    # [N+K, L]
+
+            labels_forward = torch.ones(features_forward.shape[0], dtype=torch.int64)
+            labels_reverse = torch.zeros(features_reverse.shape[0], dtype=torch.int64)
+            labels_all = torch.cat([labels_forward, labels_reverse], dim=0)         # [N+K]
         else:
-            images_dataset = embeddings
-            # images_dataset = data_train
-            latents_dataset = TensorDataset(sampler.selected_latents)    
-            array_of_1 = torch.ones(sampler.selected_latents.shape[0], dtype=torch.int, device='cpu')
-            labels_dataset = TensorDataset(array_of_1)
-            comb_dataset = ZippedDataset(images_dataset, latents_dataset, labels_dataset)
+            features_all = features_forward
+            latents_all  = latents_forward
+            labels_all   = torch.ones(features_forward.shape[0], dtype=torch.int64)
+
+        # single clean dataset: (feature, latent, label)
+        comb_dataset = TensorDataset(features_all, latents_all, labels_all)
+        safe_barrier()
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -178,16 +193,13 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         imle.zero_grad(set_to_none=True)
 
 
-        for cur, indices in data_loader:
-            x = cur[0][0]
-            latents = cur[1][0]
-            labels = cur[2][0]
-            target = x
-            target = target.to(device)
-            latents = latents.to(device)
-            labels = labels.to(device)
+        for x, latents, labels in data_loader:
+            x = x.to(device)              # features / targets
+            latents = latents.to(device)  # latent vectors
+            labels = labels.to(device)    # 1 = forward, 0 = reverse
 
-            loss = training_step_imle(H, target, latents, labels, imle, sampler.calc_loss, scaler, sampler)
+
+            loss = training_step_imle(H, x, latents, labels, imle, sampler.calc_loss, scaler, sampler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
