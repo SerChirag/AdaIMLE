@@ -42,7 +42,7 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler, sampler):
+def training_step_imle(H, targets, latents, labels, imle, ema_imle, loss_fn, scaler, sampler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     # targets_permuted = sampler.get_image_feature(targets)
@@ -50,10 +50,16 @@ def training_step_imle(H, targets, latents, labels, imle, loss_fn, scaler, sampl
 
         px_z = imle(latents)
         loss_raw = loss_fn(px_z, targets)
-        loss_weighted_forward = labels * loss_raw
-        loss_weighted_reverse = (1 - labels) * loss_raw * H.reverse_loss_weight
-        loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
-        loss_measure = loss_weighted_forward.mean().clone().detach()
+        # loss_weighted_forward = labels * loss_raw
+        # loss_weighted_reverse = (1 - labels) * loss_raw * H.reverse_loss_weight
+        # loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
+        loss = loss_raw.mean()
+        loss_measure = loss_raw.mean().clone().detach()
+        randz = torch.randn_like(latents)
+        px_imle = imle(randz)
+        pz_emle = ema_imle(randz).detach()
+        emle_loss = F.mse_loss(px_imle, pz_emle, reduction='mean')
+        loss = loss + H.emle_loss_weight * emle_loss
 
     loss = loss / (H.accumulation_steps)
     
@@ -101,6 +107,7 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            update_ema(imle.module, ema_imle, H.ema_rate)
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
@@ -199,7 +206,7 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             labels = labels.to(device)    # 1 = forward, 0 = reverse
 
 
-            loss = training_step_imle(H, x, latents, labels, imle, sampler.calc_loss, scaler, sampler)
+            loss = training_step_imle(H, x, latents, labels, imle, ema_imle, sampler.calc_loss, scaler, sampler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1
@@ -212,7 +219,6 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
                 scaler.update()
                 scheduler.step()
                 imle.zero_grad(set_to_none=True)
-                update_ema(imle.module, ema_imle, H.ema_rate)
             
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
@@ -238,7 +244,6 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
             scaler.update()
             scheduler.step()
             imle.zero_grad(set_to_none=True)
-            update_ema(imle.module, ema_imle, H.ema_rate)
         
         epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)

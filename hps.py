@@ -22,7 +22,7 @@ cifar10.warmup_iters = 100
 cifar10.dataset = 'cifar10'
 cifar10.n_batch = 16
 cifar10.imle_batch = 32 
-cifar10.ema_rate = 0.9999
+cifar10.ema_rate = 0.0
 cifar10.l2_search_downsample = 1.0
 cifar10.multi_res_scales = '8,12,16,24,28'
 cifar10.convnext_expansion = 6
@@ -37,7 +37,7 @@ imagenet32.warmup_iters = 100
 imagenet32.dataset = 'imagenet32'
 imagenet32.n_batch = 32
 imagenet32.imle_batch = 32
-imagenet32.ema_rate = 0.9999
+imagenet32.ema_rate = 0.0
 imagenet32.l2_search_downsample = 1.0
 imagenet32.multi_res_scales = '8,12,16,24,28'
 imagenet32.convnext_expansion = 6
@@ -54,7 +54,7 @@ stl10.warmup_iters = 100
 stl10.dataset = 'stl10'
 stl10.n_batch = 8
 stl10.imle_batch = 32 
-stl10.ema_rate = 0.9999
+stl10.ema_rate = 0.0
 stl10.l2_search_downsample = 0.5
 stl10.multi_res_scales = '16,32,48'
 stl10.convnext_expansion = 4
@@ -69,7 +69,7 @@ lsun.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,12
 lsun.warmup_iters = 10
 lsun.dataset = 'lsun'
 lsun.n_batch = 4
-lsun.ema_rate = 0.9999
+lsun.ema_rate = 0.0
 lsun.l2_search_downsample = 0.125
 lsun.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['lsun'] = lsun
@@ -83,7 +83,7 @@ fewshot.dec_blocks = "1x1,4m1,4x8,8m4,8x8,16m8,16x8,32m16,32x11"
 fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
-fewshot.ema_rate = 0.9999
+fewshot.ema_rate = 0.0
 fewshot.l2_search_downsample = 1.0
 fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
@@ -130,7 +130,8 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
-    parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
+    parser.add_argument('--ema_rate', type=float, default=0.0)  # exponential moving average rate
+    parser.add_argument('--emle_loss_weight', type=float, default=1.0)  # weight for ema-imle loss
     parser.add_argument('--warmup_iters', type=float, default=0)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
@@ -190,7 +191,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
 
-    parser.add_argument('--loss_type', type=str, default='huber', choices=['l2', 'pca', 'huber'])  # type of loss to use
+    parser.add_argument('--loss_type', type=str, default='l2', choices=['l2', 'pca', 'huber'])  # type of loss to use
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
