@@ -55,7 +55,7 @@ def training_step_imle(H, targets, latents, labels, imle, ema_imle, loss_fn, sca
         # loss = loss_weighted_forward.mean() + loss_weighted_reverse.mean()
         loss = loss_raw.mean()
         loss_measure = loss_raw.mean().clone().detach()
-        randz = torch.randn_like(latents)
+        randz = torch.randn(latents.shape, generator=sampler.generator_seed, device=latents.device)
         px_imle = imle(randz)
         pz_emle = ema_imle(randz).detach()
         emle_loss = F.mse_loss(px_imle, pz_emle, reduction='mean')
