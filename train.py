@@ -108,11 +108,9 @@ def train_loop_imle(H, data_train, preprocess_fn, imle, ema_imle, logprint, expe
         safe_barrier()
 
         if (H.use_reverse_sampling):
-
             torch.cuda.empty_cache()
             sampler.imle_sample_force_reverse(imle)
             torch.cuda.empty_cache()
-            reverse_dataset = Subset(embeddings, sampler.reverse_indices)
 
         if (epoch % 5 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
