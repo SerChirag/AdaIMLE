@@ -163,6 +163,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta1', type=float, default=0.9)
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
+    parser.add_argument('--huber_delta', type=float, default=1.0)  # delta for huber loss
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
@@ -227,6 +228,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
+    parser.add_argument('--loss_type', type=str, default='l2', choices=['huber', 'l2']) # search type for loss type
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb

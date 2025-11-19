@@ -49,6 +49,7 @@ class Sampler:
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
         self.lpips_net.eval()
         self.lpips_net.requires_grad_(False)
+        self.delta = H.huber_delta 
 
         ## TODO: check this is required or not
         if(self.H.compile):
@@ -304,7 +305,10 @@ class Sampler:
         if use_mean:
             return res.mean()
         else:
-            return res
+            return res.mean(dim=tuple(range(1, res.ndim)))
+    
+    def pseudo_huber(self, diff):
+        return self.delta**2 * (torch.sqrt(1 + (diff / (self.delta)**2)) - 1)
     
     def get_dino_loss(self, inp, tar, use_mean=True):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
@@ -313,40 +317,28 @@ class Sampler:
         if use_mean:
             return dino_loss.mean()
         else:
-            return dino_loss
+            return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def calc_loss(self, inp, tar):
 
-        if use_mean:       
-            l2_loss = torch.mean(self.l2_loss(inp, tar))
-            res = 0
-            
-            lpips_loss = self.get_lpips_loss(inp, tar)
+        l2_loss = self.l2_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
+        res = 0
+        
+        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=False)
 
-            if(inp.shape[2] < 32):
-                dino_loss = self.get_dino_loss(inp, tar)
-            else:
-                dino_loss = torch.tensor(0.0, device=self.device)
-
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-            
-            if logging:
-                return loss, res.mean(), l2_loss.mean()
-            else:
-                return loss
-
+        if(inp.shape[2] < 32):
+            dino_loss = self.get_dino_loss(inp, tar, use_mean=False)
         else:
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
-            res = 0
-            for i, g_feat in enumerate(inp_feat):
-                res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-            loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
-            if logging:
-                return loss, res.mean(), l2_loss
-            else:
-                return loss
+            dino_loss = torch.tensor(0.0, device=self.device)
+
+        residuals = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
+
+        if(self.H.loss_type == 'huber'):
+            loss = self.pseudo_huber(residuals).mean()
+        else:
+            loss = residuals.mean() 
+        return loss
+        
             
     def resample_pool(self, gen, class_condition):
 
