@@ -52,6 +52,14 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -115.92961967
         scale = 1. / 69.37404
+    elif H.dataset == 'smallimagenet64':
+        (trX, trY) = smallimagenet64(H.data_root)
+        vaX = None
+        teX = None
+        H.image_size = 64
+        H.image_channels = 3
+        shift = -115.92961967
+        scale = 1. / 69.37404
     elif H.dataset == 'ffhq_256':
         trX, vaX, teX = ffhq256(H.data_root)
         H.image_size = 256
@@ -130,6 +138,12 @@ def set_up_data(H):
         untranspose = False
     
     elif H.dataset == 'tinyimagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'smallimagenet64':
         train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
@@ -293,8 +307,41 @@ def tinyimagenet64(data_root):
     images = images[mask]
     labels = labels[mask]
 
+    return (images, labels)
+
+
+def smallimagenet64(data_root):
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+
+        X = X.reshape(-1, 3, 64, 64)
+        images.append(X)
+        labels.append(Y)
+
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) - 1
+
+    # sort by labels
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
+
+  # Select first 100 classes
+    chosen_classes = np.arange(50)
+    mask = np.isin(labels, chosen_classes)
+    images = images[mask]
+    labels = labels[mask]
 
     return (images, labels)
+
 
 def ffhq1024(data_root):
     # we did not significantly tune hyperparameters on ffhq-1024, and so simply evaluate on the test set

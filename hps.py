@@ -48,7 +48,7 @@ tinyimagenet64 = Hyperparams()
 tinyimagenet64.width = 512
 tinyimagenet64.lr = 0.0002
 tinyimagenet64.wd = 0.01
-tinyimagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x10,32m16,32x14,64m32,64x12"
+tinyimagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8"
 tinyimagenet64.warmup_iters = 100
 tinyimagenet64.dataset = 'tinyimagenet64'
 tinyimagenet64.n_batch = 32
@@ -57,7 +57,24 @@ tinyimagenet64.ema_rate = 0.9999
 tinyimagenet64.l2_search_downsample = 1.0
 tinyimagenet64.multi_res_scales = '16,24,32,48'
 tinyimagenet64.convnext_expansion = 6
+tinyimagenet64.num_classes = 100
 HPARAMS_REGISTRY['tinyimagenet64'] = tinyimagenet64
+
+smallimagenet64 = Hyperparams()
+smallimagenet64.width = 512
+smallimagenet64.lr = 0.0002
+smallimagenet64.wd = 0.01
+smallimagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8"
+smallimagenet64.warmup_iters = 100
+smallimagenet64.dataset = 'smallimagenet64'
+smallimagenet64.n_batch = 32
+smallimagenet64.imle_batch = 32
+smallimagenet64.ema_rate = 0.9999
+smallimagenet64.l2_search_downsample = 1.0
+smallimagenet64.multi_res_scales = '16,24,32,48'
+smallimagenet64.convnext_expansion = 6
+smallimagenet64.num_classes = 50
+HPARAMS_REGISTRY['smallimagenet64'] = smallimagenet64
 
 
 stl10 = Hyperparams()
