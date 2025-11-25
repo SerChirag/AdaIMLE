@@ -8,6 +8,8 @@ from collections import defaultdict
 import numpy as np
 import itertools
 
+from unets import SongUNet
+
 def parse_layer_string(s):
     layers = []
     for ss in s.split(','):
@@ -154,7 +156,29 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.H = H
+        if(H.model_type == 'convnext'):
+            self.decoder = Decoder(H)
+        elif(H.model_type == 'unet'):
+            self.decoder = SongUNet(
+                in_channels=3,
+                out_channels=3,
+                img_resolution=H.image_size,
+                attn_resolutions = [8,16,32],
+                model_channels = 192,
+                label_dim = H.num_classes
+            )
+
 
     def forward(self, latents, condition):
-        return self.decoder.forward(latents, condition)
+
+        if(self.H.model_type == 'convnext'):
+            return self.decoder.forward(latents, condition)
+        
+        elif(self.H.model_type == 'unet'):
+            latents = latents.reshape(-1, 3, self.H.image_size, self.H.image_size)
+            t = torch.randint(0, 1000, (latents.shape[0],)).to(latents.device)
+            class_label = torch.nn.functional.one_hot(condition, num_classes=10).float()
+            return self.decoder(latents, t, class_labels = class_label)
+
+

@@ -244,6 +244,9 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
+    parser.add_argument('--model_type', type=str, default='unet', choices=['unet', 'convnext']) # search type for loss type
+
+
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
     parser.add_argument('--loss_type', type=str, default='l2', choices=['huber', 'l2']) # search type for loss type
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
