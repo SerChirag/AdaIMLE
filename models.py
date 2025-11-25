@@ -158,34 +158,35 @@ class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        # if(H.model_type == 'convnext'):
-        self.decoder = Decoder(H)
-        # elif(H.model_type == 'unet'):
-        #     # self.decoder = SongUNet(
-        #     #     in_channels=3,
-        #     #     out_channels=3,
-        #     #     img_resolution=H.image_size,
-        #     #     attn_resolutions = [8,16,32],
-        #     #     model_channels = 192,
-        #     #     label_dim = H.num_classes
-        #     # )
-        #     self.decoder = UNetModelWrapper(dim=(3, H.image_size, H.image_size), 
-        #         num_channels=32, 
-        #         num_res_blocks=2,
-        #         num_classes=H.num_classes,
-        #         class_cond = True
-        #     )
+        if(H.model_type == 'convnext'):
+            self.decoder = Decoder(H)
+        elif(H.model_type == 'unet'):
+            # self.decoder = SongUNet(
+            #     in_channels=3,
+            #     out_channels=3,
+            #     img_resolution=H.image_size,
+            #     attn_resolutions = [8,16,32],
+            #     model_channels = 192,
+            #     label_dim = H.num_classes
+            # )
+            self.decoder = UNetModelWrapper(dim=(3, H.image_size, H.image_size), 
+                num_channels=128, 
+                num_res_blocks=3,
+                attention_resolutions="8,16,32",
+                num_classes=H.num_classes,
+                class_cond = True
+            )
 
 
     def forward(self, latents, condition):
 
-        # if(self.H.model_type == 'convnext'):
-        return self.decoder.forward(latents, condition)
+        if(self.H.model_type == 'convnext'):
+            return self.decoder.forward(latents, condition)
         
-        # elif(self.H.model_type == 'unet'):
-        #     latents = latents.reshape(-1, 3, self.H.image_size, self.H.image_size)
-        #     t = torch.randint(0, 1000, (latents.shape[0],)).to(latents.device)
-        #     # class_label = torch.nn.functional.one_hot(condition, num_classes=self.H.num_classes).float()
-        #     return self.decoder(t, latents, y = condition)
+        elif(self.H.model_type == 'unet'):
+            latents = latents.reshape(-1, 3, self.H.image_size, self.H.image_size)
+            t = torch.randint(0, 1000, (latents.shape[0],)).to(latents.device)
+            # class_label = torch.nn.functional.one_hot(condition, num_classes=self.H.num_classes).float()
+            return self.decoder(t, latents, y = condition)
 
 

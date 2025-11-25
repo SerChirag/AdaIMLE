@@ -137,10 +137,20 @@ class Sampler:
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
 
-        self.faiss_res = faiss.StandardGpuResources()  # one per process
-        index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        # self.faiss_res = faiss.StandardGpuResources()  # one per process
+        # index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
+        # dev_id = torch.cuda.current_device()
+        # self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+
+
+        rank = get_rank()
+        local_rank = rank % torch.cuda.device_count()
+        torch.cuda.set_device(local_rank)
+
+        cpu_index = faiss.IndexFlatL2(self.dci_dim)
+        self.gpu_index_flat = cpu_index
+
+
         self.num_classes = H.num_classes
 
         self.local_classes = self._distribute_classes_across_gpus()
@@ -392,14 +402,24 @@ class Sampler:
 
 
                 # Obtain the full dataset features (on CPU) and then slice locally.
-                local_ds_feats = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
+                local_ds = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
+                local_ds_feats = local_ds.astype(np.float32, copy=False)
+
+
 
                 # Pool features (as computed from resample_pool).
-                pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
+                pool_feats = (
+                    self.pool_samples_proj
+                    .contiguous()
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+
                 feature_dim = pool_feats.shape[1]
 
                 # --------------------
-                # Build FAISS index on global pool features.
+                # Build FAISS index on global pool features
 
                 self.gpu_index_flat.add(pool_feats)  # add entire pool
 
