@@ -178,7 +178,7 @@ class IMLE(nn.Module):
         elif(self.H.model_type == 'unet'):
             latents = latents.reshape(-1, 3, self.H.image_size, self.H.image_size)
             t = torch.randint(0, 1000, (latents.shape[0],)).to(latents.device)
-            class_label = torch.nn.functional.one_hot(condition, num_classes=10).float()
+            class_label = torch.nn.functional.one_hot(condition, num_classes=self.H.num_classes).float()
             return self.decoder(latents, t, class_labels = class_label)
 
 
