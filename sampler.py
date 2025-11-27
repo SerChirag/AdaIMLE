@@ -27,6 +27,7 @@ class Sampler:
         self.pool_size = ceil(int(H.pool_size_per_class) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
+        self.l1_loss = torch.nn.L1Loss(reduce=False).to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
@@ -295,7 +296,7 @@ class Sampler:
         inp_feat, inp_shape = self.lpips_net(inp_interpolated)
         tar_feat, _ = self.lpips_net(tar_interpolated)
         for i, g_feat in enumerate(inp_feat):
-            lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+            lpips_feature_loss = torch.abs(g_feat - tar_feat[i])
 
             # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
             #     lpips_feature_loss[bool_mask] = 0.0
@@ -313,7 +314,7 @@ class Sampler:
     def get_dino_loss(self, inp, tar, use_mean=True):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
         tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
-        dino_loss = self.l2_loss(dino_feat, tar_feat)
+        dino_loss = self.l1_loss(dino_feat, tar_feat)
         if use_mean:
             return dino_loss.mean()
         else:
@@ -321,7 +322,7 @@ class Sampler:
 
     def calc_loss(self, inp, tar):
 
-        l2_loss = self.l2_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
+        l1_loss = self.l1_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
         res = 0
         
         lpips_loss = self.get_lpips_loss(inp, tar, use_mean=False)
@@ -331,7 +332,7 @@ class Sampler:
         else:
             dino_loss = torch.tensor(0.0, device=self.device)
 
-        residuals = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
+        residuals = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l1_loss + self.H.dino_coef * dino_loss
 
         if(self.H.loss_type == 'huber'):
             loss = self.pseudo_huber(residuals).mean()
