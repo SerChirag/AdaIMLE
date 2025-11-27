@@ -59,19 +59,36 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
 class MappingNetwork(nn.Module):
     def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
         super().__init__()
+        self.code_dim = code_dim
 
-        layers = [PixelNorm()]
+        layers = []
         for i in range(n_mlp):
             layers.append(FullyConnectedLayer(code_dim, code_dim, lr_multiplier=lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
+        self.layers = nn.ModuleList(layers)
 
-        self.style = nn.Sequential(*layers)
+        self.norm = PixelNorm()
 
-    def forward(self, input, **kwargs):
-        
-        # Since input is now a single tensor in a list, compute only one style code.
-        x = self.style(input)
+        # optional: learn a scale for how strong the condition injection is
+        self.cond_strength = nn.Parameter(torch.ones(n_mlp))
+
+    def forward(self, x, cond):
+        x = self.norm(x)
+        cond = self.norm(cond)
+
+        for i in range(0, len(self.layers), 2):
+            fc = self.layers[i]
+            act = self.layers[i+1]
+
+            x = fc(x)
+
+            layer_idx = i // 2
+            x = x + self.cond_strength[layer_idx] * cond
+
+            x = act(x)
+
         return x
+
 
 
 class AdaptiveInstanceNorm(nn.Module):

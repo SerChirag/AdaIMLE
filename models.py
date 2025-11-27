@@ -141,7 +141,7 @@ class Decoder(nn.Module):
         
         class_emb = self.embedding(condition)
         latent_code_2 = latent_code + class_emb
-        w = self.mapping_network(latent_code_2)
+        w = self.mapping_network(latent_code, class_emb)
         x = self.constant.repeat(latent_code_2.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
