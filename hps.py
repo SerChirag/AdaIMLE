@@ -44,6 +44,22 @@ imagenet32.convnext_expansion = 6
 HPARAMS_REGISTRY['imagenet32'] = imagenet32
 
 
+imagenet64 = Hyperparams()
+imagenet64.width = 512
+imagenet64.lr = 0.0002
+imagenet64.wd = 0.01
+imagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8"
+imagenet64.warmup_iters = 100
+imagenet64.dataset = 'imagenet64'
+imagenet64.n_batch = 32
+imagenet64.imle_batch = 32
+imagenet64.ema_rate = 0.9999
+imagenet64.l2_search_downsample = 1.0
+imagenet64.multi_res_scales = '8,12,16,24,28,32,40,48'
+imagenet64.convnext_expansion = 6
+imagenet64.num_classes = 1000
+HPARAMS_REGISTRY['imagenet64'] = imagenet64
+
 tinyimagenet64 = Hyperparams()
 tinyimagenet64.width = 512
 tinyimagenet64.lr = 0.0002
