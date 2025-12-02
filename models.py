@@ -135,7 +135,7 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        self.embedding = nn.Embedding(100, H.latent_dim)
+        self.embedding = nn.Embedding(H.num_classes, H.latent_dim)
 
     def forward(self, latent_code, condition):
         
