@@ -33,7 +33,7 @@ def init_distributed_mode(timeout_sec=4800):
         gpus_per_node = torch.cuda.device_count()
         gpu = int(os.environ.get("SLURM_LOCALID"))
         rank = int(os.environ.get("SLURM_NODEID")) * gpus_per_node + gpu
-        print("\n rank is ", rank)
+        # print("\n rank is ", rank)
         distributed = True
 
         # Ensure rendezvous envs exist
