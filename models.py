@@ -170,7 +170,7 @@ class IMLE(nn.Module):
             #     label_dim = H.num_classes
             # )
             self.decoder = UNetModelWrapper(dim=(3, H.image_size, H.image_size), 
-                num_channels=128, 
+                num_channels=H.width, 
                 num_res_blocks=3,
                 attention_resolutions="8,16,32",
                 num_classes=H.num_classes,
