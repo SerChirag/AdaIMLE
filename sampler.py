@@ -30,19 +30,18 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
-        self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.last_selected_latents = torch.empty([H.num_images_visualize, H.latent_dim], dtype=torch.float32)
+        self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float16)
+        self.last_selected_latents = torch.empty([H.num_images_visualize, H.latent_dim], dtype=torch.float16)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
 
-        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
+        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float16)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
-                                        dtype=torch.float32)
+                                        dtype=torch.float16)
 
-        self.pool_latents = torch.empty([self.pool_size, H.latent_dim], dtype=torch.float32, device=self.device)
-
+        self.pool_latents = torch.empty([self.pool_size, H.latent_dim], dtype=torch.float16, device=self.device)
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
         self.lpips_net.eval()
@@ -121,7 +120,7 @@ class Sampler:
         self.dci_dim = sum_dims
 
         self.dataset_proj = None
-        self.pool_samples_proj = np.empty([self.pool_size, self.dci_dim], dtype=np.float32)
+        self.pool_samples_proj = np.empty([self.pool_size, self.dci_dim], dtype=np.float16)
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -245,7 +244,7 @@ class Sampler:
         if prev_cls is not None:
             self.class_ranges[prev_cls] = (start, len(indices))
         
-        self.dataset_proj = torch.empty([len(indices), self.dci_dim], dtype=torch.float32, device='cpu')
+        self.dataset_proj = torch.empty([len(indices), self.dci_dim], dtype=torch.float16, device='cpu')
 
         dataloader = DataLoader(
             subset,
@@ -269,7 +268,7 @@ class Sampler:
                 exit()
 
         # Convert to numpy
-        self.dataset_proj = self.dataset_proj.numpy().astype(np.float32)
+        self.dataset_proj = self.dataset_proj.numpy().astype(np.float16)
         # print(f"Rank {self.rank} class ranges: {self.class_ranges}")
 
 
@@ -363,7 +362,7 @@ class Sampler:
                         proj = self.get_combined_feature(outputs, False)
                     else:
                         proj = self.get_combined_feature(outputs, False)
-                    self.pool_samples_proj[batch_slice] = proj.to('cpu').detach().cpu().numpy()
+                    self.pool_samples_proj[batch_slice] = proj.to('cpu').detach().cpu().numpy().astype(np.float16)
 
         gen.train()
 
@@ -430,7 +429,7 @@ class Sampler:
                 generator=self.generator_seed)
             full_updated_latents += perturbation
         else:
-            full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
+            full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float16, device=self.device)
 
         safe_barrier()
 
