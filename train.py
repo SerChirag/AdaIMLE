@@ -137,9 +137,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                            seed=H.seed)
         
         data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                    pin_memory=True, num_workers=4, 
-                                    persistent_workers=True, 
-                                    multiprocessing_context="spawn",
+                                    pin_memory=False, num_workers=0, 
+                                    persistent_workers=False, 
                                     shuffle=False)
 
         # If using distributed sampler, set the epoch for shuffling
@@ -253,7 +252,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[viz_indices],
-                                        sampler.last_selected_latents[viz_indices],
+                                        sampler.last_selected_latents,
                                         viz_labels,
                                         latent_for_visualization,
                                         labels_random,
