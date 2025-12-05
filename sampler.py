@@ -121,7 +121,7 @@ class Sampler:
         self.dci_dim = sum_dims
 
         self.dataset_proj = None
-        self.pool_samples_proj = torch.empty([self.pool_size, sum_dims], dtype=torch.float32, device='cpu')
+        self.pool_samples_proj = np.empty([self.pool_size, self.dci_dim], dtype=np.float32)
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -343,8 +343,6 @@ class Sampler:
         gen.eval()   
 
         self.pool_latents.normal_()
-        self.pool_samples_proj.zero_()
-
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
@@ -364,7 +362,7 @@ class Sampler:
                         proj = self.get_combined_feature(outputs, False)
                     else:
                         proj = self.get_combined_feature(outputs, False)
-                    self.pool_samples_proj[batch_slice] = proj.to('cpu')
+                    self.pool_samples_proj[batch_slice] = proj.to('cpu').detach().cpu().numpy()
 
         gen.train()
 
@@ -396,19 +394,11 @@ class Sampler:
                 # Obtain the full dataset features (on CPU) and then slice locally.
                 local_ds_feats = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
 
-                # Pool features (as computed from resample_pool).
-                pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
-
-                # --------------------
-                # Build FAISS index on global pool features.
-
-                self.gpu_index_flat.add(pool_feats)  # add entire pool
+                self.gpu_index_flat.add(self.pool_samples_proj)  # add entire pool
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                distances, indices = self.gpu_index_flat.search(local_ds_feats, 1)
-                local_distances = torch.from_numpy(distances).squeeze(1)  # (local_size,)
+                _, indices = self.gpu_index_flat.search(local_ds_feats, 1)
                 local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-                self.mean_distance_nn = local_distances.mean().item()
 
 
                 new_latents = self.pool_latents[local_indices].clone()
