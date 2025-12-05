@@ -27,7 +27,7 @@ import torch.multiprocessing as mp
 import datetime
 import os
 import torch.distributed as dist
-
+import gc
 
 torch.set_float32_matmul_precision('high')
 
@@ -109,6 +109,23 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            try:
+                del comb_dataset
+            except: 
+                pass
+
+            try:
+                del train_sampler
+            except:
+                pass
+
+            try:
+                del data_loader
+            except:
+                pass
+
+            gc.collect()
+            safe_barrier()
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
