@@ -422,7 +422,7 @@ class Sampler:
         safe_barrier()  # Ensure all processes complete the gather
 
         if is_main_process():
-            gathered_latents = [t for t in gathered_latents]
+            gathered_latents = [t.cpu() for t in gathered_latents]
             full_updated_latents = torch.cat(gathered_latents, dim=0).to(self.device)
             perturbation = self.H.imle_perturb_coef * torch.randn(
                 (self.sz, self.H.latent_dim), 
