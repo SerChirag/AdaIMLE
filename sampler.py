@@ -406,8 +406,11 @@ class Sampler:
                 all_pool_latents.append(new_latents)
             
         all_pool_latents = torch.cat(all_pool_latents, dim=0)
+
+        safe_barrier()  # Ensure all processes complete the gather
                 
         if is_main_process():
+            print("Done resampling. Now collecting")
             gathered_latents = [None for _ in range(self.world_size)]
         else:
             gathered_latents = None
