@@ -30,10 +30,8 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
-        self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
+        self.last_selected_latents = torch.empty([sz, H.num_images_visualize], dtype=torch.float32)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
@@ -378,7 +376,9 @@ class Sampler:
         performs NN search locally, and then the results are merged and broadcast so that
         all processes end up with the complete global results.
         """
+        
         if is_main_process():
+            self.last_selected_latents = self.selected_latents[:self.H.num_images_visualize]
             t1 = time.time()
             print("Starting pool resampling...")
 
@@ -398,7 +398,6 @@ class Sampler:
 
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj.cpu().numpy().astype(np.float32)
-                feature_dim = pool_feats.shape[1]
 
                 # --------------------
                 # Build FAISS index on global pool features.
@@ -446,11 +445,7 @@ class Sampler:
         safe_barrier()
 
         # Move the broadcasted results to CPU if desired.
-        self.selected_latents_tmp = full_updated_latents.cpu()
-
-        # Update last and current selected latents on all processes.
-        self.last_selected_latents = self.selected_latents.clone()
-        self.selected_latents = self.selected_latents_tmp.clone()
+        self.selected_latents = full_updated_latents.cpu()
 
         if is_main_process():
             print(f"Force resampling took {time.time() - t1:.2f} seconds")
