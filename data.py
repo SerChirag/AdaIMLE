@@ -157,7 +157,7 @@ def set_up_data(H):
 
     elif H.dataset not in ['fewshot', 'fewshot512']:
         train_data = TensorDataset(torch.as_tensor(trX), torch.as_tensor(trY))
-        valid_data = TensorDataset(torch.as_tensor(eval_dataset))
+        valid_data = None
         untranspose = False
         train_len = len(train_data)
 
@@ -400,16 +400,11 @@ def cifar10(data_root, one_hot=True):
     teY = np.asarray(te_data['labels'])
     trX = trX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
     teX = teX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
-    trX, vaX, trY, vaY = train_test_split(trX, trY, test_size=5000, random_state=11172018, shuffle=True)
     sort_indices = np.argsort(trY)
     trX = trX[sort_indices]
     trY = trY[sort_indices]
     if one_hot:
         trY = np.eye(10, dtype=np.float32)[trY]
-        vaY = np.eye(10, dtype=np.float32)[vaY]
-        teY = np.eye(10, dtype=np.float32)[teY]
     else:
         trY = np.reshape(trY, [-1, 1])
-        vaY = np.reshape(vaY, [-1, 1])
-        teY = np.reshape(teY, [-1, 1])
-    return (trX, trY), (vaX, vaY), (teX, teY)
+    return (trX, trY), (None, None), (None, None)

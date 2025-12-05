@@ -345,6 +345,8 @@ class Sampler:
         gen.eval()   
 
         self.pool_latents.normal_()
+        self.pool_samples_proj.zero_()
+
 
         for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
