@@ -31,7 +31,7 @@ class Sampler:
         self.latent_lr = H.latent_lr
         self.sz = sz
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.last_selected_latents = torch.empty([sz, H.num_images_visualize], dtype=torch.float32)
+        self.last_selected_latents = torch.empty([H.num_images_visualize, H.latent_dim], dtype=torch.float32)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
@@ -143,6 +143,7 @@ class Sampler:
 
         self.local_classes = self._distribute_classes_across_gpus()
         self.class_ranges = None
+        self.viz_indices = None
 
 
     def _distribute_classes_across_gpus(self):
@@ -376,7 +377,7 @@ class Sampler:
         """
         
         if is_main_process():
-            self.last_selected_latents = self.selected_latents[:self.H.num_images_visualize]
+            self.last_selected_latents = self.selected_latents[self.viz_indices].clone()
             t1 = time.time()
             print("Starting pool resampling...")
 
@@ -435,7 +436,7 @@ class Sampler:
         safe_barrier()
 
         # Move the broadcasted results to CPU if desired.
-        self.selected_latents = full_updated_latents.cpu()
+        self.selected_latents = full_updated_latents.cpu().clone()
 
         if is_main_process():
             print(f"Force resampling took {time.time() - t1:.2f} seconds")

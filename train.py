@@ -91,6 +91,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     safe_barrier()
     viz_batch_original, viz_labels, viz_indices = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
+    sampler.viz_indices = viz_indices.tolist()
+
     latent_for_visualization = []
 
     if(is_main_process()):
@@ -183,7 +185,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     with torch.no_grad():
                         generate_visualization(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[viz_indices],
-                                                sampler.last_selected_latents[viz_indices],
+                                                sampler.last_selected_latents,
                                                 viz_labels,
                                                 latent_for_visualization,
                                                 labels_random,
