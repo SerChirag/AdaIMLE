@@ -55,37 +55,53 @@ class EqualLinear(nn.Module):
 def normalize_2nd_moment(x, dim=1, eps=1e-6):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
-
 class MappingNetwork(nn.Module):
     def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
         super().__init__()
         self.code_dim = code_dim
 
+        assert n_mlp % 2 == 0, "n_mlp must be even (2 FCs per residual block)."
+
         layers = []
         for i in range(n_mlp):
             layers.append(FullyConnectedLayer(code_dim, code_dim, lr_multiplier=lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
+
         self.layers = nn.ModuleList(layers)
-
         self.norm = PixelNorm()
+        self.sigmoid = nn.Sigmoid()
 
-        # optional: learn a scale for how strong the condition injection is
-        self.cond_strength = nn.Parameter(torch.ones(n_mlp))
+        # One residual scale per block (each block = 2 FC layers)
+        n_blocks = n_mlp // 2
+        self.res_scale = nn.Parameter(torch.zeros(n_blocks))
 
-    def forward(self, x, cond):
+    def forward(self, x):
         x = self.norm(x)
-        cond = self.norm(cond)
 
-        for i in range(0, len(self.layers), 2):
-            fc = self.layers[i]
-            act = self.layers[i+1]
+        block_idx = 0
+        i = 0
+        # Each block uses 4 entries in self.layers: (fc1, act1, fc2, act2)
+        while i < len(self.layers):
+            residual = x  # identity skip
 
-            x = fc(x)
+            fc1 = self.layers[i]
+            act1 = self.layers[i + 1]
+            fc2 = self.layers[i + 2]
+            act2 = self.layers[i + 3]
 
-            layer_idx = i // 2
-            x = x + self.cond_strength[layer_idx] * cond
+            out = fc1(x)
+            out = act1(out)
 
-            x = act(x)
+            out = fc2(out)
+
+            # ResNet-style: x + α * F(x)
+            out = residual * self.sigmoid(self.res_scale[block_idx]) + out
+
+            out = act2(out)
+
+            x = out
+            i += 4
+            block_idx += 1
 
         return x
 
