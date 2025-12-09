@@ -88,6 +88,22 @@ fewshot.l2_search_downsample = 0.125
 fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
+
+fewshot64 = Hyperparams()
+fewshot64.width = 384
+fewshot64.lr = 0.0002
+fewshot64.wd = 0.01
+fewshot64.image_size = 64
+fewshot64.dec_blocks = '1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8'
+# fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
+fewshot64.warmup_iters = 10
+fewshot64.dataset = 'fewshot'
+fewshot64.n_batch = 8
+fewshot64.ema_rate = 0.9999
+fewshot64.l2_search_downsample = 1.0
+fewshot64.multi_res_scales = '8,12,16,24,32,48'
+HPARAMS_REGISTRY['fewshot64'] = fewshot64
+
 def parse_args_and_update_hparams(H, parser, s=None):
     args = parser.parse_args(s)
     valid_args = set(args.__dict__.keys())

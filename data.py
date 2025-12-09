@@ -29,7 +29,7 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -116.2373
         scale = 1. / 69.37404
-    elif H.dataset in ['fewshot', 'fewshot512']:
+    elif H.dataset in ['fewshot', 'fewshot512', 'fewshot64']:
         trX, vaX, teX = few_shot_image_folder(H.data_root, H.image_size)
         H.image_channels = 3
         shift = -116.2373
@@ -117,7 +117,7 @@ def set_up_data(H):
         train_len = len(train_data)
         untranspose = False
 
-    elif H.dataset not in ['fewshot', 'fewshot512']:
+    elif H.dataset not in ['fewshot', 'fewshot512', 'fewshot64']:
         train_data = TensorDataset(torch.as_tensor(trX))
         valid_data = TensorDataset(torch.as_tensor(eval_dataset))
         untranspose = False
