@@ -338,8 +338,9 @@ def main():
 
     if(is_main_process()):
         num_params = sum(p.numel() for p in imle.parameters())
-        print("Number of parameters in IMLE: ", num_params)
-        logprint("Number of parameters in IMLE: ", num_params)
+        # print with formatting for millions
+        print(f"Number of parameters in IMLE: {num_params / 1e6:.8f} million")
+        logprint("Number of parameters in IMLE: ", f"{num_params / 1e6:.8f} million")
         H.num_params = num_params
         if(experiment is not None):
             experiment.log_parameter("num_params", num_params)

@@ -41,6 +41,7 @@ imagenet32.ema_rate = 0.9999
 imagenet32.l2_search_downsample = 1.0
 imagenet32.multi_res_scales = '8,12,16,24,28'
 imagenet32.convnext_expansion = 6
+imagenet32.num_classes = 1000
 HPARAMS_REGISTRY['imagenet32'] = imagenet32
 
 
