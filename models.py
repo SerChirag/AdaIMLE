@@ -7,6 +7,8 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
+from dit import DiT_S_2, DiT_B_2
+
 
 def parse_layer_string(s):
     layers = []
@@ -154,7 +156,16 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.H = H
+        self.decoder = DiT_B_2(img_resolution=H.image_size, 
+                               in_channels=3, 
+                               num_classes=H.num_classes)
 
     def forward(self, latents, condition):
-        return self.decoder.forward(latents, condition)
+        latents = latents.view(-1, 3, self.H.image_size, self.H.image_size)
+        class_labels = torch.nn.functional.one_hot(condition, self.H.num_classes).to(dtype=latents.dtype)
+        out = self.decoder(
+            x=latents,
+            class_labels=class_labels
+        )
+        return out
