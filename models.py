@@ -56,7 +56,12 @@ class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
-        self.norm = nn.LayerNorm(dim, eps=1e-3)
+
+        if(H.convnext_norm == 'layernorm'):
+            self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
+        elif(H.convnext_norm == 'rmsnorm'):
+            self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
+            
         self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()

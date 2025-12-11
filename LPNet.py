@@ -5,7 +5,7 @@ import torch.nn as nn
 from torchvision import models as tv
 
 
-def normalize_tensor(in_feat, eps=1e-3):
+def normalize_tensor(in_feat, eps=1e-8):
     norm_factor = torch.sum(in_feat**2, dim=1, keepdim=True)  # Compute squared sum
     norm_factor = torch.clamp(norm_factor, min=eps)  # Ensure nonzero before sqrt
     norm_factor = torch.sqrt(norm_factor)  # Now safe to take sqrt
