@@ -72,7 +72,9 @@ class ConvNeXtBlock(nn.Module):
         else:
             # Indentity layer if SE is not used
             self.se = nn.Identity()
-        self.residual_ratio = nn.Parameter(torch.zeros(1))
+            
+        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))  
+        self.residual_type = H.residual_type
         self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
 
     
@@ -94,7 +96,12 @@ class ConvNeXtBlock(nn.Module):
         # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
         x = self.se(x)
-        return x * self.sigmoid(self.residual_ratio) + residual
+
+        if self.residual_type == 'normal':
+            return x * self.sigmoid(self.residual_ratio) + residual
+        
+        elif self.residual_type == 'convex':
+            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
 
 
 class DecBlock(nn.Module):
