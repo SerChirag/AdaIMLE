@@ -63,7 +63,6 @@ class ConvNeXtBlock(nn.Module):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
-        self.sigmoid = nn.Sigmoid()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
@@ -74,11 +73,9 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
-        self.gamma = nn.Parameter(1e-6 * torch.ones((dim)), 
+        self.gamma = nn.Parameter(H.residual_ratio * torch.ones((dim)), 
                                     requires_grad=True)
             
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))  
-        self.residual_type = H.residual_type
         self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
