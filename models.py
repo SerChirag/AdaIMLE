@@ -7,6 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 import itertools
+from timm.layers import trunc_normal_, DropPath
 
 def parse_layer_string(s):
     layers = []
@@ -56,23 +57,14 @@ class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
-
-
         if(H.convnext_norm == 'layernorm'):
             self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
         elif(H.convnext_norm == 'rmsnorm'):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-
-
-        self.pw_conv1 = nn.Conv2d(dim, expansion * dim, kernel_size=1)
+        self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
         self.sigmoid = nn.Sigmoid()
-        self.pw_conv2 = nn.Conv2d(expansion * dim, dim, kernel_size=1)
+        self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
         self.use_se = use_se
@@ -81,12 +73,20 @@ class ConvNeXtBlock(nn.Module):
         else:
             # Indentity layer if SE is not used
             self.se = nn.Identity()
+
+        self.gamma = nn.Parameter(1e-6 * torch.ones((dim)), 
+                                    requires_grad=True)
             
         self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))  
         self.residual_type = H.residual_type
         self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
-        self.gamma = nn.Parameter(H.residual_ratio * torch.ones((dim)), 
-                                    requires_grad=True)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     
     def forward(self, x):
@@ -96,31 +96,22 @@ class ConvNeXtBlock(nn.Module):
         # Permute to channels-last for LayerNorm
         x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
-        # Permute back to channels-first
-        x = x.permute(0, 3, 1, 2)
-        # Pointwise conv to expand channels
         x = self.pw_conv1(x)
         x = self.gelu(x)
-
-        # Apply dropout
-        # x = self.dropout(x)
-        # Pointwise conv to compress channels back
         x = self.pw_conv2(x)
+        x = self.gamma * x
+        x = x.permute(0, 3, 1, 2)
+
         x = self.se(x)
 
-        x = x * self.gamma.unsqueeze(0).unsqueeze(2).unsqueeze(3)
+        return residual + x
 
-        x = x + residual
-        return x
 
-        # x = x * self.sigmoid(self.residual_ratio) + residual
-
-        # x = x.permute(0, 2, 3, 1)
-        # x = self.norm2(x)
-        # x = x.permute(0, 3, 1, 2)
-        # return x
-    
-
+        # if self.residual_type == 'normal':
+        #     return x * self.sigmoid(self.residual_ratio) + residual
+        
+        # elif self.residual_type == 'convex':
+        #     return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
 
 
 class DecBlock(nn.Module):
