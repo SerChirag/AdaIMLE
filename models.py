@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import FullyConnectedLayer, MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -156,6 +156,7 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:
@@ -163,7 +164,7 @@ class Decoder(nn.Module):
         else:
             w = latent_code
         
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1)
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
