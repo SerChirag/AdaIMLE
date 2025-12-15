@@ -141,7 +141,7 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetowrk(code_dim=H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetowrk(H, lr_multiplier=H.mapping_lr_multiplier)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)

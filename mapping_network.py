@@ -57,12 +57,21 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
 
 
 class MappingNetowrk(nn.Module):
-    def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
+    def __init__(self, H, lr_multiplier=0.01):
         super().__init__()
 
         layers = [PixelNorm()]
-        for i in range(n_mlp):
-            layers.append(FullyConnectedLayer(code_dim, code_dim, lr_multiplier=lr_multiplier))
+        for i in range(H.n_mpl):
+            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=lr_multiplier))
+            if(H.mapping_normalization == 'layernorm'):
+                layers.append(nn.LayerNorm(H.latent_dim))
+            elif(H.mapping_normalization == 'rmsnorm'):
+                layers.append(nn.RMSNorm(H.latent_dim))
+            elif(H.mapping_normalization == 'pixelnorm'):
+                layers.append(PixelNorm())
+            else:
+                pass
+            # layers.append(PixelNorm())
             layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
