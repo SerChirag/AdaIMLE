@@ -103,16 +103,20 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
 
         if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
+            x = x * self.sigmoid(self.residual_ratio) + residual
         
         elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+            x = x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm2(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
 
 
 class DecBlock(nn.Module):
