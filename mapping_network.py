@@ -72,7 +72,8 @@ class MappingNetowrk(nn.Module):
             else:
                 pass
             # layers.append(PixelNorm())
-            layers.append(nn.LeakyReLU(0.2))
+            layers.append(nn.Tanh())
+            # layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
 
