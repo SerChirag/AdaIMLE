@@ -63,14 +63,7 @@ class MappingNetowrk(nn.Module):
         layers = [PixelNorm()]
         for i in range(H.n_mpl):
             layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=lr_multiplier))
-            if(H.mapping_normalization == 'layernorm'):
-                layers.append(nn.LayerNorm(H.latent_dim))
-            elif(H.mapping_normalization == 'rmsnorm'):
-                layers.append(nn.RMSNorm(H.latent_dim))
-            elif(H.mapping_normalization == 'pixelnorm'):
-                layers.append(PixelNorm())
-            else:
-                pass
+
             # layers.append(PixelNorm())
             layers.append(nn.LeakyReLU(0.2))
 
@@ -87,7 +80,7 @@ class AdaptiveInstanceNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super().__init__()
 
-        self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
+        self.norm = nn.LayerNorm(in_channel)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
         self.style.linear.bias.data[:in_channel] = 1
@@ -98,8 +91,13 @@ class AdaptiveInstanceNorm(nn.Module):
         gamma, beta = style.chunk(2, 1)
 
         out = input
-        if input.shape[3] > 1:
-            out = self.norm(input)
+        ## Apply normalization
+    
+        out = out.permute(0, 2, 3, 1)
+        out = self.norm(out)
+        out = out.permute(0, 3, 1, 2)
+        # if input.shape[3] > 1:
+        #     out = self.norm(input)
         out = gamma * out + beta
         return out
 
