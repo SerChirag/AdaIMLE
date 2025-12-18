@@ -57,6 +57,7 @@ class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
+        self.H = H
 
         if(H.convnext_norm == 'layernorm'):
             self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
@@ -88,9 +89,11 @@ class ConvNeXtBlock(nn.Module):
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            trunc_normal_(m.weight, std=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
+            if(self.H.use_convnext_weight):
+                trunc_normal_(m.weight, std=.02)
+            if(self.H.use_convnext_bias):
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
     
     def forward(self, x):
