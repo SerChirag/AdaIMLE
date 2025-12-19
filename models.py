@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import FullyConnectedLayer, MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -71,7 +71,6 @@ class ConvNeXtBlock(nn.Module):
 
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
-        self.sigmoid = nn.Sigmoid()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
@@ -82,8 +81,7 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
-        self.residual_type = H.residual_type  # 'normal' or 'convex' 
+
         self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
@@ -97,7 +95,6 @@ class ConvNeXtBlock(nn.Module):
 
     
     def forward(self, x):
-        residual = x
         # Depthwise convolution with larger kernel
         x = self.dw_conv(x)
         # Permute to channels-last for LayerNorm
@@ -110,13 +107,7 @@ class ConvNeXtBlock(nn.Module):
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
-
-        if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
-        
-        elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
-
+        return x
 
 class DecBlock(nn.Module):
     def __init__(self, H, res, mixin, n_blocks):
@@ -133,13 +124,25 @@ class DecBlock(nn.Module):
                                     reduction=H.se_reduction,
                                     dropout=H.dropout_p)
 
+        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
+        self.residual_type = H.residual_type  # 'normal' or 'convex' 
+        self.sigmoid = nn.Sigmoid()
+
+
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+        
+        residual = x
         x = self.adaIN(x, w)
         x = self.resnet(x)
-        return x
 
+        if self.residual_type == 'normal':
+            return x * self.sigmoid(self.residual_ratio) + residual
+        
+        elif self.residual_type == 'convex':
+            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        
 class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
@@ -159,6 +162,7 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:
@@ -166,7 +170,9 @@ class Decoder(nn.Module):
         else:
             w = latent_code
         
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        # x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
+        x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
