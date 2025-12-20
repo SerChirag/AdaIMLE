@@ -71,7 +71,6 @@ class ConvNeXtBlock(nn.Module):
 
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
-        self.sigmoid = nn.Sigmoid()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
@@ -82,20 +81,16 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
-        self.residual_type = H.residual_type  # 'normal' or 'convex' 
-        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            trunc_normal_(m.weight, std=.02)
+            # trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
     
     def forward(self, x):
-        residual = x
         # Depthwise convolution with larger kernel
         x = self.dw_conv(x)
         # Permute to channels-last for LayerNorm
@@ -109,12 +104,7 @@ class ConvNeXtBlock(nn.Module):
 
         x = self.se(x)
 
-        if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
-        
-        elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
-
+        return x
 
 class DecBlock(nn.Module):
     def __init__(self, H, res, mixin, n_blocks):
@@ -131,12 +121,25 @@ class DecBlock(nn.Module):
                                     reduction=H.se_reduction,
                                     dropout=H.dropout_p)
 
+        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
+        self.residual_type = H.residual_type  # 'normal' or 'convex' 
+        self.sigmoid = nn.Sigmoid()
+
+
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+        
+        residual = x
         x = self.adaIN(x, w)
         x = self.resnet(x)
-        return x
+
+        if self.residual_type == 'normal':
+            return x * self.sigmoid(self.residual_ratio) + residual
+        
+        elif self.residual_type == 'convex':
+            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        
 
 class Decoder(nn.Module):
     def __init__(self, H):
