@@ -3,7 +3,7 @@ from math import sqrt
 import torch
 from torch import nn
 import numpy as np
-
+import torch.nn.functional as F
 
 class PixelNorm(nn.Module):
     def __init__(self):
@@ -82,6 +82,33 @@ class MappingNetowrk(nn.Module):
         x = self.style(input)
         return x
 
+class LayerNorm(nn.Module):
+    r""" LayerNorm that supports two data formats: channels_last (default) or channels_first. 
+    The ordering of the dimensions in the inputs. channels_last corresponds to inputs with 
+    shape (batch_size, height, width, channels) while channels_first corresponds to inputs 
+    with shape (batch_size, channels, height, width).
+    """
+    def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(normalized_shape))
+        self.bias = nn.Parameter(torch.zeros(normalized_shape))
+        self.eps = eps
+        self.data_format = data_format
+        if self.data_format not in ["channels_last", "channels_first"]:
+            raise NotImplementedError 
+        self.normalized_shape = (normalized_shape, )
+    
+    def forward(self, x):
+        if self.data_format == "channels_last":
+            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        elif self.data_format == "channels_first":
+            u = x.mean(1, keepdim=True)
+            s = (x - u).pow(2).mean(1, keepdim=True)
+            x = (x - u) / torch.sqrt(s + self.eps)
+            x = self.weight[:, None, None] * x + self.bias[:, None, None]
+            return x
+
+
 
 class AdaptiveInstanceNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
@@ -90,8 +117,8 @@ class AdaptiveInstanceNorm(nn.Module):
         self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
-        self.style.linear.bias.data[:in_channel] = 1
-        self.style.linear.bias.data[in_channel:] = 0
+        # self.style.linear.bias.data[:in_channel] = 1
+        # self.style.linear.bias.data[in_channel:] = 0
 
     def forward(self, input, style):
         style = self.style(style).unsqueeze(2).unsqueeze(3)
@@ -100,7 +127,7 @@ class AdaptiveInstanceNorm(nn.Module):
         out = input
         if input.shape[3] > 1:
             out = self.norm(input)
-        out = gamma * out + beta
+        out = (1 + gamma) * out + beta
         return out
 
 

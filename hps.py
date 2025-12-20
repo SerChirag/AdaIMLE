@@ -245,6 +245,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--use_convnext_weight", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
 
+    parser.add_argument('--nn_search_batch', type=int, default=16) 
 
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
