@@ -170,9 +170,9 @@ class Decoder(nn.Module):
         else:
             w = latent_code
         
-        # x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
         # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
-        x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
+        # x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
