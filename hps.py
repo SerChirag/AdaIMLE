@@ -175,7 +175,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--num_rows_visualize', type=int, default=9)  # number of rows to visualize, e.g. 3 means 3x8=24 images
 
     parser.add_argument('--residual_ratio', type=float, default=0.0)
-    parser.add_argument('--residual_type', type=str, default='normal', choices=['normal', 'convex'])
+    parser.add_argument('--residual_type', type=str, default='convex', choices=['normal', 'convex'])
 
     parser.add_argument('--accumulation_steps', type=int, default=1)  # accumulation steps
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
@@ -243,7 +243,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--convnext_norm", default='layernorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
     parser.add_argument("--convnext_norm_eps", type=float, default=1e-3, help="epsilon for convnext norm")
     parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
-    parser.add_argument("--use_convnext_weight", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
+    parser.add_argument("--use_convnext_weight", default=False, type=lambda x: bool(strtobool(x)))  # whether to use se block
 
 
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
