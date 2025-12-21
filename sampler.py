@@ -403,7 +403,7 @@ class Sampler:
                 new_latents = self.pool_latents[local_indices].clone()
                 all_pool_latents.append(new_latents)
             
-        all_pool_latents = torch.cat(all_pool_latents, dim=0)
+        all_pool_latents = torch.cat(all_pool_latents, dim=0).detach().cpu()
 
         safe_barrier()  # Ensure all processes complete the gather
                 
