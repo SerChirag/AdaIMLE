@@ -136,10 +136,9 @@ class Sampler:
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
-        self.num_classes = H.num_classes
+        self.gpu_index_flat = index_flat
 
+        self.num_classes = H.num_classes
         self.local_classes = self._distribute_classes_across_gpus()
         self.class_ranges = None
         self.viz_indices = None
