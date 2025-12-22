@@ -48,6 +48,8 @@ class Sampler:
         self.lpips_net.requires_grad_(False)
         self.delta = H.huber_delta 
 
+        self.nn_search_batch = H.nn_search_batch
+
         ## TODO: check this is required or not
         if(self.H.compile):
             self.lpips_net = torch.compile(self.lpips_net)
@@ -335,6 +337,79 @@ class Sampler:
         else:
             loss = residuals.mean() 
         return loss
+
+    def nn_search_batched(self, queries, dataset):
+        """
+        Perform nearest-neighbor search in batches using self.gpu_index_flat (FAISS).
+        Each dataset sample can be matched only once (greedy removal).
+        Random permutation is applied to remove ordering bias.
+
+        Args:
+            queries: (Nq, D) torch.Tensor of query vectors (CPU or CUDA).
+            dataset: (Nd, D) torch.Tensor of database vectors (CPU or CUDA).
+            batch_size: int, number of queries per batch.
+
+        Returns:
+            distances: torch.FloatTensor (Nq,)
+            indices: torch.LongTensor (Nq,)
+        """
+
+        # Convert to NumPy float32 arrays for FAISS
+        q_np = np.ascontiguousarray(queries, dtype=np.float32)
+        db_np = np.ascontiguousarray(dataset, dtype=np.float32)
+        Nd = db_np.shape[0]
+
+        # Prepare result buffers
+        Nq = q_np.shape[0]
+        all_dists = np.full(Nq, np.inf, dtype=np.float32)
+        all_indices = np.full(Nq, -1, dtype=np.int64)
+
+        # Track availability
+        available = np.ones(Nd, dtype=bool)
+
+        # Randomize query order to remove bias
+        perm = np.random.permutation(Nq)
+
+        self.gpu_index_flat.reset()
+
+        for start in range(0, Nq, self.nn_search_batch):
+            end = min(start + self.nn_search_batch, Nq)
+            batch_ids = perm[start:end]
+            q_batch = q_np[batch_ids]
+
+            # Restrict search to remaining dataset samples
+            valid_mask = np.flatnonzero(available)
+            if valid_mask.size == 0:
+                break
+
+            db_valid = db_np[valid_mask]
+            dim = db_valid.shape[1]
+
+            # Rebuild FAISS index for current available set
+            self.gpu_index_flat.reset()
+            self.gpu_index_flat.add(db_valid)
+
+            # Perform search
+            D, I = self.gpu_index_flat.search(q_batch, 1)
+            D = D.squeeze(1)
+            I = I.squeeze(1)
+            global_idx = valid_mask[I]
+
+            # Record results
+            all_dists[batch_ids] = D
+            all_indices[batch_ids] = global_idx
+
+            # Remove matched samples from availability mask
+            available[global_idx] = False
+
+        # Return as torch tensors
+        self.gpu_index_flat.reset()
+
+        distances = torch.from_numpy(all_dists).squeeze()
+        indices = torch.from_numpy(all_indices).squeeze()
+        return distances, indices
+
+
         
             
     def resample_pool(self, gen, class_condition):
@@ -393,17 +468,13 @@ class Sampler:
                 # Obtain the full dataset features (on CPU) and then slice locally.
                 local_ds_feats = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
 
-                self.gpu_index_flat.add(self.pool_samples_proj)  # add entire pool
-
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, indices = self.gpu_index_flat.search(local_ds_feats, 1)
-                local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
+                _, local_indices = self.nn_search_batched(local_ds_feats, self.pool_samples_proj)
 
-
-                new_latents = self.pool_latents[local_indices].clone()
+                new_latents = self.pool_latents[local_indices].clone().detach().cpu()
                 all_pool_latents.append(new_latents)
             
-        all_pool_latents = torch.cat(all_pool_latents, dim=0).detach().cpu()
+        all_pool_latents = torch.cat(all_pool_latents, dim=0)
 
         safe_barrier()  # Ensure all processes complete the gather
                 
