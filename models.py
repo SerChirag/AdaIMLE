@@ -8,6 +8,8 @@ from collections import defaultdict
 import numpy as np
 from timm.layers import trunc_normal_, DropPath
 import itertools
+import math
+from synthesis import ResolutionDrivenSynthesisInput
 
 def parse_layer_string(s):
     layers = []
@@ -162,7 +164,18 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
+        # self.synthesis_input = SimpleSynthesisInput(
+        #     w_dim=H.latent_dim,
+        #     channels=self.widths[first_res],
+        #     size=(8, 8),
+        #     freq_scale=3.0,
+        # )
+        self.synthesis_input = ResolutionDrivenSynthesisInput(
+            w_dim=H.latent_dim,
+            channels=self.widths[first_res],
+            resolution=8,
+            bandwidth_factor=4,
+        )
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:
@@ -170,7 +183,7 @@ class Decoder(nn.Module):
         else:
             w = latent_code
         
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        x = self.synthesis_input(w)
         # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
         # x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
 
