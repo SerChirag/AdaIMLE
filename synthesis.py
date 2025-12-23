@@ -10,12 +10,13 @@ class SimpleSynthesisInput(nn.Module):
         self,
         w_dim,
         channels,
-        size,
-        freq_scale=10.0,
+        size,   
     ):
         super().__init__()
         self.channels = channels
         self.size = size
+        freq_scale = size / 10
+
 
         # Fixed Fourier frequencies and phases
         self.register_buffer(
@@ -27,6 +28,7 @@ class SimpleSynthesisInput(nn.Module):
             torch.rand(channels) * 2 * math.pi
         )
 
+
         # Latent → phase modulation
         self.affine = nn.Linear(w_dim, channels, bias=True)
 
@@ -35,7 +37,8 @@ class SimpleSynthesisInput(nn.Module):
             torch.randn(channels, channels) / math.sqrt(channels)
         )
 
-        self.layernorm = nn.RMSNorm(channels)
+        self.norm = nn.RMSNorm(channels, elementwise_affine=True)
+        # self.norm = nn.Identity()
 
         # nn.init.zeros_(self.affine.weight)
         nn.init.zeros_(self.affine.bias)
@@ -50,7 +53,7 @@ class SimpleSynthesisInput(nn.Module):
         x = coords @ self.freqs.t()           # [H, W, C]
         x = 2 * math.pi * x
 
-        self.x = x  # [H, W, C]
+        self.register_buffer("x", x)
 
 
     def forward(self, w):
@@ -62,7 +65,7 @@ class SimpleSynthesisInput(nn.Module):
         # Coordinate grid in [-1, 1]
         
         # Phase modulation from latent
-        phase = self.base_phase + self.norm(self.affine(w))   # [B, C]
+        phase = self.base_phase + self.norm(self.affine(w))    # [B, C]
         x = self.x.unsqueeze(0) + phase[:, None, None, :]
 
         x = torch.sin(x)

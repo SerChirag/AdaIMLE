@@ -9,7 +9,7 @@ import numpy as np
 from timm.layers import trunc_normal_, DropPath
 import itertools
 import math
-from synthesis import ResolutionDrivenSynthesisInput
+from synthesis import SimpleSynthesisInput
 
 def parse_layer_string(s):
     layers = []
@@ -105,7 +105,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
@@ -164,18 +164,17 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        # self.synthesis_input = SimpleSynthesisInput(
-        #     w_dim=H.latent_dim,
-        #     channels=self.widths[first_res],
-        #     size=(8, 8),
-        #     freq_scale=3.0,
-        # )
-        self.synthesis_input = ResolutionDrivenSynthesisInput(
+        self.synthesis_input = SimpleSynthesisInput(
             w_dim=H.latent_dim,
             channels=self.widths[first_res],
-            resolution=8,
-            bandwidth_factor=4,
+            size=8,
         )
+        # self.synthesis_input = ResolutionDrivenSynthesisInput(
+        #     w_dim=H.latent_dim,
+        #     channels=self.widths[first_res],
+        #     resolution=8,
+        #     bandwidth_factor=4,
+        # )
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:

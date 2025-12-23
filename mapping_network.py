@@ -63,16 +63,26 @@ class MappingNetowrk(nn.Module):
         layers = [PixelNorm()]
         for i in range(H.n_mpl):
             layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=lr_multiplier))
-            # if(H.mapping_normalization == 'layernorm'):
-            #     layers.append(nn.LayerNorm(H.latent_dim))
-            # elif(H.mapping_normalization == 'rmsnorm'):
-            #     layers.append(nn.RMSNorm(H.latent_dim))
+            if(H.mapping_normalization == 'layernorm'):
+                layers.append(nn.LayerNorm(H.latent_dim))
+            elif(H.mapping_normalization == 'rmsnorm'):
+                layers.append(nn.RMSNorm(H.latent_dim))
             # elif(H.mapping_normalization == 'pixelnorm'):
             #     layers.append(PixelNorm())
-            # else:
-            #     pass
+            else:
+                pass
             # layers.append(PixelNorm())
-            layers.append(nn.LeakyReLU(0.2))
+            # layers.append(nn.LeakyReLU(0.2))
+            if(H.mapping_act == 'tanh'):
+                layers.append(nn.Tanh())
+            elif(H.mapping_act == 'lrelu'):
+                layers.append(nn.LeakyReLU(0.2))
+            elif(H.mapping_act == 'silu'):
+                layers.append(nn.SiLU())
+            elif(H.mapping_act == 'gelu'):
+                layers.append(nn.GELU())
+            else:
+                pass
 
         self.style = nn.Sequential(*layers)
 

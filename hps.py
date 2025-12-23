@@ -152,7 +152,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
     parser.add_argument('--mapping_lr_multiplier', type=float, default=1.00)  # weight decay
-    parser.add_argument('--mapping_normalization', type=str, default='layernorm', choices=['none', 'rmsnorm', 'layernorm', 'pixelnorm'])  # mapping network normalization type
+    parser.add_argument('--mapping_normalization', type=str, default='rmsnorm', choices=['none', 'rmsnorm', 'layernorm', 'pixelnorm'])  # mapping network normalization type
+    parser.add_argument('--mapping_act', type=str, default='gelu', choices=['tanh', 'lrelu', 'silu', 'gelu'])  # mapping network normalization type
 
 
     parser.add_argument('--compile', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
@@ -240,7 +241,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
-    parser.add_argument("--convnext_norm", default='layernorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
+    parser.add_argument("--convnext_norm", default='rmsnorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
     parser.add_argument("--convnext_norm_eps", type=float, default=1e-3, help="epsilon for convnext norm")
     parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--use_convnext_weight", default=False, type=lambda x: bool(strtobool(x)))  # whether to use se block
