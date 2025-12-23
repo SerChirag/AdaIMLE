@@ -35,25 +35,14 @@ class SimpleSynthesisInput(nn.Module):
             torch.randn(channels, channels) / math.sqrt(channels)
         )
 
-        self.layernorm = nn.LayerNorm(channels)
+        self.layernorm = nn.RMSNorm(channels)
 
         # nn.init.zeros_(self.affine.weight)
         nn.init.zeros_(self.affine.bias)
 
-
-    def forward(self, w):
-        """
-        w: [B, w_dim]
-        returns: [B, C, H, W]
-        """
-        B = w.shape[0]
-        H, W = self.size
-        device = w.device
-
-        # Coordinate grid in [-1, 1]
         y, x = torch.meshgrid(
-            torch.linspace(-1, 1, H, device=device),
-            torch.linspace(-1, 1, W, device=device),
+            torch.linspace(-1, 1, size),
+            torch.linspace(-1, 1, size),
             indexing='ij'
         )
         coords = torch.stack([x, y], dim=-1)  # [H, W, 2]
@@ -61,9 +50,20 @@ class SimpleSynthesisInput(nn.Module):
         x = coords @ self.freqs.t()           # [H, W, C]
         x = 2 * math.pi * x
 
+        self.x = x  # [H, W, C]
+
+
+    def forward(self, w):
+        """
+        w: [B, w_dim]
+        returns: [B, C, H, W]
+        """
+
+        # Coordinate grid in [-1, 1]
+        
         # Phase modulation from latent
-        phase = self.base_phase + self.layernorm(self.affine(w))   # [B, C]
-        x = x.unsqueeze(0) + phase[:, None, None, :]
+        phase = self.base_phase + self.norm(self.affine(w))   # [B, C]
+        x = self.x.unsqueeze(0) + phase[:, None, None, :]
 
         x = torch.sin(x)
 
