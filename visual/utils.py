@@ -27,10 +27,11 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 
 
-def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
+def generate_for_NN(sampler, orig, initial, shape, imle, fname, logprint):
     mb = shape[0]
-    initial = initial[:mb].to(ema_imle.device)
-    nns = sampler.sample(initial, ema_imle, None)
+    initial = initial[:mb].to(imle.device)
+    imle = imle.module if hasattr(imle, "module") else imle
+    nns = sampler.sample(initial, imle, None)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -44,6 +45,7 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
+    imle = imle.module if hasattr(imle, "module") else imle
     batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
 
     for t in range(H.num_rows_visualize):
@@ -60,7 +62,6 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
 
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     # Get the current process rank and world size.
-    
     rank = get_rank()
     world_size = get_world_size()
 
@@ -73,6 +74,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     n_local = len(indices)
 
     imle.eval()
+    imle = imle.module if hasattr(imle, "module") else imle
 
     with torch.no_grad():
         # Process images in batches
