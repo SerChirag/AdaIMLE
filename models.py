@@ -99,7 +99,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
@@ -161,6 +161,8 @@ class Decoder(nn.Module):
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
         self.embedding = nn.Embedding(H.num_classes, H.latent_dim)
+    
+        nn.init.normal_(self.embedding.weight, std=0.02)
 
     def forward(self, latent_code, condition):
         
