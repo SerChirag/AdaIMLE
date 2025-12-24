@@ -161,6 +161,8 @@ class Decoder(nn.Module):
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
         self.embedding = nn.Embedding(H.num_classes, H.latent_dim)
+        self.se = SEBlock(self.widths[first_res], reduction=H.se_reduction)  
+
 
     def forward(self, latent_code, condition):
         
@@ -168,6 +170,7 @@ class Decoder(nn.Module):
         latent_code_2 = latent_code + class_emb
         w = self.mapping_network(latent_code_2)
         x = self.constant.repeat(latent_code_2.shape[0], 1, 1, 1)
+        x = self.se(x)
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
