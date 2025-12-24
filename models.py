@@ -99,7 +99,7 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
