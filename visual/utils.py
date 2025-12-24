@@ -30,8 +30,8 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 def generate_for_NN(sampler, orig, initial, shape, imle, fname, logprint):
     mb = shape[0]
     initial = initial[:mb].to(imle.device)
-    imle = imle.module if hasattr(imle, "module") else imle
-    nns = sampler.sample(initial, imle, None)
+    imle_plain = imle.module if hasattr(imle, "module") else imle
+    nns = sampler.sample(initial, imle_plain, None)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -45,12 +45,11 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
-    imle = imle.module if hasattr(imle, "module") else imle
-    batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
+    imle_plain = imle.module if hasattr(imle, "module") else imle
+    batches = [orig[:mb], sampler.sample(initial, imle_plain, None), sampler.sample(last_latents, imle_plain, None)]
 
     for t in range(H.num_rows_visualize):
-        batches.append(sampler.sample(latent_for_visualization[t], imle, None))
-
+        batches.append(sampler.sample(latent_for_visualization[t], imle_plain, None))
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
         [n_rows * shape[1], mb * shape[2], 3])
@@ -74,7 +73,8 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     n_local = len(indices)
 
     imle.eval()
-    imle = imle.module if hasattr(imle, "module") else imle
+    device = imle.device
+    imle_plain = imle.module if hasattr(imle, "module") else imle
 
     with torch.no_grad():
         # Process images in batches
@@ -82,11 +82,11 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             current_batch_size = min(H.imle_batch, n_local - i)
             # Generate random latent vectors for the current batch
             latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
-                                       device=imle.device, 
+                                       device=device, 
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
-            samp = sampler.sample(latent_batch, imle, None)
+            samp = sampler.sample(latent_batch, imle_plain, None)
             # Save each sample with its corresponding global index
             for j in range(current_batch_size):
                 global_index = indices[i + j]
