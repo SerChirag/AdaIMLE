@@ -63,11 +63,6 @@ class ConvNeXtBlock(nn.Module):
             self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
         elif(H.convnext_norm == 'rmsnorm'):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-        
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
 
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
@@ -81,6 +76,7 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
+        self.adaIN = AdaptiveInstanceNorm(dim, H.latent_dim)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -90,9 +86,10 @@ class ConvNeXtBlock(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     
-    def forward(self, x):
+    def forward(self, x, w):
         # Depthwise convolution with larger kernel
         x = self.dw_conv(x)
+        x = self.adaIN(x, w)
         # Permute to channels-last for LayerNorm
         x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
@@ -132,7 +129,7 @@ class DecBlock(nn.Module):
         
         residual = x
         x = self.adaIN(x, w)
-        x = self.resnet(x)
+        x = self.resnet(x, w)
 
         if self.residual_type == 'normal':
             return x * self.sigmoid(self.residual_ratio) + residual
@@ -163,6 +160,7 @@ class Decoder(nn.Module):
         self.embedding = nn.Embedding(H.num_classes, H.latent_dim)
         self.se = SEBlock(self.widths[first_res], reduction=H.se_reduction)  
 
+        nn.init.normal_(self.embedding.weight, std=0.02)
 
     def forward(self, latent_code, condition):
         
