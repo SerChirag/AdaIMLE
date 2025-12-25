@@ -64,11 +64,6 @@ class ConvNeXtBlock(nn.Module):
         elif(H.convnext_norm == 'rmsnorm'):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
