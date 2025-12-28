@@ -67,12 +67,13 @@ class SEBlock(nn.Module):
 
 
 class StyleScale(nn.Module):
-    def __init__(self, channels, latent_dim):
+    def __init__(self, channels, latent_dim, H):
         super().__init__()
         self.affine = nn.Linear(latent_dim, channels * 2)
 
         # Zero-init for identity at start
-        nn.init.zeros_(self.affine.weight)
+        if(H.zero_init):
+            nn.init.zeros_(self.affine.weight)
         nn.init.zeros_(self.affine.bias)
 
     def forward(self, x, w):
@@ -112,7 +113,7 @@ class ConvNeXtBlock(nn.Module):
 
         ## single parameter for residual ratio
         self.use_se = use_se
-        self.style_scale = StyleScale(dim, H.latent_dim)
+        self.style_scale = StyleScale(dim, H.latent_dim, H)
 
         if use_se:
             self.se = SEBlock(dim, reduction=reduction)  
@@ -151,7 +152,7 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
-        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
+        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim, H)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
                                     use_se=H.use_se,
