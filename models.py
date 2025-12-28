@@ -53,59 +53,93 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y.expand_as(x)
 
+
+# class StyleScale(nn.Module):
+#     def __init__(self, channels, latent_dim):
+#         super().__init__()
+#         self.affine = nn.Linear(latent_dim, channels)
+#         # self.affine.weight.data.normal_()
+#         self.affine.bias.data.zero_()
+
+#     def forward(self, x, w):
+#         scale = self.affine(w).view(-1, x.shape[1], 1, 1)
+#         return x * (1 + scale)
+
+
+class StyleScale(nn.Module):
+    def __init__(self, channels, latent_dim):
+        super().__init__()
+        self.affine = nn.Linear(latent_dim, channels * 2)
+
+        # Zero-init for identity at start
+        nn.init.zeros_(self.affine.weight)
+        nn.init.zeros_(self.affine.bias)
+
+    def forward(self, x, w):
+        scale, shift = self.affine(w).chunk(2, dim=1)
+        scale = scale.view(-1, x.shape[1], 1, 1)
+        shift = shift.view(-1, x.shape[1], 1, 1)
+        return x * (1 + scale) + shift
+
+
+class LayerNormCF(nn.Module):
+    """
+    LayerNorm over channels for NCHW tensors, no affine.
+    """
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        mean = x.mean(dim=1, keepdim=True)
+        var = (x - mean).pow(2).mean(dim=1, keepdim=True)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        return x
+
+
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
         self.H = H
 
-        if(H.convnext_norm == 'layernorm'):
-            self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
+        self.norm = LayerNormCF(eps=1e-6)
         
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
         self.use_se = use_se
+        self.style_scale = StyleScale(dim, H.latent_dim)
+
         if use_se:
             self.se = SEBlock(dim, reduction=reduction)  
         else:
             # Indentity layer if SE is not used
             self.se = nn.Identity()
-
-
         self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            if(self.H.use_convnext_weight):
-                trunc_normal_(m.weight, std=.02)
             if(self.H.use_convnext_bias):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
     
-    def forward(self, x):
+    def forward(self, x, w):
         # Depthwise convolution with larger kernel
         x = self.dw_conv(x)
         # Permute to channels-last for LayerNorm
-        x = x.permute(0, 2, 3, 1)
         x = self.norm(x)
+        x = self.style_scale(x, w)
+        x = x.permute(0, 2, 3, 1)
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
-
         x = self.se(x)
         return x
 
@@ -135,7 +169,7 @@ class DecBlock(nn.Module):
         
         residual = x
         x = self.adaIN(x, w)
-        x = self.resnet(x)
+        x = self.resnet(x, w)
 
         if self.residual_type == 'normal':
             return x * self.sigmoid(self.residual_ratio) + residual
@@ -162,7 +196,6 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:
@@ -171,8 +204,6 @@ class Decoder(nn.Module):
             w = latent_code
         
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
-        # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
-        # x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
