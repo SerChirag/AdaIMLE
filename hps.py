@@ -240,7 +240,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
-    parser.add_argument("--convnext_norm", default='layernorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
+    parser.add_argument("--convnext_norm", default='rmsnorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
     parser.add_argument("--convnext_norm_eps", type=float, default=1e-3, help="epsilon for convnext norm")
     parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--use_convnext_weight", default=False, type=lambda x: bool(strtobool(x)))  # whether to use se block

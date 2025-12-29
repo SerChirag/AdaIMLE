@@ -64,10 +64,10 @@ class ConvNeXtBlock(nn.Module):
         elif(H.convnext_norm == 'rmsnorm'):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
+        # if(H.convnext_norm == 'layernorm'):
+        #     self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
+        # elif(H.convnext_norm == 'rmsnorm'):
+        #     self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
 
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
@@ -81,14 +81,10 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
-
-        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            if(self.H.use_convnext_weight):
-                trunc_normal_(m.weight, std=.02)
             if(self.H.use_convnext_bias):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
@@ -103,9 +99,8 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
-
         x = self.se(x)
         return x
 
@@ -137,11 +132,14 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
 
-        if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
+        return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+
+
+        # if self.residual_type == 'normal':
+        #     return x * self.sigmoid(self.residual_ratio) + residual
         
-        elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        # elif self.residual_type == 'convex':
+        #     return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
         
 class Decoder(nn.Module):
     def __init__(self, H):
@@ -162,7 +160,6 @@ class Decoder(nn.Module):
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
 
     def forward(self, latent_code, input_is_w=False):
         if not input_is_w:
@@ -171,8 +168,6 @@ class Decoder(nn.Module):
             w = latent_code
         
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
-        # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
-        # x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
 
         for idx, block in enumerate(self.dec_blocks):
             x = block(x, w)
