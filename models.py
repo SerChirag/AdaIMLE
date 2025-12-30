@@ -72,8 +72,8 @@ class StyleScale(nn.Module):
         self.affine = nn.Linear(latent_dim, channels * 2)
 
         # Zero-init for identity at start
-        if(H.zero_init):
-            nn.init.zeros_(self.affine.weight)
+        # if(H.zero_init):
+        #     nn.init.zeros_(self.affine.weight)
         nn.init.zeros_(self.affine.bias)
 
     def forward(self, x, w):
@@ -114,6 +114,8 @@ class ConvNeXtBlock(nn.Module):
         ## single parameter for residual ratio
         self.use_se = use_se
         self.style_scale = StyleScale(dim, H.latent_dim, H)
+        self.style_scale_2 = StyleScale(dim, H.latent_dim, H)
+
 
         if use_se:
             self.se = SEBlock(dim, reduction=reduction)  
@@ -141,6 +143,8 @@ class ConvNeXtBlock(nn.Module):
         x = self.gelu(x)
         x = self.pw_conv2(x)
         x = x.permute(0, 3, 1, 2)
+        x = self.norm(x)
+        x = self.style_scale_2(x, w)
         x = self.se(x)
         return x
 
