@@ -156,6 +156,12 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+
+        if mixin is not None and self.widths[mixin] != width:
+            self.proj = get_1x1(self.widths[mixin], width)
+        else:
+            self.proj = nn.Identity()
+
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim, H)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
@@ -171,7 +177,8 @@ class DecBlock(nn.Module):
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
-        
+            x = self.proj(x)
+
         residual = x
         x = self.adaIN(x, w)
         x = self.resnet(x, w)
@@ -197,8 +204,9 @@ class Decoder(nn.Module):
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
+        last_res = self.resolutions[-1]
+        self.resnet = get_1x1(self.widths[last_res], H.image_channels)
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
         self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
 
