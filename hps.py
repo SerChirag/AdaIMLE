@@ -151,7 +151,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
-    parser.add_argument('--mapping_lr_multiplier', type=float, default=1.00)  # weight decay
+    parser.add_argument('--mapping_lr_multiplier', type=float, default=0.01)  # weight decay
     parser.add_argument('--mapping_normalization', type=str, default='layernorm', choices=['none', 'rmsnorm', 'layernorm', 'pixelnorm'])  # mapping network normalization type
 
 

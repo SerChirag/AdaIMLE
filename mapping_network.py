@@ -56,13 +56,13 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
 
-class MappingNetowrk(nn.Module):
-    def __init__(self, H, lr_multiplier=0.01):
+class MappingNetwork(nn.Module):
+    def __init__(self, H):
         super().__init__()
 
         layers = [PixelNorm()]
         for i in range(H.n_mpl):
-            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=lr_multiplier))
+            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=H.mapping_lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
@@ -80,8 +80,8 @@ class AdaptiveInstanceNorm(nn.Module):
         self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
-        if(H.zero_init):
-            nn.init.zeros_(self.style.linear.weight)
+        # if(H.zero_init):
+        nn.init.zeros_(self.style.linear.weight)
         nn.init.zeros_(self.style.linear.bias)
 
     def forward(self, input, style):

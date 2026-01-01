@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import FullyConnectedLayer, MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import AdaptiveInstanceNorm, MappingNetwork
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -73,7 +73,7 @@ class StyleScale(nn.Module):
 
         # Zero-init for identity at start
         # if(H.zero_init):
-        #     nn.init.zeros_(self.affine.weight)
+        nn.init.zeros_(self.affine.weight)
         nn.init.zeros_(self.affine.bias)
 
     def forward(self, x, w):
@@ -193,7 +193,7 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetowrk(H, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetwork(H)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
