@@ -183,11 +183,7 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x, w)
 
-        if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
-        
-        elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
         
 class Decoder(nn.Module):
     def __init__(self, H):
