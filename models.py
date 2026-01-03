@@ -54,58 +54,15 @@ class SEBlock(nn.Module):
         return x * y.expand_as(x)
 
 
-# class StyleScale(nn.Module):
-#     def __init__(self, channels, latent_dim):
-#         super().__init__()
-#         self.affine = nn.Linear(latent_dim, channels)
-#         # self.affine.weight.data.normal_()
-#         self.affine.bias.data.zero_()
-
-#     def forward(self, x, w):
-#         scale = self.affine(w).view(-1, x.shape[1], 1, 1)
-#         return x * (1 + scale)
-
-
-class StyleScale(nn.Module):
-    def __init__(self, channels, latent_dim, H):
-        super().__init__()
-        self.affine = nn.Linear(latent_dim, channels * 2)
-
-        # Zero-init for identity at start
-        # if(H.zero_init):
-        nn.init.zeros_(self.affine.weight)
-        nn.init.zeros_(self.affine.bias)
-
-    def forward(self, x, w):
-        scale, shift = self.affine(w).chunk(2, dim=1)
-        scale = scale.view(-1, x.shape[1], 1, 1)
-        shift = shift.view(-1, x.shape[1], 1, 1)
-        return x * (1 + scale) + shift
-
-
-class LayerNormCF(nn.Module):
-    """
-    LayerNorm over channels for NCHW tensors, no affine.
-    """
-    def __init__(self, eps=1e-6):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, x):
-        # x: (B, C, H, W)
-        mean = x.mean(dim=1, keepdim=True)
-        var = (x - mean).pow(2).mean(dim=1, keepdim=True)
-        x = (x - mean) / torch.sqrt(var + self.eps)
-        return x
-
-
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
-        self.H = H
 
-        self.norm = LayerNormCF(eps=1e-6)
+        if(H.convnext_norm == 'layernorm'):
+            self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
+        elif(H.convnext_norm == 'rmsnorm'):
+            self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
@@ -113,39 +70,35 @@ class ConvNeXtBlock(nn.Module):
 
         ## single parameter for residual ratio
         self.use_se = use_se
-        self.style_scale = StyleScale(dim, H.latent_dim, H)
-        self.style_scale_2 = StyleScale(dim, H.latent_dim, H)
-
-
         if use_se:
             self.se = SEBlock(dim, reduction=reduction)  
         else:
             # Indentity layer if SE is not used
             self.se = nn.Identity()
-        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
+
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            if(self.H.use_convnext_bias):
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+            # trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     
-    def forward(self, x, w):
+    def forward(self, x):
         # Depthwise convolution with larger kernel
         x = self.dw_conv(x)
         # Permute to channels-last for LayerNorm
-        x = self.norm(x)
-        x = self.style_scale(x, w)
         x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
-        x = self.norm(x)
-        x = self.style_scale_2(x, w)
+
         x = self.se(x)
+
         return x
 
 class DecBlock(nn.Module):
@@ -156,13 +109,7 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
-
-        if mixin is not None and self.widths[mixin] != width:
-            self.proj = get_1x1(self.widths[mixin], width)
-        else:
-            self.proj = nn.Identity()
-
-        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim, H)
+        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
                                     use_se=H.use_se,
@@ -177,14 +124,19 @@ class DecBlock(nn.Module):
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
-            x = self.proj(x)
-
+        
         residual = x
         x = self.adaIN(x, w)
-        x = self.resnet(x, w)
+        x = self.resnet(x)
 
-        return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        if self.residual_type == 'normal':
+            return x * self.sigmoid(self.residual_ratio) + residual
         
+        elif self.residual_type == 'convex':
+            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+        
+
+
 class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()

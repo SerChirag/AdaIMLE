@@ -74,14 +74,13 @@ class MappingNetwork(nn.Module):
 
 
 class AdaptiveInstanceNorm(nn.Module):
-    def __init__(self, in_channel, style_dim, H):
+    def __init__(self, in_channel, style_dim):
         super().__init__()
         
         self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
         # if(H.zero_init):
-        nn.init.zeros_(self.style.linear.weight)
         nn.init.zeros_(self.style.linear.bias)
 
     def forward(self, input, style):
