@@ -15,7 +15,7 @@ class Hyperparams(dict):
 
 cifar10 = Hyperparams()
 cifar10.width = 384
-cifar10.lr = 0.0002
+cifar10.lr = 0.0005
 cifar10.wd = 0.01
 cifar10.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,32x11"
 cifar10.warmup_iters = 100
@@ -25,12 +25,12 @@ cifar10.imle_batch = 32
 cifar10.ema_rate = 0.9999
 cifar10.l2_search_downsample = 1.0
 cifar10.multi_res_scales = '8,12,16,24,28'
-cifar10.convnext_expansion = 6
+cifar10.convnext_expansion = 4
 HPARAMS_REGISTRY['cifar10'] = cifar10
 
 imagenet32 = Hyperparams()
 imagenet32.width = 512
-imagenet32.lr = 0.0002
+imagenet32.lr = 0.0005
 imagenet32.wd = 0.01
 imagenet32.dec_blocks = "1x2,4m1,4x4,8m4,8x9,16m8,16x19,32m16,32x40" 
 imagenet32.warmup_iters = 100
@@ -40,7 +40,7 @@ imagenet32.imle_batch = 32
 imagenet32.ema_rate = 0.9999
 imagenet32.l2_search_downsample = 1.0
 imagenet32.multi_res_scales = '8,12,16,24,28'
-imagenet32.convnext_expansion = 6
+imagenet32.convnext_expansion = 4
 imagenet32.num_classes = 1000
 HPARAMS_REGISTRY['imagenet32'] = imagenet32
 
