@@ -32,7 +32,8 @@ def init_distributed_mode(timeout_sec=4800):
         local_rank = int(os.environ["SLURM_LOCALID"])
         gpus_per_node = torch.cuda.device_count()
         gpu = int(os.environ.get("SLURM_LOCALID"))
-        rank = int(os.environ.get("SLURM_NODEID")) * gpus_per_node + gpu
+        # rank = int(os.environ.get("SLURM_NODEID")) * gpus_per_node + gpu
+        rank = int(os.environ["SLURM_PROCID"])
         # print("\n rank is ", rank)
         distributed = True
 

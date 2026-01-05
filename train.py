@@ -28,6 +28,7 @@ import datetime
 import os
 import torch.distributed as dist
 import gc
+import os, socket
 
 torch.set_float32_matmul_precision('high')
 
@@ -297,7 +298,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 def main():
     init_distributed_mode()
-    
+
     H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
@@ -331,6 +332,7 @@ def main():
         os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
 
     safe_barrier()
+    
     if(is_main_process()):
         logprint('training model', H.desc, 'on', H.dataset)
 
@@ -344,6 +346,17 @@ def main():
         H.num_params = num_params
         if(experiment is not None):
             experiment.log_parameter("num_params", num_params)
+    
+
+    print(
+        "HOST", socket.gethostname(),
+        "SLURM_PROCID", os.environ.get("SLURM_PROCID"),
+        "SLURM_LOCALID", os.environ.get("SLURM_LOCALID"),
+        "SLURM_NODEID", os.environ.get("SLURM_NODEID"),
+        "CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "CUDA_DEVICE", torch.cuda.current_device(),
+        flush=True
+    )
 
     if(H.mode == 'train'):
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
