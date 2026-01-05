@@ -281,7 +281,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
