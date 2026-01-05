@@ -109,6 +109,12 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+
+        if mixin is not None and self.widths[mixin] != width:
+            self.proj = get_1x1(self.widths[mixin], width)
+        else:
+            self.proj = nn.Identity()
+
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
@@ -124,6 +130,7 @@ class DecBlock(nn.Module):
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+            x = self.proj(x)
         
         residual = x
         x = self.adaIN(x, w)
