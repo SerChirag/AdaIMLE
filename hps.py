@@ -14,13 +14,12 @@ class Hyperparams(dict):
         self[attr] = value
 
 cifar10 = Hyperparams()
-cifar10.width = 512
+cifar10.width = 768
 cifar10.lr = 0.0002
 cifar10.wd = 0.01
-cifar10.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x10,32m16,32x21"
-cifar10.warmup_iters = 100
+cifar10.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x5,32m16,32x5"
 cifar10.dataset = 'cifar10'
-cifar10.n_batch = 16
+cifar10.n_batch = 196
 cifar10.imle_batch = 32 
 cifar10.ema_rate = 0.9999
 cifar10.l2_search_downsample = 1.0
@@ -33,7 +32,6 @@ imagenet32.width = 512
 imagenet32.lr = 0.0002
 imagenet32.wd = 0.01
 imagenet32.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,32x21"
-imagenet32.warmup_iters = 100
 imagenet32.dataset = 'imagenet32'
 imagenet32.n_batch = 32
 imagenet32.imle_batch = 32
@@ -50,7 +48,6 @@ stl10.lr = 0.0002
 stl10.wd = 0.01
 stl10.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x15,32m16,32x31,64m32,64x12"
 # stl10.dec_blocks = "1x1,4m1,4x8,8m4,8x10,16m8,16x10,32m16,32x10,64m32,64x10"
-stl10.warmup_iters = 100
 stl10.dataset = 'stl10'
 stl10.n_batch = 8
 stl10.imle_batch = 32 
@@ -66,7 +63,6 @@ lsun.lr = 0.0002
 lsun.wd = 0.01
 lsun.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
 # lsun.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-lsun.warmup_iters = 10
 lsun.dataset = 'lsun'
 lsun.n_batch = 4
 lsun.ema_rate = 0.9999
@@ -80,7 +76,6 @@ fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
@@ -96,7 +91,6 @@ fewshot64.wd = 0.01
 fewshot64.image_size = 64
 fewshot64.dec_blocks = '1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8'
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-fewshot64.warmup_iters = 10
 fewshot64.dataset = 'fewshot'
 fewshot64.n_batch = 8
 fewshot64.ema_rate = 0.9999
@@ -147,7 +141,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
-    parser.add_argument('--warmup_iters', type=float, default=0)  # number of iterations for warmup for scheduler
+    parser.add_argument('--warmup_iters', type=float, default=2000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
