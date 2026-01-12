@@ -45,16 +45,16 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        px_z = imle(latents, train=True)
+        loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
         num_resolutions = 1
 
         if(H.use_multi_res):
             
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
+            for i in range(2,len(px_z)-1):
+                px_z_scale = px_z[i]
+                targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), antialias=True, mode='bicubic')
                 loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)

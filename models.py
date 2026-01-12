@@ -160,30 +160,45 @@ class Decoder(nn.Module):
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
         last_res = self.resolutions[-1]
-        self.resnet = get_1x1(self.widths[last_res], H.image_channels)
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
-        self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        resnets = {}
 
-    def forward(self, latent_code, input_is_w=False):
-        if not input_is_w:
-            w = self.mapping_network(latent_code)
-        else:
-            w = latent_code
-        
+        for res in self.resolutions:
+            key = str(res)
+
+            if res < 8:
+                resnets[key] = nn.Identity()
+            else:
+                resnets[key] = get_1x1(self.widths[res], H.image_channels)
+
+
+        self.resnets = nn.ModuleDict(resnets)
+        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
+        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+
+
+    def forward(self, latent_code, train=False):
+        w = self.mapping_network(latent_code)       
+        targets = []
         x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
+            if(block.mixin is not None):
+                intermediate = self.resnets[str(block.mixin)](x)
+                targets.append(intermediate)
             x = block(x, w)
-        x = self.resnet(x)
-        x = self.gain * x + self.bias
-        return x
-
+        x = self.resnets[str(self.resolutions[-1])](x)
+        x = self.gains * x + self.biases
+        targets.append(x)
+        if(train):
+            return targets
+        else:
+            return targets[-1]
 
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, input_is_w=False):
-        return self.decoder.forward(latents, input_is_w)
+    def forward(self, latents, train=False):
+        return self.decoder.forward(latents, train)
