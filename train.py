@@ -49,7 +49,7 @@ def training_step_imle(H, n, targets, latents, labels, imle, ema_imle, optimizer
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents, labels)
+        px_z = imle(latents, labels, train=True)
         loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
         num_resolutions = 1
