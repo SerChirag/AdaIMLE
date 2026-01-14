@@ -31,7 +31,7 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -116.2373
         scale = 1. / 69.37404
-    elif H.dataset in ['fewshot', 'fewshot512']:
+    elif H.dataset in ['fewshot', 'fewshot512', 'fewshot64']:
         trX, vaX, teX = few_shot_image_folder(H.data_root, H.image_size)
         H.image_channels = 3
         shift = -116.2373
@@ -101,7 +101,7 @@ def set_up_data(H):
         print('DOING TEST')
         eval_dataset = teX
     else:
-        eval_dataset = vaX
+        eval_dataset = None
 
     device = torch.device("cuda", torch.cuda.current_device())
 

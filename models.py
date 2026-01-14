@@ -2,10 +2,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import MappingNetwork, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import AdaptiveInstanceNorm, MappingNetwork
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
+from timm.layers import trunc_normal_, DropPath
 import itertools
 from timm.layers import trunc_normal_, DropPath
 
@@ -53,6 +54,7 @@ class SEBlock(nn.Module):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return x * y.expand_as(x)
+
 
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
@@ -109,6 +111,12 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+
+        if mixin is not None and self.widths[mixin] != width:
+            self.proj = get_1x1(self.widths[mixin], width)
+        else:
+            self.proj = nn.Identity()
+
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
@@ -124,6 +132,7 @@ class DecBlock(nn.Module):
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+            x = self.proj(x)
         
         residual = x
         x = self.adaIN(x, w)
@@ -140,7 +149,7 @@ class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetwork(code_dim=H.latent_dim, n_mlp=H.n_mpl, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetwork(H)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -151,6 +160,8 @@ class Decoder(nn.Module):
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
+        last_res = self.resolutions[-1]
+        
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
         self.resnet = get_1x1(H.width, H.image_channels)
         self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
@@ -159,24 +170,47 @@ class Decoder(nn.Module):
     
         nn.init.normal_(self.embedding.weight, std=0.02)
 
-    def forward(self, latent_code, condition):
+        resnets = {}
+
+        for res in self.resolutions:
+            key = str(res)
+
+            if res < 8:
+                resnets[key] = nn.Identity()
+            else:
+                resnets[key] = get_1x1(self.widths[res], H.image_channels)
+
+
+        self.resnets = nn.ModuleDict(resnets)
+        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
+        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+
+
+    def forward(self, latent_code, condition, train=False):
         
         class_emb = self.embedding(condition)
         latent_code_2 = latent_code + class_emb
         w = self.mapping_network(latent_code_2)
         x = self.constant.repeat(latent_code_2.shape[0], 1, 1, 1)
+        targets = []
 
         for idx, block in enumerate(self.dec_blocks):
+            if(block.mixin is not None):
+                intermediate = self.resnets[str(block.mixin)](x)
+                targets.append(intermediate)
             x = block(x, w)
-        x = self.resnet(x)
-        x = self.gain * x + self.bias
-        return x
-
+        x = self.resnets[str(self.resolutions[-1])](x)
+        x = self.gains * x + self.biases
+        targets.append(x)
+        if(train):
+            return targets
+        else:
+            return targets[-1]
 
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, condition):
-        return self.decoder.forward(latents, condition)
+    def forward(self, latents, condition, train=False):
+        return self.decoder.forward(latents, condition, train=train)

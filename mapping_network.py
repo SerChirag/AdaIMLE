@@ -57,19 +57,18 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
 
 
 class MappingNetwork(nn.Module):
-    def __init__(self, code_dim=512, n_mlp=8, lr_multiplier=0.01):
+    def __init__(self, H):
         super().__init__()
 
         layers = [PixelNorm()]
-        for i in range(n_mlp):
-            layers.append(FullyConnectedLayer(code_dim, code_dim, lr_multiplier=lr_multiplier))
+        for i in range(H.n_mpl):
+            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=H.mapping_lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
 
     def forward(self, input, **kwargs):
         
-        # Since input is now a single tensor in a list, compute only one style code.
         x = self.style(input)
         return x
 
