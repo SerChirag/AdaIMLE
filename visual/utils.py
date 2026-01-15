@@ -91,3 +91,38 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
                 imageio.imwrite(f'{H.save_dir}/{subdir}/{global_index}.png', samp[j])
     
     imle.train()
+
+def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
+    # Get the current process rank and world size.
+    
+    rank = get_rank()
+    world_size = get_world_size()
+
+    if is_main_process():
+        delete_content_of_dir(f'{H.save_dir}/{subdir}')
+    
+    torch.distributed.barrier()
+
+    indices = list(range(rank, n_samp, world_size))
+    n_local = len(indices)
+
+    imle.eval()
+
+    with torch.no_grad():
+        # Process images in batches
+        for i in range(0, n_local, H.imle_batch):
+            current_batch_size = min(H.imle_batch, n_local - i)
+            # Generate random latent vectors for the current batch
+            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
+                                       device=imle.device, 
+                                       generator=sampler.generator_seed)
+            # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
+            # Generate samples using the provided sampler
+            samp = sampler.sample_multi(latent_batch, imle, None)
+            # Save each sample with its corresponding global index
+            for j in range(current_batch_size):
+                global_index = indices[i + j]
+                for k in range(2,len(samp)):
+                    imageio.imwrite(f'{H.save_dir}/{subdir}/{global_index}_{pow(2,k)}.png', samp[k][j])
+    
+    imle.train()
