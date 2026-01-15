@@ -54,7 +54,8 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
             
             for i in range(2,len(px_z)-1):
                 px_z_scale = px_z[i]
-                targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), antialias=True, mode='bicubic')
+                targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                                              antialias=True, mode='bicubic', align_corners=H.align_corners)
                 loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)
