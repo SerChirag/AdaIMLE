@@ -50,6 +50,8 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
         px_z = imle(latents, train=True)
         loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
+        if(H.frac_loss):
+            loss = loss * (8 / px_z_scale.shape[2])
         num_resolutions = 1
 
         if(H.use_multi_res):
@@ -63,12 +65,18 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 else:
                     targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
                                                   antialias=True, mode='bicubic', align_corners=H.align_corners)
-                loss_scale = loss_fn(px_z_scale, targets_scale)
+                
+                if(H.frac_loss):
+                    loss_scale = loss_fn(px_z_scale, targets_scale) * (8 / px_z_scale.shape[2])
+                else:
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
-    loss = loss / num_resolutions
+    if(not H.frac_loss):
+        loss = loss / num_resolutions
+
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
@@ -119,7 +127,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()        
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 1 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.no_grad():
                 imle.eval()
@@ -289,7 +297,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 5 == 0 and is_main_process()):
+        if (epoch % 1 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,

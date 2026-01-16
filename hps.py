@@ -217,6 +217,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_multi_res', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
     parser.add_argument('--align_corners', default=False, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
     parser.add_argument('--use_resize_right', default=False, type=lambda x: bool(strtobool(x)))  # whether to use resize_right for resizing
+    parser.add_argument('--frac_loss', default=False, type=lambda x: bool(strtobool(x)))  # whether to use fractional loss scaling
     parser.add_argument('--multi_res_scales', default='', type=str)  # extra multi-res dimension
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
