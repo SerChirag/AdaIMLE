@@ -184,7 +184,10 @@ class Decoder(nn.Module):
 
         for idx, block in enumerate(self.dec_blocks):
             if(block.mixin is not None):
-                intermediate = self.resnets[str(block.mixin)](x)
+                if(self.H.use_stopgrad_for_intermediate):
+                    intermediate = self.resnets[str(block.mixin)](x.detach())
+                else:
+                    intermediate = self.resnets[str(block.mixin)](x)
                 targets.append(intermediate)
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
