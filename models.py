@@ -141,8 +141,9 @@ class DecBlock(nn.Module):
         
         elif self.residual_type == 'convex':
             return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
-        
 
+def stopgrad_keep_graph(x):
+    return x.detach() + 0.0 * x
 
 class Decoder(nn.Module):
     def __init__(self, H):
@@ -184,11 +185,10 @@ class Decoder(nn.Module):
 
         for idx, block in enumerate(self.dec_blocks):
             if(block.mixin is not None):
-                if(self.H.use_stopgrad_for_intermediate):
-                    intermediate = self.resnets[str(block.mixin)](x.detach())
-                else:
-                    intermediate = self.resnets[str(block.mixin)](x)
+                intermediate = self.resnets[str(block.mixin)](x)
                 targets.append(intermediate)
+                if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
+                    x = x.detach()
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
         x = self.gains * x + self.biases
