@@ -278,37 +278,47 @@ def imagenet64(data_root):
 
 
 def tinyimagenet64(data_root):
+    """
+    data_root: path to tiny-imagenet-200/train
 
-    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+    Returns:
+        images: np.ndarray of shape (N, 3, 64, 64), dtype uint8
+        labels: np.ndarray of shape (N,), dtype int64, 0-based
+    Ordering:
+        - classes in sorted order (ImageFolder)
+        - within each class, images sorted by filepath
+        - overall: class-major => labels are nondecreasing
+    """
+    
+    ds = ImageFolder(root=data_root)  # classes sorted, labels 0..C-1
 
-    images, labels = [], []
+    num_classes = len(ds.classes)
 
-    for f in files:
-        batch = np.load(os.path.join(data_root, f))
-        X = batch["data"]        # shape (N, 3072)
-        Y = batch["labels"]      # shape (N,)
+    # Collect dataset indices per class label
+    class_to_indices = [[] for _ in range(num_classes)]
+    for idx, (_, label) in enumerate(ds.samples):
+        class_to_indices[label].append(idx)
 
-        X = X.reshape(-1, 3, 64, 64)
-        images.append(X)
-        labels.append(Y)
+    # Deterministic: sort within each class by filepath
+    for label in range(num_classes):
+        class_to_indices[label].sort(key=lambda i: ds.samples[i][0])
 
+    images = []
+    labels = []
 
-    images = np.concatenate(images)
-    labels = np.concatenate(labels) - 1
+    # Class-major readout => labels sorted
+    for label in range(num_classes):
+        for idx in class_to_indices[label]:
+            img, y = ds[idx]  # PIL image + label, uses ImageFolder's loader
+            arr = np.asarray(img, dtype=np.uint8)      # (64,64,3)
+            arr = arr.transpose(2, 0, 1)               # (3,64,64)
+            images.append(arr)
+            labels.append(y)
 
-    # sort by labels
-    sort_indices = np.argsort(labels)
-    images = images[sort_indices]
-    labels = labels[sort_indices]
+    images = np.stack(images, axis=0)
+    labels = np.asarray(labels, dtype=np.int64)
 
-  # Select first 100 classes
-    chosen_classes = np.arange(100)
-    mask = np.isin(labels, chosen_classes)
-    images = images[mask]
-    labels = labels[mask]
-
-    return (images, labels)
-
+    return images, labels
 
 def smallimagenet64(data_root):
 
