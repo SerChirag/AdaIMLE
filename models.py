@@ -182,9 +182,6 @@ class Decoder(nn.Module):
 
 
         self.resnets = nn.ModuleDict(resnets)
-        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
-        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-
 
     def forward(self, latent_code, condition, train=False):
         
@@ -200,7 +197,6 @@ class Decoder(nn.Module):
                 targets.append(intermediate)
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
-        x = self.gains * x + self.biases
         targets.append(x)
         if(train):
             return targets
