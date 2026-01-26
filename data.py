@@ -278,45 +278,11 @@ def imagenet64(data_root):
 
 
 def tinyimagenet64(data_root):
-    """
-    data_root: path to tiny-imagenet-200/train
 
-    Returns:
-        images: np.ndarray of shape (N, 3, 64, 64), dtype uint8
-        labels: np.ndarray of shape (N,), dtype int64, 0-based
-    Ordering:
-        - classes in sorted order (ImageFolder)
-        - within each class, images sorted by filepath
-        - overall: class-major => labels are nondecreasing
-    """
-    
-    ds = ImageFolder(root=data_root)  # classes sorted, labels 0..C-1
+    batch = np.load(data_root, mmap_mode="r")  # mmap = no RAM spike
 
-    num_classes = len(ds.classes)
-
-    # Collect dataset indices per class label
-    class_to_indices = [[] for _ in range(num_classes)]
-    for idx, (_, label) in enumerate(ds.samples):
-        class_to_indices[label].append(idx)
-
-    # Deterministic: sort within each class by filepath
-    for label in range(num_classes):
-        class_to_indices[label].sort(key=lambda i: ds.samples[i][0])
-
-    images = []
-    labels = []
-
-    # Class-major readout => labels sorted
-    for label in range(num_classes):
-        for idx in class_to_indices[label]:
-            img, y = ds[idx]  # PIL image + label, uses ImageFolder's loader
-            arr = np.asarray(img, dtype=np.uint8)      # (64,64,3)
-            arr = arr.transpose(2, 0, 1)               # (3,64,64)
-            images.append(arr)
-            labels.append(y)
-
-    images = np.stack(images, axis=0)
-    labels = np.asarray(labels, dtype=np.int64)
+    images = batch["data"]    # (N, 3, 64, 64), uint8
+    labels = batch["labels"]  # (N,), int64
 
     return images, labels
 
