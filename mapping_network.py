@@ -70,6 +70,7 @@ class MappingNetwork(nn.Module):
     def forward(self, input, **kwargs):
         
         x = self.style(input)
+        print(torch.linalg.norm(x, dim=1))
         return x
 
 

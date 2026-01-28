@@ -100,7 +100,9 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
-            samp = sampler.sample(latent_batch, imle, None)
+            labels = torch.randint(0, H.num_classes, (current_batch_size,), device=imle.device, 
+                                   generator=sampler.generator_seed)
+            samp = sampler.sample(latent_batch, labels, imle, None)
             # Save each sample with its corresponding global index
             for j in range(current_batch_size):
                 global_index = indices[i + j]

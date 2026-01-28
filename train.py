@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.train_helpers import (load_imle, load_opt, map_saved_by_type, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
@@ -376,7 +376,18 @@ def main():
             print("Generating samples for FID")
 
         imle.eval()
-        generate_and_save(H, imle, sampler, 50000)
+        # imle = map_saved_by_type(imle)
+
+        # for i, block in enumerate(imle.module.decoder.dec_blocks):
+        #     raw = block.residual_ratio.detach().float()
+        #     eff = torch.sigmoid(raw)
+        #     print(
+        #         f"Block {i:02d} (res={block.base}): "
+        #         # f"raw={raw.item():+.6f}, "
+        #         f"sigmoid={eff.item():.6f}"
+        #     )
+
+        generate_and_save(H, imle, sampler, 32)
         safe_barrier()        # if(is_main_process()):
             
         #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
