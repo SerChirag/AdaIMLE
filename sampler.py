@@ -409,76 +409,85 @@ class Sampler:
 
     def nn_search_batched(self, queries, dataset):
         """
-        Perform nearest-neighbor search in batches using self.gpu_index_flat (FAISS).
-        Each dataset sample can be matched only once (greedy removal).
-        Random permutation is applied to remove ordering bias.
+        Hard-first greedy Top-K matching (unique when possible) using self.gpu_index_flat.
 
-        Args:
-            queries: (Nq, D) torch.Tensor of query vectors (CPU or CUDA).
-            dataset: (Nd, D) torch.Tensor of database vectors (CPU or CUDA).
-            batch_size: int, number of queries per batch.
+        Logic:
+        1) Build FAISS index once on the FULL dataset.
+        2) Compute hardness score per query using k=2 margin (d2 - d1).
+        3) Process queries in hard-first order (small margin first).
+        4) For each query, pick the nearest *unused* dataset element from its Top-K list.
+        5) If all Top-K are used, fall back to 1-NN (collision allowed) so it always returns.
 
         Returns:
-            distances: torch.FloatTensor (Nq,)
-            indices: torch.LongTensor (Nq,)
+            distances: (Nq,) torch.float32   # squared L2 from FAISS
+            indices:   (Nq,) torch.long
         """
 
-        # Convert to NumPy float32 arrays for FAISS
-        q_np = np.ascontiguousarray(queries, dtype=np.float32)
-        db_np = np.ascontiguousarray(dataset, dtype=np.float32)
-        Nd = db_np.shape[0]
+        topk = self.H.imle_db_topk
+        tie_shuffle = True  # avoid ordering bias for equal/near-equal margins
 
-        # Prepare result buffers
-        Nq = q_np.shape[0]
-        all_dists = np.full(Nq, np.inf, dtype=np.float32)
-        all_indices = np.full(Nq, -1, dtype=np.int64)
+        Nq = queries.shape[0]
+        Nd = dataset.shape[0]
+        if Nq == 0:
+            return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
-        # Track availability
-        available = np.ones(Nd, dtype=bool)
+        topk = int(min(max(1, topk), Nd))
 
-        # Randomize query order to remove bias
-        perm = np.random.permutation(Nq)
+        # ---- Build index once on the full dataset ----
+        self.gpu_index_flat.reset()
+        self.gpu_index_flat.add(dataset)
 
+        # ---- 1) Hardness (margin = d2 - d1) ----
+        # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
+        if Nd >= 2:
+            D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
+            margin = D2[:, 1] - D2[:, 0]
+        else:
+            margin = np.zeros(Nq, dtype=np.float32)
+
+        if tie_shuffle:
+            perm = np.random.permutation(Nq)
+            order = perm[np.argsort(margin[perm], kind="stable")]
+        else:
+            order = np.argsort(margin, kind="stable")
+
+        # ---- 2) Get Top-K candidate lists for all queries ----
+        D, I = self.gpu_index_flat.search(queries, topk)  # (Nq,K), squared L2 + indices
+
+        # ---- 3) Greedy unique assignment in hard-first order ----
+        used = np.zeros(Nd, dtype=bool)
+
+        out_idx = np.full(Nq, -1, dtype=np.int64)
+        out_dst = np.full(Nq, np.inf, dtype=np.float32)
+
+        for qi in order:
+            cand = I[qi]   # (K,)
+            cd   = D[qi]   # (K,)
+
+            chosen = -1
+            chosen_d = None
+
+            # First unused among top-K (already sorted by distance)
+            for k in range(topk):
+                j = int(cand[k])
+                if not used[j]:
+                    chosen = j
+                    chosen_d = float(cd[k])
+                    used[j] = True
+                    break
+
+            # If no unused candidate exists, return 1-NN anyway (collision allowed)
+            if chosen == -1:
+                chosen = int(cand[0])
+                chosen_d = float(cd[0])
+
+            out_idx[qi] = chosen
+            out_dst[qi] = chosen_d
+
+        # ---- Cleanup ----
         self.gpu_index_flat.reset()
 
-        for start in range(0, Nq, self.nn_search_batch):
-            end = min(start + self.nn_search_batch, Nq)
-            batch_ids = perm[start:end]
-            q_batch = q_np[batch_ids]
-
-            # Restrict search to remaining dataset samples
-            valid_mask = np.flatnonzero(available)
-            if valid_mask.size == 0:
-                break
-
-            db_valid = db_np[valid_mask]
-            dim = db_valid.shape[1]
-
-            # Rebuild FAISS index for current available set
-            self.gpu_index_flat.reset()
-            self.gpu_index_flat.add(db_valid)
-
-            # Perform search
-            D, I = self.gpu_index_flat.search(q_batch, 1)
-            D = D.squeeze(1)
-            I = I.squeeze(1)
-            global_idx = valid_mask[I]
-
-            # Record results
-            all_dists[batch_ids] = D
-            all_indices[batch_ids] = global_idx
-
-            # Remove matched samples from availability mask
-            available[global_idx] = False
-
-        # Return as torch tensors
-        self.gpu_index_flat.reset()
-
-        distances = torch.from_numpy(all_dists)
-        indices = torch.from_numpy(all_indices)
-        return distances, indices
-
-
+        return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
 
 
     def imle_sample_force(self, gen, to_update=None):
