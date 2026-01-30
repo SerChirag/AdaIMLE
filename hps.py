@@ -14,13 +14,12 @@ class Hyperparams(dict):
         self[attr] = value
 
 cifar10 = Hyperparams()
-cifar10.width = 512
+cifar10.width = 768
 cifar10.lr = 0.0002
 cifar10.wd = 0.01
-cifar10.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x10,32m16,32x21"
-cifar10.warmup_iters = 100
+cifar10.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x5,32m16,32x5"
 cifar10.dataset = 'cifar10'
-cifar10.n_batch = 16
+cifar10.n_batch = 196
 cifar10.imle_batch = 32 
 cifar10.ema_rate = 0.9999
 cifar10.l2_search_downsample = 1.0
@@ -30,18 +29,71 @@ HPARAMS_REGISTRY['cifar10'] = cifar10
 
 imagenet32 = Hyperparams()
 imagenet32.width = 512
-imagenet32.lr = 0.0002
+imagenet32.lr = 0.0005
 imagenet32.wd = 0.01
-imagenet32.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,32x21"
-imagenet32.warmup_iters = 100
+imagenet32.dec_blocks = "1x2,4m1,4x4,8m4,8x9,16m8,16x19,32m16,32x40" 
+imagenet32.warmup_iters = 5000
 imagenet32.dataset = 'imagenet32'
 imagenet32.n_batch = 32
 imagenet32.imle_batch = 32
 imagenet32.ema_rate = 0.9999
 imagenet32.l2_search_downsample = 1.0
-imagenet32.multi_res_scales = '8,12,16,24,28'
-imagenet32.convnext_expansion = 6
+imagenet32.multi_res_scales = '12,16,20,24,28'
+imagenet32.convnext_expansion = 4
+imagenet32.num_classes = 1000
 HPARAMS_REGISTRY['imagenet32'] = imagenet32
+
+
+imagenet64 = Hyperparams()
+imagenet64.width = 512
+imagenet64.lr = 0.0002
+imagenet64.wd = 0.01
+imagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x16,32m16,32x32,64m32,64x16"
+imagenet64.warmup_iters = 100
+imagenet64.dataset = 'imagenet64'
+imagenet64.n_batch = 32
+imagenet64.imle_batch = 32
+imagenet64.ema_rate = 0.9999
+imagenet64.l2_search_downsample = 1.0
+imagenet64.multi_res_scales = '8,12,16,24,28,32,40,48'
+imagenet64.convnext_expansion = 6
+imagenet64.num_classes = 1000
+HPARAMS_REGISTRY['imagenet64'] = imagenet64
+
+tinyimagenet64 = Hyperparams()
+tinyimagenet64.width = 512
+tinyimagenet64.lr = 0.0002
+tinyimagenet64.latent_dim = 512
+tinyimagenet64.wd = 0.01
+tinyimagenet64.dec_blocks = "1x1,4m1,4x2,8m4,8x5,16m8,16x5,32m16,32x8,64m32,64x5"
+tinyimagenet64.custom_width_str = "64:512,32:1024,16:960,8:512,4:128,1:128"
+tinyimagenet64.warmup_iters = 5000
+tinyimagenet64.dataset = 'tinyimagenet64'
+tinyimagenet64.n_batch = 32
+tinyimagenet64.imle_batch = 32
+tinyimagenet64.ema_rate = 0.9999
+tinyimagenet64.l2_search_downsample = 1.0
+tinyimagenet64.multi_res_scales = '16,24,32,48'
+tinyimagenet64.convnext_expansion = 4
+tinyimagenet64.pool_size_per_class = 2500
+tinyimagenet64.num_classes = 200
+HPARAMS_REGISTRY['tinyimagenet64'] = tinyimagenet64
+
+smallimagenet64 = Hyperparams()
+smallimagenet64.width = 512
+smallimagenet64.lr = 0.0002
+smallimagenet64.wd = 0.01
+smallimagenet64.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8"
+smallimagenet64.warmup_iters = 100
+smallimagenet64.dataset = 'smallimagenet64'
+smallimagenet64.n_batch = 32
+smallimagenet64.imle_batch = 32
+smallimagenet64.ema_rate = 0.9999
+smallimagenet64.l2_search_downsample = 1.0
+smallimagenet64.multi_res_scales = '16,24,32,48'
+smallimagenet64.convnext_expansion = 6
+smallimagenet64.num_classes = 50
+HPARAMS_REGISTRY['smallimagenet64'] = smallimagenet64
 
 
 stl10 = Hyperparams()
@@ -50,7 +102,6 @@ stl10.lr = 0.0002
 stl10.wd = 0.01
 stl10.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x15,32m16,32x31,64m32,64x12"
 # stl10.dec_blocks = "1x1,4m1,4x8,8m4,8x10,16m8,16x10,32m16,32x10,64m32,64x10"
-stl10.warmup_iters = 100
 stl10.dataset = 'stl10'
 stl10.n_batch = 8
 stl10.imle_batch = 32 
@@ -66,7 +117,6 @@ lsun.lr = 0.0002
 lsun.wd = 0.01
 lsun.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
 # lsun.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-lsun.warmup_iters = 10
 lsun.dataset = 'lsun'
 lsun.n_batch = 4
 lsun.ema_rate = 0.9999
@@ -80,7 +130,6 @@ fewshot.lr = 0.0002
 fewshot.wd = 0.01
 fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-fewshot.warmup_iters = 10
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
@@ -96,7 +145,6 @@ fewshot64.wd = 0.01
 fewshot64.image_size = 64
 fewshot64.dec_blocks = '1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8'
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
-fewshot64.warmup_iters = 10
 fewshot64.dataset = 'fewshot'
 fewshot64.n_batch = 8
 fewshot64.ema_rate = 0.9999
@@ -147,11 +195,11 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
-    parser.add_argument('--warmup_iters', type=float, default=0)  # number of iterations for warmup for scheduler
+    parser.add_argument('--warmup_iters', type=float, default=2000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
-    parser.add_argument('--mapping_lr_multiplier', type=float, default=0.01)  # weight decay
+    parser.add_argument('--mapping_lr_multiplier', type=float, default=1.0)  # weight decay
     parser.add_argument('--mapping_normalization', type=str, default='layernorm', choices=['none', 'rmsnorm', 'layernorm', 'pixelnorm'])  # mapping network normalization type
 
 
@@ -166,6 +214,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta1', type=float, default=0.9)
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
+    parser.add_argument('--huber_delta', type=float, default=1.0)  # delta for huber loss
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
@@ -176,7 +225,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--residual_ratio', type=float, default=-3.0)
     parser.add_argument('--residual_type', type=str, default='convex', choices=['normal', 'convex'])
-
+    
     parser.add_argument('--accumulation_steps', type=int, default=1)  # accumulation steps
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices
@@ -193,6 +242,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
     parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
+    
+    parser.add_argument('--pool_size_per_class', type=int, default=1000)  # sampling factor for imle, i.e., force_factor * len(dataset)
+    parser.add_argument('--num_classes', type=int, default=10)  # number of classes in the dataset  
+
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
@@ -200,7 +253,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--latent_lr', type=float, default=0.0001)  # learning rate for optimizing latent codes -- not used
     parser.add_argument('--latent_decay', type=float, default=0.0)  # learning rate decay for optimizing latent codes -- not used
     parser.add_argument('--latent_epoch', type=int, default=0)  # number of epochs for optimizing latent codes -- not used
-    parser.add_argument('--reconstruct_iter_num', type=int, default=100000)  # number of iterations for reconstructing images using backtracking
+    parser.add_argument('--reconstruct_iter_num', type=int, default=1000)  # number of iterations for reconstructing images using backtracking
     parser.add_argument('--imle_force_resample', type=int, default=5)  # number of iterations to wait before ignoringthe threshold and resample anyway
     parser.add_argument('--snoise_factor', type=int, default=8)  # spatial noise factor
     parser.add_argument('--max_hierarchy', type=int, default=256)  # maximum hierarchy level for spatial noise, i.e., 64 means up to 64x64 spatial noise but not higher resolution
@@ -228,6 +281,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
+    parser.add_argument('--loss_type', type=str, default='l2', choices=['huber', 'l2']) # search type for loss type
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
@@ -242,13 +296,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
     parser.add_argument("--convnext_norm", default='rmsnorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
-    parser.add_argument("--convnext_norm_eps", type=float, default=1e-3, help="epsilon for convnext norm")
-    parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
-    parser.add_argument("--use_convnext_weight", default=False, type=lambda x: bool(strtobool(x)))  # whether to use se block
-
-    parser.add_argument("--nn_search_batch", type=int, default=256, help="batch size for nearest neighbour search")
-
-
+    parser.add_argument("--convnext_norm_eps", type=float, default=1e-6, help="epsilon for convnext norm")
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")

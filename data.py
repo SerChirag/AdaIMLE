@@ -10,7 +10,7 @@ from PIL import Image
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-from helpers.utils import get_world_size
+from helpers.utils import ZippedDataset, get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
 
@@ -24,7 +24,9 @@ def set_up_data(H):
     shift_loss = -127.5
     scale_loss = 1. / 127.5
     if H.dataset == 'imagenet32':
-        trX, vaX, teX = imagenet32(H.data_root)
+        (trX, trY) = imagenet32(H.data_root)
+        vaX = None
+        teX = None
         H.image_size = 32
         H.image_channels = 3
         shift = -116.2373
@@ -35,7 +37,25 @@ def set_up_data(H):
         shift = -116.2373
         scale = 1. / 69.37404
     elif H.dataset == 'imagenet64':
-        trX, vaX, teX = imagenet64(H.data_root)
+        (trX, trY) = imagenet64(H.data_root)
+        vaX = None
+        teX = None
+        H.image_size = 64
+        H.image_channels = 3
+        shift = -115.92961967
+        scale = 1. / 69.37404
+    elif H.dataset == 'tinyimagenet64':
+        (trX, trY) = tinyimagenet64(H.data_root)
+        vaX = None
+        teX = None
+        H.image_size = 64
+        H.image_channels = 3
+        shift = -115.92961967
+        scale = 1. / 69.37404
+    elif H.dataset == 'smallimagenet64':
+        (trX, trY) = smallimagenet64(H.data_root)
+        vaX = None
+        teX = None
         H.image_size = 64
         H.image_channels = 3
         shift = -115.92961967
@@ -55,7 +75,7 @@ def set_up_data(H):
         shift_loss = -0.5
         scale_loss = 2.0
     elif H.dataset == 'cifar10':
-        (trX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
+        (trX, trY), (vaX, varY), (teX, teY) = cifar10(H.data_root, one_hot=False)
         H.image_size = 32
         H.image_channels = 3
         shift = -120.63838
@@ -112,13 +132,31 @@ def set_up_data(H):
         untranspose = True
     
     elif H.dataset == 'imagenet32':
-        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'tinyimagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'smallimagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+    
+    elif H.dataset == 'imagenet64':
+        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
         untranspose = False
 
-    elif H.dataset not in ['fewshot', 'fewshot512', 'fewshot64']:
-        train_data = TensorDataset(torch.as_tensor(trX))
+    elif H.dataset not in ['fewshot', 'fewshot512']:
+        train_data = TensorDataset(torch.as_tensor(trX), torch.as_tensor(trY))
         valid_data = None
         untranspose = False
         train_len = len(train_data)
@@ -148,8 +186,8 @@ def set_up_data(H):
         'takes in a data example and returns the preprocessed input'
         'as well as the input processed for the loss'
         if untranspose:
-            x[0] = x[0].permute(0, 2, 3, 1)
-        inp = x[0].to(device=device, non_blocking=True).float()
+            x = x.permute(0, 2, 3, 1)
+        inp = x.to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
         # out = inp.clone()
         # inp.add_(shift).mul_(scale)
@@ -157,7 +195,7 @@ def set_up_data(H):
         #     5 bits of precision
         #     out.mul_(1. / 8.).floor_().mul_(8.)
         # out.add_(shift_loss).mul_(scale_loss)
-        return inp, inp
+        return inp
 
     return H, train_data, valid_data, preprocess_func
 
@@ -207,16 +245,112 @@ def imagenet32(data_root):
     images = np.concatenate(images)
     labels = np.concatenate(labels) - 1
 
-    return images, None, None
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
 
+    return (images, labels)
 
 def imagenet64(data_root):
-    trX = np.load(os.path.join(data_root, 'imagenet64-train.npy'), mmap_mode='r')
-    tr_va_split_indices = np.random.permutation(trX.shape[0])
-    train = trX[tr_va_split_indices[:-5000]]
-    valid = trX[tr_va_split_indices[-5000:]]
-    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')  # this is test.
-    return train, valid, test
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+        
+        X = X.reshape(-1, 3, 64, 64)
+        images.append(X)
+        labels.append(Y)
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) - 1
+
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
+
+
+    return (images, labels)
+
+
+def tinyimagenet64(data_root):
+    """
+    data_root: path to tiny-imagenet-200/train
+
+    Returns:
+        images: np.ndarray of shape (N, 3, 64, 64), dtype uint8
+        labels: np.ndarray of shape (N,), dtype int64, 0-based
+    Ordering:
+        - classes in sorted order (ImageFolder)
+        - within each class, images sorted by filepath
+        - overall: class-major => labels are nondecreasing
+    """
+    
+    ds = ImageFolder(root=data_root)  # classes sorted, labels 0..C-1
+
+    num_classes = len(ds.classes)
+
+    # Collect dataset indices per class label
+    class_to_indices = [[] for _ in range(num_classes)]
+    for idx, (_, label) in enumerate(ds.samples):
+        class_to_indices[label].append(idx)
+
+    # Deterministic: sort within each class by filepath
+    for label in range(num_classes):
+        class_to_indices[label].sort(key=lambda i: ds.samples[i][0])
+
+    images = []
+    labels = []
+
+    # Class-major readout => labels sorted
+    for label in range(num_classes):
+        for idx in class_to_indices[label]:
+            img, y = ds[idx]  # PIL image + label, uses ImageFolder's loader
+            arr = np.asarray(img, dtype=np.uint8)      # (64,64,3)
+            arr = arr.transpose(2, 0, 1)               # (3,64,64)
+            images.append(arr)
+            labels.append(y)
+
+    images = np.stack(images, axis=0)
+    labels = np.asarray(labels, dtype=np.int64)
+
+    return images, labels
+
+def smallimagenet64(data_root):
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+
+        X = X.reshape(-1, 3, 64, 64)
+        images.append(X)
+        labels.append(Y)
+
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) - 1
+
+    # sort by labels
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
+
+  # Select first 100 classes
+    chosen_classes = np.arange(50)
+    mask = np.isin(labels, chosen_classes)
+    images = images[mask]
+    labels = labels[mask]
+
+    return (images, labels)
 
 
 def ffhq1024(data_root):
@@ -276,10 +410,11 @@ def cifar10(data_root, one_hot=True):
     teY = np.asarray(te_data['labels'])
     trX = trX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
     teX = teX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+    sort_indices = np.argsort(trY)
+    trX = trX[sort_indices]
+    trY = trY[sort_indices]
     if one_hot:
         trY = np.eye(10, dtype=np.float32)[trY]
-        teY = np.eye(10, dtype=np.float32)[teY]
     else:
         trY = np.reshape(trY, [-1, 1])
-        teY = np.reshape(teY, [-1, 1])
-    return (trX, trY), (teX, teY)
+    return (trX, trY), (None, None), (None, None)

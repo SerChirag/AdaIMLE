@@ -27,6 +27,10 @@ import torch.multiprocessing as mp
 import datetime
 import os
 import torch.distributed as dist
+import gc
+import os, socket
+
+torch.set_float32_matmul_precision('high')
 
 def isValid(num):
     return not num != num
@@ -39,22 +43,22 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, n, targets, latents, labels, imle, ema_imle, optimizer, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        px_z = imle(latents, labels, train=True)
+        loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
         num_resolutions = 1
 
         if(H.use_multi_res):
             
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
+            for i in range(2,len(px_z)-1):
+                px_z_scale = px_z[i]
+                targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), antialias=True, mode='bicubic')
                 loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)
@@ -86,13 +90,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     sampler.init_projection(data_train)
     
     safe_barrier()
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
+    viz_batch_original, viz_labels, viz_indices = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
+    sampler.viz_indices = viz_indices.tolist()
 
     latent_for_visualization = []
 
     if(is_main_process()):
         latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
+        labels_random = torch.randint(0, H.num_classes, (H.num_rows_visualize, H.num_images_visualize)).to(device)
     
     mean_loss = float('inf')
     metrics = {
@@ -104,6 +110,23 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
+            try:
+                del comb_dataset
+            except: 
+                pass
+
+            try:
+                del train_sampler
+            except:
+                pass
+
+            try:
+                del data_loader
+            except:
+                pass
+
+            gc.collect()
+            safe_barrier()
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             torch.cuda.empty_cache()
@@ -111,11 +134,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()        
 
 
-        if (epoch % 20 == 0 and is_main_process()):
-            latents = sampler.selected_latents[:H.num_images_visualize]
+        if (epoch % 5 == 0 and is_main_process()):
+            latents = sampler.selected_latents[viz_indices]
             with torch.no_grad():
                 imle.eval()
-                generate_for_NN(sampler, viz_batch_original, latents,
+                generate_for_NN(sampler, viz_batch_original, latents, viz_labels, 
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
@@ -132,9 +155,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                            seed=H.seed)
         
         data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                    pin_memory=True, num_workers=4, 
-                                    persistent_workers=True, 
-                                    multiprocessing_context="spawn",
+                                    pin_memory=False, num_workers=0, 
+                                    persistent_workers=False, 
                                     shuffle=False)
 
         # If using distributed sampler, set the epoch for shuffling
@@ -150,15 +172,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
 
-
         for cur, indices in data_loader:
-            x = cur[0]
+            x = cur[0][0]
+            labels = torch.squeeze(cur[0][1])
             latents = cur[1][0]
-            _, target = preprocess_fn(x)
-            target = target.to(device)
+            target = preprocess_fn(x).to(device)
             latents = latents.to(device)
+            labels = labels.to(device)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
+            loss = training_step_imle(H, target.shape[0], target, latents, labels, imle, ema_imle,
                                optimizer, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()
@@ -181,17 +203,16 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     imle.eval()
                     with torch.no_grad():
                         generate_visualization(H, sampler, viz_batch_original,
-                                                sampler.selected_latents[0: H.num_images_visualize],
-                                                sampler.last_selected_latents[0: H.num_images_visualize],
+                                                sampler.selected_latents[viz_indices],
+                                                sampler.last_selected_latents,
+                                                viz_labels,
                                                 latent_for_visualization,
+                                                labels_random,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
                     imle.train()
             iterate += 1
-            
-            
-
-            
+                       
             if iterate % H.iters_per_ckpt == 0 and is_main_process():
                 fp = os.path.join(H.save_dir, f'iter-{iterate}')
                 logprint(f'Saving model@ {iterate} to {fp}')
@@ -213,39 +234,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-
-        ############ Can be removed ###############
-        # if(is_main_process() and epoch % 5 == 0):
-            
-        #     cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-
-
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(data_train_tensor, imle, 
-        #                                                                                     dists=cur_dists,  
-        #                                                                                     dists_lpips=cur_dists_lpips,
-        #                                                                                     dists_l2=cur_dists_l2, 
-        #                                                                                     logging=True)
-
-        #     # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                    
-        #     metrics = {
-        #         'mean_loss': torch.mean(cur_dists).item(),
-        #         'std_loss': torch.std(cur_dists).item(),
-        #         'max_loss': torch.max(cur_dists).item(),
-        #         'min_loss': torch.min(cur_dists).item(),
-        #         'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-        #         'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-        #         'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-        #         'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-        #         'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-        #         'std_loss_l2': torch.std(cur_dists_l2).item(),
-        #         'max_loss_l2': torch.max(cur_dists_l2).item(),
-        #         'min_loss_l2': torch.min(cur_dists_l2).item(),
-        #     }
-
-        # ############ Can be removed ###############
         
         metrics = {
             'mean_loss': mean_loss,
@@ -281,14 +269,17 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,
-                                        sampler.selected_latents[0: H.num_images_visualize],
-                                        sampler.last_selected_latents[0: H.num_images_visualize],
+                                        sampler.selected_latents[viz_indices],
+                                        sampler.last_selected_latents,
+                                        viz_labels,
                                         latent_for_visualization,
-                                        viz_batch_original.shape, imle,
+                                        labels_random,
+                                        viz_batch_original.shape, 
+                                        imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
             imle.train()
 
@@ -311,7 +302,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 def main():
     init_distributed_mode()
-    
+
     H, logprint = set_up_hyperparams()
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
@@ -345,6 +336,7 @@ def main():
         os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
 
     safe_barrier()
+    
     if(is_main_process()):
         logprint('training model', H.desc, 'on', H.dataset)
 
@@ -352,11 +344,23 @@ def main():
 
     if(is_main_process()):
         num_params = sum(p.numel() for p in imle.parameters())
-        print("Number of parameters in IMLE: ", num_params)
-        logprint("Number of parameters in IMLE: ", num_params)
+        # print with formatting for millions
+        print(f"Number of parameters in IMLE: {num_params / 1e6:.8f} million")
+        logprint("Number of parameters in IMLE: ", f"{num_params / 1e6:.8f} million")
         H.num_params = num_params
         if(experiment is not None):
             experiment.log_parameter("num_params", num_params)
+    
+
+    print(
+        "HOST", socket.gethostname(),
+        "SLURM_PROCID", os.environ.get("SLURM_PROCID"),
+        "SLURM_LOCALID", os.environ.get("SLURM_LOCALID"),
+        "SLURM_NODEID", os.environ.get("SLURM_NODEID"),
+        "CUDA_VISIBLE_DEVICES", os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "CUDA_DEVICE", torch.cuda.current_device(),
+        flush=True
+    )
 
     if(H.mode == 'train'):
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)

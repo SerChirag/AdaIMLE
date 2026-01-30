@@ -5,7 +5,7 @@ import time
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 from transformers import AutoImageProcessor, AutoModel
 
 from LPNet import LPNet
@@ -24,44 +24,29 @@ class Sampler:
         self.world_size = get_world_size()
         self.rank = get_rank()
 
-        self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.pool_size = ceil(int(H.pool_size_per_class) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
-        self.entire_ds = torch.arange(sz)
-        self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
+        self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float16)
+        self.last_selected_latents = torch.empty([H.num_images_visualize, H.latent_dim], dtype=torch.float16)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
 
-        self.selected_dists = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists[:] = np.inf
-        self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
-
-        ############
-        #  Can be removed
-        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_lpips[:] = np.inf
-
-        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_l2[:] = np.inf 
-        #############
-
-        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
+        self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float16)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
-                                        dtype=torch.float32)
+                                        dtype=torch.float16)
 
-        self.pool_latents = None
-
+        self.pool_latents = torch.empty([self.pool_size, H.latent_dim], dtype=torch.float16, device=self.device)
         self.projections = []
         self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
         self.lpips_net.eval()
         self.lpips_net.requires_grad_(False)
+        self.delta = H.huber_delta 
 
         ## TODO: check this is required or not
         if(self.H.compile):
@@ -137,8 +122,8 @@ class Sampler:
 
         self.dci_dim = sum_dims
 
-        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
-        self.pool_samples_proj = None
+        self.dataset_proj = None
+        self.pool_samples_proj = np.empty([self.pool_size, self.dci_dim], dtype=np.float16)
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -154,8 +139,32 @@ class Sampler:
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.gpu_index_flat = index_flat
+
+        self.num_classes = H.num_classes
+        self.local_classes = self._distribute_classes_across_gpus()
+        self.class_ranges = None
+        self.viz_indices = None
+
+
+    def _distribute_classes_across_gpus(self):
+        """Distribute classes across GPUs for load balancing."""
+        classes_per_gpu = self.num_classes // self.world_size
+        remainder = self.num_classes % self.world_size
+        
+        if self.rank < remainder:
+            local_classes_count = classes_per_gpu + 1
+            start_class = self.rank * local_classes_count
+        else:
+            local_classes_count = classes_per_gpu
+            start_class = self.rank * local_classes_count + remainder
+        
+        local_classes = list(range(start_class, start_class + local_classes_count))
+        
+        if is_main_process():
+            print(f"GPU {self.rank}: handling classes {local_classes}")
+        
+        return local_classes
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]
@@ -216,35 +225,60 @@ class Sampler:
         return combined_feat
 
     def init_projection(self, dataset):
+        # Filter indices for local classes only
+        indices = [i for i, (_, y) in enumerate(dataset) if y in self.local_classes]
+        subset = Subset(dataset, indices)
+
+            # Step 2: build class_ranges directly from labels
+        self.class_ranges = {}
+        start = 0
+        prev_cls = None
+
+        for j, idx in enumerate(indices):
+            _, y = dataset[idx]
+            lbl = int(y if not isinstance(y, (list, tuple)) else y[0])  # flatten
+            if lbl != prev_cls:
+                if prev_cls is not None:
+                    self.class_ranges[prev_cls] = (start, j)  # close previous class
+                start = j
+                prev_cls = lbl
+        # close the last class
+        if prev_cls is not None:
+            self.class_ranges[prev_cls] = (start, len(indices))
+        
+        self.dataset_proj = torch.empty([len(indices), self.dci_dim], dtype=torch.float16, device='cpu')
 
         dataloader = DataLoader(
-            dataset,
-            batch_size=self.H.imle_batch,      # Get 32 samples per batch
+            subset,
+            batch_size=self.H.imle_batch,
         )
 
-        if(is_main_process()):
-            print("Starting Initialization")
+        if is_main_process():
+            print(f"Starting Initialization for classes {self.local_classes}")
 
         for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'lpips'):
-                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x[0])).cpu()
             elif(self.H.search_type == 'l2'):
-                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x[0])).cpu()
             # elif(self.H.search_type == 'vae'):
-            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
+            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x[0])[1]).cpu()
             elif(self.H.search_type == 'combined'):
-                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x[0])).cpu()
             else:
                 exit()
 
-        self.dataset_proj = self.dataset_proj.cpu().numpy().astype(np.float32)
+        # Convert to numpy
+        self.dataset_proj = self.dataset_proj.numpy().astype(np.float16)
+        # print(f"Rank {self.rank} class ranges: {self.class_ranges}")
 
-    def sample(self, latents, gen, snoise=None):
+
+    def sample(self, latents, labels, gen, snoise=None):
         with torch.no_grad():
             with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
-                px_z = gen(latents, None).permute(0, 2, 3, 1)
+                px_z = gen(latents, labels).permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
                 xhat = xhat.detach().cpu().numpy()
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
@@ -271,7 +305,10 @@ class Sampler:
         if use_mean:
             return res.mean()
         else:
-            return res
+            return res.mean(dim=tuple(range(1, res.ndim)))
+    
+    def pseudo_huber(self, diff):
+        return 2.0 * self.delta**2 * (torch.sqrt(1 + (diff / (self.delta)**2)) - 1)
     
     def get_dino_loss(self, inp, tar, use_mean=True):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
@@ -280,105 +317,43 @@ class Sampler:
         if use_mean:
             return dino_loss.mean()
         else:
-            return dino_loss
+            return dino_loss.mean(dim=tuple(range(1, dino_loss.ndim)))
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def calc_loss(self, inp, tar):
 
-        if use_mean:       
-            l2_loss = torch.mean(self.l2_loss(inp, tar))
-            res = 0
-            
-            lpips_loss = self.get_lpips_loss(inp, tar)
-
-            if(inp.shape[2] < 32):
-                dino_loss = self.get_dino_loss(inp, tar)
-            else:
-                dino_loss = torch.tensor(0.0, device=self.device)
-
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-            
-            if logging:
-                return loss, res.mean(), l2_loss.mean()
-            else:
-                return loss
-
-        else:
-            inp_feat, inp_shape = self.lpips_net(inp)
-            tar_feat, _ = self.lpips_net(tar)
-            res = 0
-            for i, g_feat in enumerate(inp_feat):
-                res += torch.sum((g_feat - tar_feat[i]) ** 2, dim=1) / (inp_shape[i] ** 2)
-            l2_loss = torch.mean(self.l2_loss(inp, tar), dim=[1, 2, 3])
-            loss = self.H.lpips_coef * res + self.H.l2_coef * l2_loss
-            if logging:
-                return loss, res.mean(), l2_loss
-            else:
-                return loss
-            
-    ############### Can be removed ###########
-    
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
-        if dists is None:
-            dists = self.selected_dists
-        if dists_lpips is None:
-            dists_lpips = self.selected_dists_lpips
-        if dists_l2 is None:
-            dists_l2 = self.selected_dists_l2
-        if latents is None:
-            latents = self.selected_latents
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
-            with torch.no_grad():
-                with autocast(device_type='cuda'):
-                    out = gen(cur_latents, None)
-                    if(logging):
-                        dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
-                        dists[batch_slice] = torch.squeeze(dist)
-                        dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
-                        dists_l2[batch_slice] = torch.squeeze(dist_l2)
-                    else:
-                        dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                        dists[batch_slice] = torch.squeeze(dist)
+        l2_loss = self.l2_loss(inp, tar).mean(dim=tuple(range(1, inp.ndim)))
+        res = 0
         
-        if(logging):
-            return dists, dists_lpips, dists_l2
+        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=False)
+
+        if(inp.shape[2] < 32):
+            dino_loss = self.get_dino_loss(inp, tar, use_mean=False)
         else:
-            return dists
-    
-    ############### Can be removed ###########
+            dino_loss = torch.tensor(0.0, device=self.device)
 
+        residuals = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
 
-    def resample_pool(self, gen):
+        if(self.H.loss_type == 'huber'):
+            loss = self.pseudo_huber(residuals).mean()
+        else:
+            loss = residuals.mean() 
+        return loss
+        
+            
+    def resample_pool(self, gen, class_condition):
 
         gen.eval()   
 
-        # Determine local pool size
-        local_pool_size = ceil(self.pool_size / self.world_size)
+        self.pool_latents.normal_()
 
-
-        # Generate local pool latents and prepare container for projected features
-        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), 
-                                         device=self.device, 
-                                         generator=self.generator_seed)
-        # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
-
-        local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
-
-        # Process local chunk in batches
-        for j in range(local_pool_size // self.H.imle_batch):
+        for j in range(self.pool_size // self.H.imle_batch):
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
-            cur_latents = local_pool_latents[batch_slice]
+            cur_latents = self.pool_latents[batch_slice]
             with torch.no_grad():
                 with autocast(device_type='cuda'):
-                    outputs = gen(cur_latents, None)
+                    class_tensor = torch.full((cur_latents.shape[0],), class_condition, 
+                                              dtype=torch.long, device=cur_latents.device)
+                    outputs = gen(cur_latents, class_tensor)
                     if self.H.search_type == 'lpips':
                         proj = self.get_projected(outputs, False)
                     elif self.H.search_type == 'l2':
@@ -389,14 +364,7 @@ class Sampler:
                         proj = self.get_combined_feature(outputs, False)
                     else:
                         proj = self.get_combined_feature(outputs, False)
-                    local_pool_proj[batch_slice] = proj
-
-        safe_barrier()
-        gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
-        gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
-
-        torch.distributed.all_gather(gathered_latents, local_pool_latents)
-        torch.distributed.all_gather(gathered_proj, local_pool_proj)
+                    self.pool_samples_proj[batch_slice] = proj.to('cpu').detach().cpu().numpy().astype(np.float16)
 
         gen.train()
 
@@ -487,19 +455,18 @@ class Sampler:
         performs NN search locally, and then the results are merged and broadcast so that
         all processes end up with the complete global results.
         """
+        
         if is_main_process():
+            self.last_selected_latents = self.selected_latents[self.viz_indices].clone()
             t1 = time.time()
             print("Starting pool resampling...")
 
-        # Resample pool first (each process contributes its part);
-        # this updates self.pool_samples_proj and self.pool_latents.
-        self.resample_pool(gen)
-        safe_barrier()  # Ensure all processes complete the pool resample
+        all_pool_latents = []
 
-        if(is_main_process()):
-            print(f"Resampling pool took {time.time() - t1:.2f} seconds")
+        for i in self.local_classes:
+            self.resample_pool(gen, i)
         
-        torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
         self.selected_dists_tmp[:] = np.inf
 
@@ -508,7 +475,6 @@ class Sampler:
             if(is_main_process()):
 
                 local_ds_feats = np.ascontiguousarray(self.dataset_proj, dtype=np.float32)
-
                 # Pool features (as computed from resample_pool).
                 pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
 
@@ -542,8 +508,8 @@ class Sampler:
             self.last_selected_latents = self.selected_latents.clone()
             self.selected_latents = self.selected_latents_tmp.clone()
 
-            if is_main_process():
-                print(f"Force resampling took {time.time() - t1:.2f} seconds")
+        if is_main_process():
+            print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         safe_barrier()  # Ensure synchronization before leaving the function
         self.gpu_index_flat.reset()
