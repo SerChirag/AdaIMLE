@@ -27,6 +27,8 @@ import torch.multiprocessing as mp
 import datetime
 import os
 import torch.distributed as dist
+import resize_right
+import resize_right.interp_methods as interp_methods
 
 def isValid(num):
     return not num != num
@@ -45,22 +47,36 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
 
-        px_z = imle(latents)
-        loss = loss_fn(px_z, targets.permute(0, 3, 1, 2))
+        px_z = imle(latents, train=True)
+        loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
+        if(H.frac_loss):
+            loss = loss * (8 / px_z[-1].shape[2])
         num_resolutions = 1
 
         if(H.use_multi_res):
             
-            for scale in H['multi_res_scales']:
-                px_z_scale = F.interpolate(px_z, size=(scale,scale), antialias=True, mode='bicubic')
-                targets_scale = F.interpolate(targets_permuted, size=(scale,scale), antialias=True, mode='bicubic')
-                loss_scale = loss_fn(px_z_scale, targets_scale)
+            for i in range(2,len(px_z)-1):
+                px_z_scale = px_z[i]
+
+                if(H.use_resize_right):
+                    targets_scale = resize_right.resize(targets_permuted, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                                                        interp_method=interp_methods.cubic, antialiasing =True)
+                else:
+                    targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                                                  antialias=True, mode='bicubic', align_corners=H.align_corners)
+                
+                if(H.frac_loss):
+                    loss_scale = loss_fn(px_z_scale, targets_scale) * (8 / px_z_scale.shape[2])
+                else:
+                    loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
-    loss = loss / num_resolutions
+    if(not H.frac_loss):
+        loss = loss / num_resolutions
+
     loss = loss / (H.accumulation_steps)
     
     scaler.scale(loss).backward()
@@ -168,6 +184,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             # When we have accumulated enough mini-batches, perform the step.
             if accum_counter % H.accumulation_steps == 0:
+                scaler.unscale_(optimizer)  # Unscale gradients before clipping
+                torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 scheduler.step()
@@ -197,6 +215,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
+            scaler.unscale_(optimizer)  # Unscale gradients before clipping
+            torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -277,7 +297,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 25 == 0 and is_main_process()):
+        if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
             with torch.no_grad():
                 generate_visualization(H, sampler, viz_batch_original,

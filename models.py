@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from mapping_network import FullyConnectedLayer, MappingNetowrk, AdaptiveInstanceNorm, NoiseInjection
+from mapping_network import AdaptiveInstanceNorm, MappingNetwork
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -53,22 +53,17 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y.expand_as(x)
 
+
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
         super().__init__()
         self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
-        self.H = H
 
         if(H.convnext_norm == 'layernorm'):
             self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
         elif(H.convnext_norm == 'rmsnorm'):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
-        if(H.convnext_norm == 'layernorm'):
-            self.norm2 = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm2 = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
         self.gelu = nn.GELU()
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
@@ -81,17 +76,13 @@ class ConvNeXtBlock(nn.Module):
             # Indentity layer if SE is not used
             self.se = nn.Identity()
 
-
-        self.dropout = nn.Dropout2d(p=dropout)  # <- NEW LINE
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
-            if(self.H.use_convnext_weight):
-                trunc_normal_(m.weight, std=.02)
-            if(self.H.use_convnext_bias):
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
+            # trunc_normal_(m.weight, std=.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     
     def forward(self, x):
@@ -103,10 +94,11 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        x = self.norm2(x)
+        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
+
         return x
 
 class DecBlock(nn.Module):
@@ -117,6 +109,12 @@ class DecBlock(nn.Module):
         self.H = H
         self.widths = get_width_settings(H.width, H.custom_width_str)
         width = self.widths[res]
+
+        if mixin is not None and self.widths[mixin] != width:
+            self.proj = get_1x1(self.widths[mixin], width)
+        else:
+            self.proj = nn.Identity()
+
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
         self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
                                     expansion=H.convnext_expansion, 
@@ -132,6 +130,7 @@ class DecBlock(nn.Module):
     def forward(self, x, w):
         if self.mixin is not None:
             x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
+            x = self.proj(x)
         
         residual = x
         x = self.adaIN(x, w)
@@ -142,12 +141,15 @@ class DecBlock(nn.Module):
         
         elif self.residual_type == 'convex':
             return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
-        
+
+def stopgrad_keep_graph(x):
+    return x.detach() + 0.0 * x
+
 class Decoder(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetowrk(H, lr_multiplier=H.mapping_lr_multiplier)
+        self.mapping_network = MappingNetwork(H)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -158,33 +160,48 @@ class Decoder(nn.Module):
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)
         first_res = self.resolutions[0]
+        last_res = self.resolutions[-1]
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        self.resnet = get_1x1(H.width, H.image_channels)
-        self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
-        self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
-        self.linear_proj = FullyConnectedLayer(H.latent_dim, self.widths[first_res])
+        resnets = {}
 
-    def forward(self, latent_code, input_is_w=False):
-        if not input_is_w:
-            w = self.mapping_network(latent_code)
-        else:
-            w = latent_code
-        
-        # x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
-        # x = self.linear_proj(latent_code).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
-        x = self.linear_proj(w).unsqueeze(-1).unsqueeze(-1).repeat(1, 1, self.resolutions[0], self.resolutions[0])
+        for res in self.resolutions:
+            key = str(res)
+
+            if res < 8:
+                resnets[key] = nn.Identity()
+            else:
+                resnets[key] = get_1x1(self.widths[res], H.image_channels)
+
+
+        self.resnets = nn.ModuleDict(resnets)
+        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
+        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+
+
+    def forward(self, latent_code, train=False):
+        w = self.mapping_network(latent_code)       
+        targets = []
+        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
 
         for idx, block in enumerate(self.dec_blocks):
+            if(block.mixin is not None):
+                intermediate = self.resnets[str(block.mixin)](x)
+                targets.append(intermediate)
+                if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
+                    x = x.detach()
             x = block(x, w)
-        x = self.resnet(x)
-        x = self.gain * x + self.bias
-        return x
-
+        x = self.resnets[str(self.resolutions[-1])](x)
+        x = self.gains * x + self.biases
+        targets.append(x)
+        if(train):
+            return targets
+        else:
+            return targets[-1]
 
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, input_is_w=False):
-        return self.decoder.forward(latents, input_is_w)
+    def forward(self, latents, train=False):
+        return self.decoder.forward(latents, train)

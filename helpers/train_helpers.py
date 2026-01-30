@@ -221,7 +221,7 @@ def load_opt(H, imle, logprint):
     optimizer = AdamW(imle.parameters(), weight_decay=H.wd, lr=H.lr, betas=(H.adam_beta1, H.adam_beta2), eps=H.adam_eps)
     scheduler1 = LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
     cosine_iters = H.total_iters - H.warmup_iters
-    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters)
+    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
     scaler = torch.GradScaler(device="cuda")
     

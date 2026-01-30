@@ -55,7 +55,7 @@ def set_up_data(H):
         shift_loss = -0.5
         scale_loss = 2.0
     elif H.dataset == 'cifar10':
-        (trX, _), (vaX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
+        (trX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
         H.image_size = 32
         H.image_channels = 3
         shift = -120.63838
@@ -81,7 +81,7 @@ def set_up_data(H):
         print('DOING TEST')
         eval_dataset = teX
     else:
-        eval_dataset = vaX
+        eval_dataset = None
 
     device = torch.device("cuda", torch.cuda.current_device())
 
@@ -119,7 +119,7 @@ def set_up_data(H):
 
     elif H.dataset not in ['fewshot', 'fewshot512', 'fewshot64']:
         train_data = TensorDataset(torch.as_tensor(trX))
-        valid_data = TensorDataset(torch.as_tensor(eval_dataset))
+        valid_data = None
         untranspose = False
         train_len = len(train_data)
 
@@ -276,13 +276,10 @@ def cifar10(data_root, one_hot=True):
     teY = np.asarray(te_data['labels'])
     trX = trX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
     teX = teX.reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
-    trX, vaX, trY, vaY = train_test_split(trX, trY, test_size=5000, random_state=11172018)
     if one_hot:
         trY = np.eye(10, dtype=np.float32)[trY]
-        vaY = np.eye(10, dtype=np.float32)[vaY]
         teY = np.eye(10, dtype=np.float32)[teY]
     else:
         trY = np.reshape(trY, [-1, 1])
-        vaY = np.reshape(vaY, [-1, 1])
         teY = np.reshape(teY, [-1, 1])
-    return (trX, trY), (vaX, vaY), (teX, teY)
+    return (trX, trY), (teX, teY)

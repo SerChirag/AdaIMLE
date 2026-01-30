@@ -56,29 +56,19 @@ def normalize_2nd_moment(x, dim=1, eps=1e-6):
     return x * (x.square().mean(dim=dim, keepdim=True) + eps).rsqrt()
 
 
-class MappingNetowrk(nn.Module):
-    def __init__(self, H, lr_multiplier=0.01):
+class MappingNetwork(nn.Module):
+    def __init__(self, H):
         super().__init__()
 
         layers = [PixelNorm()]
         for i in range(H.n_mpl):
-            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=lr_multiplier))
-            # if(H.mapping_normalization == 'layernorm'):
-            #     layers.append(nn.LayerNorm(H.latent_dim))
-            # elif(H.mapping_normalization == 'rmsnorm'):
-            #     layers.append(nn.RMSNorm(H.latent_dim))
-            # elif(H.mapping_normalization == 'pixelnorm'):
-            #     layers.append(PixelNorm())
-            # else:
-            #     pass
-            # layers.append(PixelNorm())
+            layers.append(FullyConnectedLayer(H.latent_dim, H.latent_dim, lr_multiplier=H.mapping_lr_multiplier))
             layers.append(nn.LeakyReLU(0.2))
 
         self.style = nn.Sequential(*layers)
 
     def forward(self, input, **kwargs):
         
-        # Since input is now a single tensor in a list, compute only one style code.
         x = self.style(input)
         return x
 
@@ -113,20 +103,22 @@ class LayerNorm(nn.Module):
 class AdaptiveInstanceNorm(nn.Module):
     def __init__(self, in_channel, style_dim):
         super().__init__()
-
+        
         self.norm = nn.InstanceNorm2d(in_channel, eps=1e-3)
         self.style = EqualLinear(style_dim, in_channel * 2)
 
-        # self.style.linear.bias.data[:in_channel] = 1
-        # self.style.linear.bias.data[in_channel:] = 0
+        # if(H.zero_init):
+        nn.init.zeros_(self.style.linear.bias)
 
     def forward(self, input, style):
         style = self.style(style).unsqueeze(2).unsqueeze(3)
         gamma, beta = style.chunk(2, 1)
 
-        out = input
-        if input.shape[3] > 1:
+        if input.shape[-1] > 1:
             out = self.norm(input)
+        else:
+            out = input
+
         out = (1 + gamma) * out + beta
         return out
 
