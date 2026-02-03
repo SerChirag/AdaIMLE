@@ -27,8 +27,8 @@ import torch.multiprocessing as mp
 import datetime
 import os
 import torch.distributed as dist
-import resize_right
-import resize_right.interp_methods as interp_methods
+# import resize_right
+# import resize_right.interp_methods as interp_methods
 
 def isValid(num):
     return not num != num
