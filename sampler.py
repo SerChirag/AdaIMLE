@@ -368,6 +368,91 @@ class Sampler:
                     self.pool_samples_proj[batch_slice] = proj.to('cpu').detach().cpu().numpy().astype(np.float16)
 
         gen.train()
+    
+
+    def nn_search_batched(self, queries, dataset):
+        """
+        Hard-first greedy Top-K matching (unique when possible) using self.gpu_index_flat.
+
+        Logic:
+        1) Build FAISS index once on the FULL dataset.
+        2) Compute hardness score per query using k=2 margin (d2 - d1).
+        3) Process queries in hard-first order (small margin first).
+        4) For each query, pick the nearest *unused* dataset element from its Top-K list.
+        5) If all Top-K are used, fall back to 1-NN (collision allowed) so it always returns.
+
+        Returns:
+            distances: (Nq,) torch.float32   # squared L2 from FAISS
+            indices:   (Nq,) torch.long
+        """
+
+        topk = self.H.imle_db_topk
+        tie_shuffle = True  # avoid ordering bias for equal/near-equal margins
+
+        Nq = queries.shape[0]
+        Nd = dataset.shape[0]
+        if Nq == 0:
+            return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
+
+        topk = int(min(max(1, topk), Nd))
+
+        # ---- Build index once on the full dataset ----
+        self.gpu_index_flat.reset()
+        self.gpu_index_flat.add(dataset)
+
+        # ---- 1) Hardness (margin = d2 - d1) ----
+        # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
+        if Nd >= 2:
+            D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
+            margin = D2[:, 0]
+        else:
+            margin = np.zeros(Nq, dtype=np.float32)
+
+        if tie_shuffle:
+            perm = np.random.permutation(Nq)
+            order = perm[np.argsort(margin[perm], kind="stable")]
+        else:
+            order = np.argsort(margin, kind="stable")
+
+        # ---- 2) Get Top-K candidate lists for all queries ----
+        D, I = self.gpu_index_flat.search(queries, topk)  # (Nq,K), squared L2 + indices
+
+        # ---- 3) Greedy unique assignment in hard-first order ----
+        used = np.zeros(Nd, dtype=bool)
+
+        out_idx = np.full(Nq, -1, dtype=np.int64)
+        out_dst = np.full(Nq, np.inf, dtype=np.float32)
+
+        for qi in order:
+            cand = I[qi]   # (K,)
+            cd   = D[qi]   # (K,)
+
+            chosen = -1
+            chosen_d = None
+
+            # First unused among top-K (already sorted by distance)
+            for k in range(topk):
+                j = int(cand[k])
+                if not used[j]:
+                    chosen = j
+                    chosen_d = float(cd[k])
+                    used[j] = True
+                    break
+
+            # If no unused candidate exists, return 1-NN anyway (collision allowed)
+            if chosen == -1:
+                chosen = int(cand[0])
+                chosen_d = float(cd[0])
+
+            out_idx[qi] = chosen
+            out_dst[qi] = chosen_d
+
+        # ---- Cleanup ----
+        self.gpu_index_flat.reset()
+
+        return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
+
+
 
 
     def imle_sample_force(self, gen, to_update=None):
@@ -391,23 +476,19 @@ class Sampler:
             torch.cuda.empty_cache()
 
             with torch.no_grad():
-                self.gpu_index_flat.reset()
+
+                pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
 
 
                 # Obtain the full dataset features (on CPU) and then slice locally.
-                local_ds_feats = self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]]
+                local_ds_feats = np.ascontiguousarray(self.dataset_proj[self.class_ranges[i][0]:self.class_ranges[i][1]], dtype=np.float32) 
 
-                self.gpu_index_flat.add(self.pool_samples_proj)  # add entire pool
-
-                # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, indices = self.gpu_index_flat.search(local_ds_feats, 1)
-                local_indices   = torch.from_numpy(indices).squeeze(1)    # (local_size,)
-
+                local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
                 new_latents = self.pool_latents[local_indices].clone()
-                all_pool_latents.append(new_latents)
+                all_pool_latents.append(new_latents.detach().cpu())
             
-        all_pool_latents = torch.cat(all_pool_latents, dim=0).detach().cpu()
+        all_pool_latents = torch.cat(all_pool_latents, dim=0)
 
         safe_barrier()  # Ensure all processes complete the gather
                 
