@@ -274,6 +274,11 @@ def add_imle_arguments(parser):
     # parser.add_argument('--mode', type=str, default='lpips', choices=['lpips', 'l2', 'combined']) # search type for nearest neighbour search
 
     parser.add_argument('--use_multi_res', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--align_corners', default=False, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--use_resize_right', default=False, type=lambda x: bool(strtobool(x)))  # whether to use resize_right for resizing
+    parser.add_argument('--frac_loss', default=False, type=lambda x: bool(strtobool(x)))  # whether to use fractional loss scaling
+    parser.add_argument('--use_stopgrad_for_intermediate', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
+
     parser.add_argument('--multi_res_scales', default='', type=str)  # extra multi-res dimension
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
@@ -300,6 +305,11 @@ def add_imle_arguments(parser):
     parser.add_argument("--use_se", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
+
+    parser.add_argument('--imle_db_topk', type=int, default=20)  # top-k for imle database search
+
+    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber"], help="type of loss")
+    parser.add_argument("--huber_delta", type=float, default=0.2, help="delta for huber loss")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")

@@ -96,7 +96,6 @@ class ConvNeXtBlock(nn.Module):
         x = self.pw_conv1(x)
         x = self.gelu(x)
         x = self.pw_conv2(x)
-        # x = self.norm2(x)
         x = x.permute(0, 3, 1, 2)
 
         x = self.se(x)
@@ -143,7 +142,6 @@ class DecBlock(nn.Module):
         
         elif self.residual_type == 'convex':
             return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
-        
 
 class Decoder(nn.Module):
     def __init__(self, H):
@@ -195,6 +193,8 @@ class Decoder(nn.Module):
             if(block.mixin is not None):
                 intermediate = self.resnets[str(block.mixin)](x)
                 targets.append(intermediate)
+                if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
+                    x = x.detach()
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
         targets.append(x)

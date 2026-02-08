@@ -59,6 +59,9 @@ class Sampler:
         
         if(self.H.compile):
             self.dino_encoder = torch.compile(self.dino_encoder)
+        
+        self.nn_search_batch = H.nn_search_batch
+
 
         # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
         # # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
@@ -162,6 +165,7 @@ class Sampler:
             print(f"GPU {self.rank}: handling classes {local_classes}")
         
         return local_classes
+
 
     def preprocess_dino_tensor(self, inp):
         # x: [B, C, H, W], range [0, 1]
