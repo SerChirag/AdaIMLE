@@ -214,7 +214,6 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta1', type=float, default=0.9)
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
-    parser.add_argument('--huber_delta', type=float, default=1.0)  # delta for huber loss
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
@@ -308,7 +307,6 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=20)  # top-k for imle database search
 
-    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.2, help="delta for huber loss")
     
     # some metric args

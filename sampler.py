@@ -477,7 +477,7 @@ class Sampler:
 
             with torch.no_grad():
 
-                pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
+                pool_feats = np.ascontiguousarray(self.pool_samples_proj, dtype=np.float32)
 
 
                 # Obtain the full dataset features (on CPU) and then slice locally.
