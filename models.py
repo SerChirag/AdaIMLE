@@ -9,6 +9,8 @@ import numpy as np
 from timm.layers import trunc_normal_, DropPath
 import itertools
 
+from unet.unet import UNetModelWrapper
+
 def parse_layer_string(s):
     layers = []
     for ss in s.split(','):
@@ -200,7 +202,13 @@ class Decoder(nn.Module):
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.decoder = UNetModelWrapper(dim=(3, H.image_size, H.image_size), 
+            num_channels=192, 
+            num_res_blocks=3,
+            attention_resolutions="16,32",
+            num_classes=0,
+            class_cond = False
+        )
 
-    def forward(self, latents, train=False):
-        return self.decoder.forward(latents, train)
+    def forward(self, latents):
+        return self.decoder.forward(latents)
