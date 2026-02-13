@@ -432,7 +432,7 @@ class Sampler:
         # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
             D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
-            margin = D2[:, 1] - D2[:, 0]
+            margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
 
