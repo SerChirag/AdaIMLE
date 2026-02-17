@@ -252,6 +252,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
+            'unique_indices': sampler.unique_indices,
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

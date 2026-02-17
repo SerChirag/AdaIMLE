@@ -156,6 +156,7 @@ class Sampler:
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
         dev_id = torch.cuda.current_device()
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.unique_indices = 0
 
 
     def preprocess_dino_tensor(self, inp):
@@ -245,7 +246,7 @@ class Sampler:
         with torch.no_grad():
             with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
-                px_z = gen(latents, None).permute(0, 2, 3, 1)
+                px_z = gen(latents).permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
                 xhat = xhat.detach().cpu().numpy()
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
@@ -330,7 +331,7 @@ class Sampler:
             cur_latents = latents[batch_slice]
             with torch.no_grad():
                 with autocast(device_type='cuda'):
-                    out = gen(cur_latents, None)
+                    out = gen(cur_latents)
                     if(logging):
                         dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
                         dists[batch_slice] = torch.squeeze(dist)
@@ -370,7 +371,7 @@ class Sampler:
             cur_latents = local_pool_latents[batch_slice]
             with torch.no_grad():
                 with autocast(device_type='cuda'):
-                    outputs = gen(cur_latents, None)
+                    outputs = gen(cur_latents)
                     if self.H.search_type == 'lpips':
                         proj = self.get_projected(outputs, False)
                     elif self.H.search_type == 'l2':
@@ -515,6 +516,9 @@ class Sampler:
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
                 local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+
+                # get number of unique indices count
+                self.unique_indices = np.unique(local_indices).shape[0] / self.sz
 
                 new_latents = self.pool_latents[local_indices].clone()
             
