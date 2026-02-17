@@ -7,7 +7,7 @@ from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
 from timm.layers import trunc_normal_, DropPath
-import itertools
+from dit import DiT_B_2
 
 from unet.unet import UNetModelWrapper
 
@@ -203,15 +203,10 @@ class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.decoder = UNetModelWrapper(dim=(3, H.image_size, H.image_size), 
-            num_channels=192, 
-            num_res_blocks=3,
-            attention_resolutions="16,32",
-            num_classes=0,
-            class_cond = False
-        )
+        self.decoder = DiT_B_2(in_channels = 3, img_resolution = H.image_size)
 
     def forward(self, latents):
         t = torch.rand(latents.shape[0], device=latents.device)
+        class_labels = torch.zeros(latents.shape[0], dtype=torch.long, device=latents.device).unsqueeze(1)
         latents = latents.reshape(-1, 3, self.H.image_size, self.H.image_size)
-        return self.decoder.forward(t, latents)
+        return self.decoder.forward(latents, t, class_labels=class_labels)
