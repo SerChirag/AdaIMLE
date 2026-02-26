@@ -595,7 +595,7 @@ class Sampler:
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
                 _, local_indices = self.nn_search_batched(pool_feats,local_ds_feats)
 
-                reverse_indices = local_indices.clone()
+                reverse_indices = torch.tensor(local_indices, dtype=torch.long, device=self.device)
             
             else:
                 reverse_indices = torch.empty(self.sz, dtype=torch.long, device=self.device)
