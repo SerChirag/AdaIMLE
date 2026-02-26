@@ -137,6 +137,8 @@ def set_up_data(H):
     H.global_batch_size = H.n_batch * get_world_size()
     H.total_iters = H.num_epochs * np.ceil(train_len // H.global_batch_size)
 
+    H.total_iters = H.total_iters * 2
+
 
     def preprocess_func(x):
         nonlocal shift

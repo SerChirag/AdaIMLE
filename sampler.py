@@ -25,6 +25,7 @@ class Sampler:
         self.rank = get_rank()
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.reverse_pool_size = sz
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
         self.H = H
@@ -156,6 +157,9 @@ class Sampler:
         index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
         dev_id = torch.cuda.current_device()
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+
+        self.reverse_pool_latents = None
+        self.reverse_indices = None
 
 
     def preprocess_dino_tensor(self, inp):
@@ -305,47 +309,6 @@ class Sampler:
             loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
 
         return loss
-    
-    ############### Can be removed ###########
-
-    
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
-        if dists is None:
-            dists = self.selected_dists
-        if dists_lpips is None:
-            dists_lpips = self.selected_dists_lpips
-        if dists_l2 is None:
-            dists_l2 = self.selected_dists_l2
-        if latents is None:
-            latents = self.selected_latents
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
-            with torch.no_grad():
-                with autocast(device_type='cuda'):
-                    out = gen(cur_latents, None)
-                    if(logging):
-                        dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
-                        dists[batch_slice] = torch.squeeze(dist)
-                        dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
-                        dists_l2[batch_slice] = torch.squeeze(dist_l2)
-                    else:
-                        dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                        dists[batch_slice] = torch.squeeze(dist)
-        
-        if(logging):
-            return dists, dists_lpips, dists_l2
-        else:
-            return dists
-    
-    ############### Can be removed ###########
 
 
     def resample_pool(self, gen):
@@ -398,6 +361,60 @@ class Sampler:
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
     
 
+    
+
+    def resample_reverse_pool(self, gen):
+
+        gen.eval()   
+
+        # Determine local pool size
+        local_pool_size = ceil(self.reverse_pool_size / self.world_size)
+
+
+        # Generate local pool latents and prepare container for projected features
+        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), 
+                                         device=self.device, 
+                                         generator=self.generator_seed)
+        # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
+
+        local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
+
+        # Process local chunk in batches
+        for j in range(local_pool_size // self.H.imle_batch):
+            batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
+            cur_latents = local_pool_latents[batch_slice]
+            with torch.no_grad():
+                with autocast(device_type='cuda'):
+                    outputs = gen(cur_latents, None)
+                    if self.H.search_type == 'lpips':
+                        proj = self.get_projected(outputs, False)
+                    elif self.H.search_type == 'l2':
+                        proj = self.get_l2_feature(outputs, False)
+                    # elif self.H.search_type == 'vae':
+                    #     proj = self.get_vae_features(outputs, False)
+                    elif self.H.search_type == 'combined':
+                        proj = self.get_combined_feature(outputs, False)
+                    else:
+                        proj = self.get_combined_feature(outputs, False)
+                    local_pool_proj[batch_slice] = proj
+
+        safe_barrier()
+        gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
+        gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
+
+        torch.distributed.all_gather(gathered_latents, local_pool_latents)
+        torch.distributed.all_gather(gathered_proj, local_pool_proj)
+
+        gen.train()
+
+        safe_barrier()
+        # Aggregate the full pool latents and projected features
+        self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
+        self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+    
+
+    
+
     def nn_search_batched(self, queries, dataset):
         """
         Hard-first greedy Top-K matching (unique when possible) using self.gpu_index_flat.
@@ -432,7 +449,7 @@ class Sampler:
         # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
             D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
-            margin = D2[:, 1] - D2[:, 0]
+            margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
 
@@ -549,3 +566,50 @@ class Sampler:
         safe_barrier()  # Ensure synchronization before leaving the function
         self.gpu_index_flat.reset()
 
+    def imle_sample_force_reverse(self, gen, to_update=None):
+
+        if is_main_process():
+            t1 = time.time()
+            print("Starting pool resampling for reverse...")
+
+        # Resample pool first (each process contributes its part);
+        # this updates self.pool_samples_proj and self.pool_latents.
+        self.resample_reverse_pool(gen)
+        safe_barrier()  # Ensure all processes complete the pool resample
+
+        if(is_main_process()):
+            print(f"Resampling pool took {time.time() - t1:.2f} seconds")
+        
+        torch.cuda.empty_cache()
+
+        self.selected_dists_tmp[:] = np.inf
+        with torch.no_grad():
+
+            if(is_main_process()):
+
+                local_ds_feats = np.ascontiguousarray(self.dataset_proj, dtype=np.float32)
+
+                # Pool features (as computed from resample_pool).
+                pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
+
+                # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
+                _, local_indices = self.nn_search_batched(pool_feats,local_ds_feats)
+
+                reverse_indices = local_indices.clone()
+            
+            else:
+                reverse_indices = torch.empty(self.sz, dtype=torch.long, device=self.device)
+            
+
+            torch.distributed.broadcast(reverse_indices, src=0)
+
+            safe_barrier()
+
+            self.reverse_indices = reverse_indices.cpu()
+            self.reverse_pool_latents = self.pool_latents.clone()
+
+
+            if is_main_process():
+                print(f"Force resampling took {time.time() - t1:.2f} seconds")
+
+        self.gpu_index_flat.reset()
