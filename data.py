@@ -52,7 +52,7 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -115.92961967
         scale = 1. / 69.37404
-    elif H.dataset == 'imagenet64-100':
+    elif H.dataset == 'imagenet64_100':
         (trX, trY) = imagenet64_100(H.data_root)
         vaX = None
         teX = None

@@ -92,7 +92,7 @@ imagenet64_100.ema_rate = 0.9999
 imagenet64_100.l2_search_downsample = 1.0
 imagenet64_100.multi_res_scales = '16,24,32,48'
 imagenet64_100.convnext_expansion = 6
-imagenet64_100.num_classes = 50
+imagenet64_100.num_classes = 100
 HPARAMS_REGISTRY['imagenet64_100'] = imagenet64_100
 
 smallimagenet64 = Hyperparams()
