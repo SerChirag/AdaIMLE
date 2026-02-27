@@ -79,6 +79,22 @@ tinyimagenet64.pool_size_per_class = 2500
 tinyimagenet64.num_classes = 200
 HPARAMS_REGISTRY['tinyimagenet64'] = tinyimagenet64
 
+imagenet64_100 = Hyperparams()
+imagenet64_100.width = 512
+imagenet64_100.lr = 0.0002
+imagenet64_100.wd = 0.01
+imagenet64_100.dec_blocks = "1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8"
+imagenet64_100.warmup_iters = 100
+imagenet64_100.dataset = 'imagenet64_100'
+imagenet64_100.n_batch = 32
+imagenet64_100.imle_batch = 32
+imagenet64_100.ema_rate = 0.9999
+imagenet64_100.l2_search_downsample = 1.0
+imagenet64_100.multi_res_scales = '16,24,32,48'
+imagenet64_100.convnext_expansion = 6
+imagenet64_100.num_classes = 50
+HPARAMS_REGISTRY['imagenet64_100'] = imagenet64_100
+
 smallimagenet64 = Hyperparams()
 smallimagenet64.width = 512
 smallimagenet64.lr = 0.0002
