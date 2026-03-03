@@ -151,7 +151,7 @@ def set_up_data(H):
         train_len = len(train_data)
         untranspose = False
     
-    elif H.dataset == 'imagenet64-100':
+    elif H.dataset == 'imagenet64_100':
         train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
