@@ -30,6 +30,7 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
+        self.unique_indices = None
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
@@ -517,6 +518,9 @@ class Sampler:
                 local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
                 new_latents = self.pool_latents[local_indices].clone()
+
+                self.unique_indices = np.unique(local_indices).shape[0] / self.sz
+
             
             safe_barrier()  # Ensure all processes complete the gather
 

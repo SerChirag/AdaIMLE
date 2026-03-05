@@ -141,7 +141,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
-    parser.add_argument('--warmup_iters', type=float, default=2000)  # number of iterations for warmup for scheduler
+    parser.add_argument('--warmup_iters', type=float, default=100)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
@@ -249,7 +249,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=20)  # top-k for imle database search
+    parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
 
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.2, help="delta for huber loss")
