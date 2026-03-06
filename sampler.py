@@ -28,6 +28,7 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
+        self.unique_indices = 0
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
@@ -36,91 +37,39 @@ class Sampler:
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
         self.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+        self.latent_spatial_size = int(getattr(H, 'latent_spatial_size', max(self.block_res)))
 
         self.selected_dists = torch.empty([sz], dtype=torch.float32)
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
-        self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
+        self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.latent_spatial_size, self.latent_spatial_size],
                                         dtype=torch.float32)
 
         self.pool_latents = None
 
-        self.autoencoder = None
+        self.decode_for_metrics = bool(getattr(H, 'autoencoder_decode_for_metrics', True))
+        self.autoencoder = load_autoencoder(H, self.device)
         self.autoencoder_native_latent_size = None
-        if getattr(H, 'autoencoder_decode_for_metrics', True):
-            self.autoencoder = load_autoencoder(H, self.device)
-            fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
-            native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
-            self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
+        fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
+        native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
+        self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
 
         if H.search_type != 'l2':
             raise ValueError('This branch expects search_type=l2.')
 
-        self.projections = []
-        self.lpips_net = None
-        if H.search_type in ['lpips', 'combined']:
-            self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
-            self.lpips_net.eval()
-            self.lpips_net.requires_grad_(False)
-            if(self.H.compile):
-                self.lpips_net = torch.compile(self.lpips_net)
-
-        self.dino_mean = None
-        self.dino_std = None
-        self.dino_encoder = None
-        if H.search_type == 'combined':
-            self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
-            self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
-            self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
-            if(self.H.compile):
-                self.dino_encoder = torch.compile(self.dino_encoder)
-        
         self.nn_search_batch = H.nn_search_batch
 
         self.l2_projection = None
 
-        fake = torch.zeros(1, H.image_channels, H.image_size, H.image_size, device=self.device)
+        fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
         safe_barrier()
-        if(H.search_type == 'lpips'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            out, shapes = self.lpips_net(interpolated)
-            sum_dims = 0
-            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
-                dims.insert(0,H.proj_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
-            sum_dims = sum(dims)
 
-        elif(H.search_type == 'l2'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            interpolated = interpolated.reshape(interpolated.shape[0],-1)
-            self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
-            sum_dims = H.proj_dim
-
-        elif(H.search_type == 'combined'):
-            interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
-            out, shapes = self.lpips_net(interpolated)
-            sum_dims = 0
-            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
-            if H.proj_proportion:
-                sm = sum([dim.shape[1] for dim in out])
-                dims = [int(out[feat_ind].shape[1] * (H.proj_dim / sm)) for feat_ind in range(1,len(out))]
-                dims.insert(0,H.proj_dim - sum(dims))
-            for ind, feat in enumerate(out):
-                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
-            sum_dims = sum(dims)
-
-            interpolated = self.preprocess_dino_tensor(fake)
-            with torch.no_grad():
-                out = self.dino_encoder(pixel_values=interpolated)
-                out = out.last_hidden_state.mean(dim=1)            
-            sum_dims += out.shape[-1]
+        if(H.search_type == 'l2'):
+            interpolated = fake.reshape(fake.shape[0],-1)
+            sum_dims = interpolated.shape[1]
 
         else:
             exit()
@@ -147,57 +96,18 @@ class Sampler:
         dev_id = torch.cuda.current_device()
         self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
-
-    def preprocess_dino_tensor(self, inp):
-        # x: [B, C, H, W], range [0, 1]
-
-        x = (inp + 1.0) / 2.0
-        x = torch.clamp(x, 0.0, 1.0)
-
-        x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
-        return (x - self.dino_mean) / self.dino_std
-
-    def get_projected(self, inp, permute=True):
-        if(permute):
-            inp = inp.permute(0, 3, 1, 2)
-        
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        out, _ = self.lpips_net(interpolated.to(self.device))
-        gen_feat = []
-        for i in range(len(out)):
-            gen_feat.append(torch.mm(out[i], self.projections[i]))
-            # TODO divide?
-        lpips_feat = torch.cat(gen_feat, dim=1)
-        # lpips_feat = F.normalize(lpips_feat, p=2, dim=1)
-        return lpips_feat
     
     def get_l2_feature(self, inp, permute=True):
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
-        interpolated = F.interpolate(inp,scale_factor = self.H.l2_search_downsample, antialias=True, mode='bicubic')
-        interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        interpolated = torch.mm(interpolated, self.l2_projection)
+
+        if inp.shape[1] == 3:
+            inp = encode_images_to_latents(self.autoencoder, inp, target_spatial=(self.latent_spatial_size, self.latent_spatial_size))
+
+        interpolated = inp.reshape(inp.shape[0],-1)
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated
-    
-    def get_dino_features(self, inp, permute=True, scale_factor=10):
-        if(permute):
-            inp = inp.permute(0, 3, 1, 2)
-        interpolated = self.preprocess_dino_tensor(inp)
-        with torch.no_grad():
-            out = self.dino_encoder(pixel_values=interpolated)
-            out = out.last_hidden_state.mean(dim=1)   
-            out = F.normalize(out, p=2, dim=1)
-            out = out * scale_factor
-        return out
-    
-    def get_combined_feature(self, inp, permute=True):
-        lpisps_feat = self.get_projected(inp, permute)
-        dino_feat = self.get_dino_features(inp, permute)
-        # print(f'LPIPS is {torch.norm(lpisps_feat, p=2, dim=1).mean()} \n')
-        # print(f'DINO is {torch.norm(dino_feat, p=2, dim=1).mean()} \n')
-        combined_feat = torch.cat((lpisps_feat, dino_feat), dim=1)
-        return combined_feat
+
 
     def init_projection(self, dataset):
 
@@ -211,12 +121,8 @@ class Sampler:
 
         for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
-            if(self.H.search_type == 'lpips'):
-                self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
-            elif(self.H.search_type == 'l2'):
+            if(self.H.search_type == 'l2'):
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
-            elif(self.H.search_type == 'combined'):
-                self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
             else:
                 exit()
 
@@ -227,7 +133,7 @@ class Sampler:
             with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
                 px_z = gen(latents, None)
-                if self.autoencoder is not None:
+                if self.decode_for_metrics:
                     px_z = decode_latents_to_images(self.autoencoder, px_z, self.autoencoder_native_latent_size)
 
                 if px_z.shape[1] == 1:
@@ -309,14 +215,10 @@ class Sampler:
             with torch.no_grad():
                 with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
-                    if self.H.search_type == 'lpips':
-                        proj = self.get_projected(outputs, False)
-                    elif self.H.search_type == 'l2':
+                    if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
-                    elif self.H.search_type == 'combined':
-                        proj = self.get_combined_feature(outputs, False)
                     else:
-                        proj = self.get_combined_feature(outputs, False)
+                        exit()
                     local_pool_proj[batch_slice] = proj
 
         safe_barrier()
@@ -451,6 +353,9 @@ class Sampler:
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
                 local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+
+                # get count of unique indices for logging
+                self.unique_indices = np.unique(local_indices).size / self.sz
 
                 new_latents = self.pool_latents[local_indices].clone()
             

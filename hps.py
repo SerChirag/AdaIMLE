@@ -52,7 +52,6 @@ stl10.dataset = 'stl10'
 stl10.n_batch = 8
 stl10.imle_batch = 32 
 stl10.ema_rate = 0.9999
-stl10.l2_search_downsample = 0.5
 stl10.multi_res_scales = '16,32,48'
 stl10.convnext_expansion = 4
 HPARAMS_REGISTRY['stl10'] = stl10
@@ -79,7 +78,6 @@ fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
 fewshot.ema_rate = 0.9999
-fewshot.l2_search_downsample = 0.125
 fewshot.multi_res_scales = '8,12,16,24,32,48,64,96,128,150,200,230'
 HPARAMS_REGISTRY['fewshot'] = fewshot
 
@@ -94,7 +92,6 @@ fewshot64.dec_blocks = '1x2,4m1,4x3,8m4,8x7,16m8,16x8,32m16,32x8,64m32,64x8'
 fewshot64.dataset = 'fewshot'
 fewshot64.n_batch = 8
 fewshot64.ema_rate = 0.9999
-fewshot64.l2_search_downsample = 1.0
 fewshot64.multi_res_scales = '8,12,16,24,32,48'
 HPARAMS_REGISTRY['fewshot64'] = fewshot64
 
@@ -141,7 +138,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
-    parser.add_argument('--warmup_iters', type=float, default=2000)  # number of iterations for warmup for scheduler
+    parser.add_argument('--warmup_iters', type=float, default=100)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_iters', type=float, default=4000)  # number of iterations for warmup for scheduler
     parser.add_argument('--lr_decay_rate', type=float, default=0.25)  # number of iterations for warmup for scheduler
 
@@ -227,7 +224,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
-    parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
+    parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
     parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl'])
     parser.add_argument('--autoencoder_name_or_path', type=str, default='stabilityai/sd-vae-ft-mse')

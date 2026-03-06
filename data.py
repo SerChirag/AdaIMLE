@@ -21,6 +21,7 @@ def set_up_data(H):
     blocks = parse_layer_string(H.dec_blocks)
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+    H.latent_spatial_size = max(H.block_res)
 
     if H.dataset == 'imagenet32':
         trX, vaX, teX = imagenet32(H.data_root)
@@ -59,7 +60,11 @@ def set_up_data(H):
     device = torch.device("cuda", torch.cuda.current_device())
 
     autoencoder = load_autoencoder(H, device)
-    latent_probe = encode_images_to_latents(autoencoder, torch.zeros(1, 3, H.image_size, H.image_size, device=device), target_spatial=(H.image_size, H.image_size))
+    latent_probe = encode_images_to_latents(
+        autoencoder,
+        torch.zeros(1, 3, H.image_size, H.image_size, device=device),
+        target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
+    )
     H.image_channels = latent_probe.shape[1]
 
     # if H.dataset == 'ffhq_1024':
@@ -119,7 +124,11 @@ def set_up_data(H):
         inp = x[0].to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
         target = inp.permute(0, 3, 1, 2)
-        target = encode_images_to_latents(autoencoder, target, target_spatial=(H.image_size, H.image_size))
+        target = encode_images_to_latents(
+            autoencoder,
+            target,
+            target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
+        )
         target = target.permute(0, 2, 3, 1).contiguous()
         return inp, target
 
