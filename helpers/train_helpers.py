@@ -22,6 +22,31 @@ from helpers.utils import is_main_process, get_world_size, get_rank
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
+
+
+class NoOpGradScaler:
+    def scale(self, loss):
+        return loss
+
+    def unscale_(self, optimizer):
+        return None
+
+    def step(self, optimizer):
+        optimizer.step()
+
+    def update(self):
+        return None
+
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state_dict):
+        return None
+
 def update_ema(imle, ema_imle, ema_rate):
     for p1, p2 in zip(imle.parameters(), ema_imle.parameters()):
         p2.data.mul_(ema_rate)
@@ -127,7 +152,8 @@ def setup_save_dirs(H):
 def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
     random.seed(seed)
 
     
@@ -142,7 +168,8 @@ def set_up_hyperparams(s=None):
     logprint = logger(H.logdir)
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
-    torch.cuda.manual_seed(H.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(H.seed)
     random.seed(H.seed)
     return H, logprint
 
@@ -178,7 +205,14 @@ def restore_log(path, local_rank, mpi_size):
 
 def load_imle(H, logprint):
     local_rank = get_rank()
-    device = torch.device("cuda")
+    if H.backend == 'xla':
+        if xm is None:
+            raise RuntimeError("XLA backend requested but torch_xla is not installed")
+        device = xm.xla_device()
+    elif torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        device = torch.device("cpu")
 
     imle = IMLE(H)
     imle.to(device)
@@ -201,16 +235,16 @@ def load_imle(H, logprint):
     ema_imle.requires_grad_(False)
     ema_imle.eval()
 
-    ddp_dev = torch.cuda.current_device()
+    ddp_dev = torch.cuda.current_device() if torch.cuda.is_available() else None
 
-    if(is_dist_avail_and_initialized()):
+    if(is_dist_avail_and_initialized() and H.backend != 'xla'):
         imle = DDP(imle, device_ids=[ddp_dev], 
                     output_device=ddp_dev,
                     gradient_as_bucket_view=True,
                     static_graph=True
                     )
     
-    if(H.compile):
+    if(H.compile and H.backend != 'xla'):
         imle = torch.compile(imle) 
         ema_imle = torch.compile(ema_imle)
     
@@ -223,7 +257,7 @@ def load_opt(H, imle, logprint):
     cosine_iters = H.total_iters - H.warmup_iters
     scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
-    scaler = torch.GradScaler(device="cuda")
+    scaler = torch.GradScaler(device="cuda") if H.backend == 'cuda' and torch.cuda.is_available() else NoOpGradScaler()
     
     if H.restore_optimizer_path:
         if(is_main_process()):
@@ -237,7 +271,7 @@ def load_opt(H, imle, logprint):
         scheduler.load_state_dict(
             torch.load(H.restore_scheduler_path, map_location='cpu', weights_only=False))
         
-    if H.restore_scaler_path:
+    if H.restore_scaler_path and not isinstance(scaler, NoOpGradScaler):
         if(is_main_process()):
             logprint(f'Restoring scaler from {H.restore_scaler_path}')
         scaler.load_state_dict(

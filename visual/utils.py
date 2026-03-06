@@ -4,7 +4,7 @@ import numpy as np
 import imageio
 import os
 import shutil
-from helpers.utils import is_main_process, get_rank, get_world_size
+from helpers.utils import is_main_process, get_rank, get_world_size, safe_barrier
 
 def delete_content_of_dir(folder):
     for filename in os.listdir(folder):
@@ -29,7 +29,8 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     mb = shape[0]
-    initial = initial[:mb].to(ema_imle.device)
+    model_device = next(ema_imle.parameters()).device
+    initial = initial[:mb].to(model_device)
     nns = sampler.sample(initial, ema_imle, None)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
@@ -67,7 +68,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     if is_main_process():
         delete_content_of_dir(f'{H.save_dir}/{subdir}')
     
-    torch.distributed.barrier()
+    safe_barrier()
 
     indices = list(range(rank, n_samp, world_size))
     n_local = len(indices)
@@ -80,7 +81,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             current_batch_size = min(H.imle_batch, n_local - i)
             # Generate random latent vectors for the current batch
             latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
-                                       device=imle.device, 
+                                       device=H.device,
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
@@ -101,7 +102,7 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
     if is_main_process():
         delete_content_of_dir(f'{H.save_dir}/{subdir}')
     
-    torch.distributed.barrier()
+    safe_barrier()
 
     indices = list(range(rank, n_samp, world_size))
     n_local = len(indices)
@@ -114,7 +115,7 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
             current_batch_size = min(H.imle_batch, n_local - i)
             # Generate random latent vectors for the current batch
             latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
-                                       device=imle.device, 
+                                       device=H.device,
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler

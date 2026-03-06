@@ -16,7 +16,20 @@ import torch
 import torch.distributed as dist
 from datetime import timedelta
 
-def init_distributed_mode(timeout_sec=4800):
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
+
+_RUNTIME_BACKEND = "cuda"
+
+def init_distributed_mode(timeout_sec=4800, backend="cuda"):
+    global _RUNTIME_BACKEND
+    _RUNTIME_BACKEND = backend
+
+    if backend == "xla":
+        return
+
     rank, world_size, local_rank = 0, 1, 0
     distributed = False
 
@@ -69,20 +82,47 @@ def init_distributed_mode(timeout_sec=4800):
     dist.barrier()
 
 def is_dist_avail_and_initialized(): return dist.is_available() and dist.is_initialized()
-def get_world_size(): return dist.get_world_size() if is_dist_avail_and_initialized() else 1
-def get_rank(): return dist.get_rank() if is_dist_avail_and_initialized() else 0
+def get_world_size():
+    if _RUNTIME_BACKEND == "xla" and xm is not None:
+        return xm.xrt_world_size()
+    return dist.get_world_size() if is_dist_avail_and_initialized() else 1
+
+def get_rank():
+    if _RUNTIME_BACKEND == "xla" and xm is not None:
+        return xm.get_ordinal()
+    return dist.get_rank() if is_dist_avail_and_initialized() else 0
+
 def is_main_process(): return get_rank() == 0
 
 def safe_barrier():
-    if is_dist_avail_and_initialized():
+    if _RUNTIME_BACKEND == "xla" and xm is not None:
+        xm.rendezvous("safe_barrier")
+    elif is_dist_avail_and_initialized():
         dist.barrier()
 
 def safe_destroy():
+    if _RUNTIME_BACKEND == "xla":
+        return
     if is_dist_avail_and_initialized():
         try:
             dist.barrier()
         finally:
             dist.destroy_process_group()
+
+
+def all_reduce_tensor(x, reduce_op="sum"):
+    if get_world_size() == 1:
+        return x
+
+    if _RUNTIME_BACKEND == "xla" and xm is not None:
+        if reduce_op == "sum":
+            return xm.all_reduce(xm.REDUCE_SUM, x)
+        raise ValueError(f"Unsupported XLA reduce op: {reduce_op}")
+
+    if reduce_op == "sum":
+        dist.all_reduce(x, op=dist.ReduceOp.SUM)
+        return x
+    raise ValueError(f"Unsupported reduce op: {reduce_op}")
 
 
 def allreduce(x, average):

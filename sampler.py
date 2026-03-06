@@ -16,11 +16,26 @@ from torch import autocast
 from diffusers import AutoencoderTiny
 import faiss
 from tqdm import tqdm
+from contextlib import nullcontext
+
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
         
-        self.device = torch.device("cuda", torch.cuda.current_device())
+        if H.backend == 'xla':
+            if xm is None:
+                raise RuntimeError("XLA backend requested but torch_xla is not installed")
+            self.device = xm.xla_device()
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda", torch.cuda.current_device())
+        else:
+            self.device = torch.device("cpu")
+
+        self.use_cuda_amp = self.device.type == 'cuda'
         self.world_size = get_world_size()
         self.rank = get_rank()
 
@@ -149,13 +164,18 @@ class Sampler:
 
         self.dataset_size = sz
         self.db_iter = 0
-        self.generator_seed = torch.Generator(device=self.device)         
+        self.generator_seed = torch.Generator(device=self.device) if self.device.type == 'cuda' else torch.Generator()
         self.generator_seed.manual_seed(H.seed + self.rank)
 
-        self.faiss_res = faiss.StandardGpuResources()  # one per process
-        index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.use_faiss_gpu = self.device.type == 'cuda'
+        if self.use_faiss_gpu:
+            self.faiss_res = faiss.StandardGpuResources()
+            index_flat = faiss.IndexFlatL2(self.dci_dim)
+            dev_id = torch.cuda.current_device()
+            self.faiss_index = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        else:
+            self.faiss_res = None
+            self.faiss_index = faiss.IndexFlatL2(self.dci_dim)
 
 
     def preprocess_dino_tensor(self, inp):
@@ -243,7 +263,8 @@ class Sampler:
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
-            with autocast(device_type='cuda'):
+            amp_ctx = autocast(device_type='cuda') if self.use_cuda_amp else nullcontext()
+            with amp_ctx:
                 latents = latents.to(self.device)
                 px_z = gen(latents, None).permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
@@ -329,7 +350,8 @@ class Sampler:
             batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
             cur_latents = latents[batch_slice]
             with torch.no_grad():
-                with autocast(device_type='cuda'):
+                amp_ctx = autocast(device_type='cuda') if self.use_cuda_amp else nullcontext()
+                with amp_ctx:
                     out = gen(cur_latents, None)
                     if(logging):
                         dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
@@ -369,7 +391,8 @@ class Sampler:
             batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
             cur_latents = local_pool_latents[batch_slice]
             with torch.no_grad():
-                with autocast(device_type='cuda'):
+                amp_ctx = autocast(device_type='cuda') if self.use_cuda_amp else nullcontext()
+                with amp_ctx:
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'lpips':
                         proj = self.get_projected(outputs, False)
@@ -384,18 +407,23 @@ class Sampler:
                     local_pool_proj[batch_slice] = proj
 
         safe_barrier()
-        gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
-        gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
-
-        torch.distributed.all_gather(gathered_latents, local_pool_latents)
-        torch.distributed.all_gather(gathered_proj, local_pool_proj)
-
         gen.train()
 
-        safe_barrier()
-        # Aggregate the full pool latents and projected features
-        self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
-        self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+        if self.world_size > 1:
+            if self.H.backend == 'xla':
+                raise RuntimeError("Multi-device XLA sampler collectives are not implemented yet. Use --num_devices=1 for now.")
+
+            gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
+            gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
+            torch.distributed.all_gather(gathered_latents, local_pool_latents)
+            torch.distributed.all_gather(gathered_proj, local_pool_proj)
+
+            safe_barrier()
+            self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
+            self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+        else:
+            self.pool_latents = local_pool_latents.to('cpu')
+            self.pool_samples_proj = local_pool_proj.to('cpu')
     
 
     def nn_search_batched(self, queries, dataset):
@@ -425,13 +453,13 @@ class Sampler:
         topk = int(min(max(1, topk), Nd))
 
         # ---- Build index once on the full dataset ----
-        self.gpu_index_flat.reset()
-        self.gpu_index_flat.add(dataset)
+        self.faiss_index.reset()
+        self.faiss_index.add(dataset)
 
         # ---- 1) Hardness (margin = d2 - d1) ----
         # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
-            D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
+            D2, _ = self.faiss_index.search(queries, 2)  # (Nq,2)
             margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
@@ -443,7 +471,7 @@ class Sampler:
             order = np.argsort(margin, kind="stable")
 
         # ---- 2) Get Top-K candidate lists for all queries ----
-        D, I = self.gpu_index_flat.search(queries, topk)  # (Nq,K), squared L2 + indices
+        D, I = self.faiss_index.search(queries, topk)  # (Nq,K), squared L2 + indices
 
         # ---- 3) Greedy unique assignment in hard-first order ----
         used = np.zeros(Nd, dtype=bool)
@@ -476,7 +504,7 @@ class Sampler:
             out_dst[qi] = chosen_d
 
         # ---- Cleanup ----
-        self.gpu_index_flat.reset()
+        self.faiss_index.reset()
 
         return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
 
@@ -500,7 +528,8 @@ class Sampler:
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
         
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self.selected_dists_tmp[:] = np.inf
 
@@ -532,7 +561,10 @@ class Sampler:
 
             safe_barrier()
 
-            torch.distributed.broadcast(full_updated_latents, src=0)
+            if self.world_size > 1:
+                if self.H.backend == 'xla':
+                    raise RuntimeError("Multi-device XLA sampler broadcast is not implemented yet. Use --num_devices=1 for now.")
+                torch.distributed.broadcast(full_updated_latents, src=0)
 
             safe_barrier()
 
@@ -547,5 +579,5 @@ class Sampler:
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         safe_barrier()  # Ensure synchronization before leaving the function
-        self.gpu_index_flat.reset()
+        self.faiss_index.reset()
 

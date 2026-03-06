@@ -83,12 +83,10 @@ def set_up_data(H):
     else:
         eval_dataset = None
 
-    device = torch.device("cuda", torch.cuda.current_device())
-
-    shift = torch.tensor([shift], device=device).view(1, 1, 1, 1)
-    scale = torch.tensor([scale], device=device).view(1, 1, 1, 1)
-    shift_loss = torch.tensor([shift_loss], device=device).view(1, 1, 1, 1)
-    scale_loss = torch.tensor([scale_loss], device=device).view(1, 1, 1, 1)
+    shift = torch.tensor([shift]).view(1, 1, 1, 1)
+    scale = torch.tensor([scale]).view(1, 1, 1, 1)
+    shift_loss = torch.tensor([shift_loss]).view(1, 1, 1, 1)
+    scale_loss = torch.tensor([scale_loss]).view(1, 1, 1, 1)
 
     # if H.dataset == 'ffhq_1024':
     #     train_data = ImageFolder(trX, transforms.ToTensor())
@@ -145,6 +143,7 @@ def set_up_data(H):
         nonlocal scale_loss
         nonlocal do_low_bit
         nonlocal untranspose
+        device = H.device
         'takes in a data example and returns the preprocessed input'
         'as well as the input processed for the loss'
         if untranspose:

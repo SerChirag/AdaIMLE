@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import nullcontext
 
 from comet_ml import Experiment, ExistingExperiment
 import imageio
@@ -13,7 +14,7 @@ from models import IMLE
 import numpy as np
 from data import set_up_data
 from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
-from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
+from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier, safe_destroy, all_reduce_tensor
 from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_for_NN,
@@ -21,31 +22,41 @@ from visual.utils import (generate_and_save, generate_for_NN,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch import autocast
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
 import datetime
-import os
-import torch.distributed as dist
 import resize_right
 import resize_right.interp_methods as interp_methods
+
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
 
 def isValid(num):
     return not num != num
 
 def cleanup():
-    dist.destroy_process_group()
+    safe_destroy()
 
 def print_seed(device):
     cpu_seed = torch.initial_seed()
-    cuda_seed = torch.cuda.initial_seed()
-    print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
+    if torch.cuda.is_available():
+        cuda_seed = torch.cuda.initial_seed()
+        print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
+    else:
+        print(f"Device {device} CPU seed = {cpu_seed} \n")
 
 def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     targets_permuted = targets.permute(0, 3, 1, 2)
-    with autocast(device_type='cuda'):
+    amp_ctx = nullcontext()
+    if H.backend == 'cuda' and torch.cuda.is_available():
+        amp_ctx = autocast(device_type='cuda')
+    elif H.backend == 'xla' and H.use_bf16:
+        amp_ctx = autocast(device_type='xla', dtype=torch.bfloat16)
+
+    with amp_ctx:
 
         px_z = imle(latents, train=True)
         loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
@@ -96,7 +107,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     sampler = Sampler(H, subset_len, preprocess_fn)
     safe_barrier()    
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = H.device
 
     epoch = starting_epoch 
     sampler.init_projection(data_train)
@@ -120,9 +131,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         safe_barrier()        
 
@@ -186,11 +199,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if accum_counter % H.accumulation_steps == 0:
                 scaler.unscale_(optimizer)  # Unscale gradients before clipping
                 torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                if H.backend == 'xla':
+                    xm.optimizer_step(optimizer, barrier=False)
+                else:
+                    scaler.step(optimizer)
+                    scaler.update()
                 scheduler.step()
                 imle.zero_grad(set_to_none=True)
-                update_ema(imle.module, ema_imle, H.ema_rate)
+                base_imle = imle.module if hasattr(imle, 'module') else imle
+                update_ema(base_imle, ema_imle, H.ema_rate)
             
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
@@ -217,16 +234,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if accum_counter % H.accumulation_steps != 0:
             scaler.unscale_(optimizer)  # Unscale gradients before clipping
             torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
+            if H.backend == 'xla':
+                xm.optimizer_step(optimizer, barrier=False)
+            else:
+                scaler.step(optimizer)
+                scaler.update()
             scheduler.step()
             imle.zero_grad(set_to_none=True)
-            update_ema(imle.module, ema_imle, H.ema_rate)
+            base_imle = imle.module if hasattr(imle, 'module') else imle
+            update_ema(base_imle, ema_imle, H.ema_rate)
         
         epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
-        dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
+        epoch_loss_tensor = all_reduce_tensor(epoch_loss_tensor, reduce_op='sum')
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
-        dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
+        total_batches_tensor = all_reduce_tensor(total_batches_tensor, reduce_op='sum')
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
 
@@ -268,11 +289,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'curr_lr': optimizer.param_groups[0]['lr'],
         }
 
-        if (epoch > 0 and epoch % H.fid_freq == 0):
-            torch.cuda.empty_cache()
+        if (not H.skip_fid_pr) and (epoch > 0 and epoch % H.fid_freq == 0):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
             safe_barrier()            
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             if(is_main_process()):
                 cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
                 
@@ -326,13 +349,26 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     safe_barrier()
 
 def main():
-    init_distributed_mode()
-    
     H, logprint = set_up_hyperparams()
+    init_distributed_mode(backend=H.backend)
+
+    if H.backend == 'xla':
+        if xm is None:
+            raise RuntimeError("XLA backend requested but torch_xla is not installed")
+        H.device = xm.xla_device()
+        if H.compile and is_main_process():
+            logprint('Disabling torch.compile for XLA backend')
+        H.compile = False
+    elif H.backend == 'cuda' and torch.cuda.is_available():
+        H.device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        H.device = torch.device("cpu")
+
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
     H.world_size = get_world_size()
     H.local_rank = get_rank()
+    H.mpi_size = H.world_size
     # imle, ema_imle = load_imle(H, logprint)
 
     experiment = None

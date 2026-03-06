@@ -24,7 +24,7 @@ def random_interp(H, sampler, shape, imle, fname, logprint):
     mb = 15
     K = 10000
 
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = H.device
     batches = []
     # step = (-f_latent + s_latent) / num_lin
     for t in range(num_lin):

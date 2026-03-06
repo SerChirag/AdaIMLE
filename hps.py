@@ -120,6 +120,9 @@ def parse_args_and_update_hparams(H, parser, s=None):
 
 def add_imle_arguments(parser):
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--backend', type=str, default='cuda', choices=['cuda', 'xla', 'cpu'])
+    parser.add_argument('--use_bf16', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--skip_fid_pr', default=True, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--save_dir', type=str, default='./saved_models')
     parser.add_argument('--data_root', type=str, default='./datasets/ffhq/')
     parser.add_argument('--desc', type=str, default='train')
