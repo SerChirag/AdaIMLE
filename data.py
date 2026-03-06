@@ -31,8 +31,8 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -116.2373
         scale = 1. / 69.37404
-    if H.dataset == 'imagenet32_100':
-        (trX, trY) = imagenet32(H.data_root)
+    if H.dataset == 'imagenet32_200':
+        (trX, trY) = imagenet32_200(H.data_root)
         vaX = None
         teX = None
         H.image_size = 32
@@ -139,7 +139,7 @@ def set_up_data(H):
         train_len = train_data.ds.num_rows  
         untranspose = True
     
-    elif H.dataset == 'imagenet32' or H.dataset == 'imagenet32_100' or H.dataset == 'imagenet64':
+    elif H.dataset == 'imagenet32' or H.dataset == 'imagenet32_200':
         train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
@@ -259,7 +259,7 @@ def imagenet32(data_root):
 
     return (images, labels)
 
-def imagenet32_100(data_root):
+def imagenet32_200(data_root):
 
     files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
 
@@ -282,7 +282,7 @@ def imagenet32_100(data_root):
     images = images[sort_indices]
     labels = labels[sort_indices]
 
-      # Select first 100 classes
+      # Select first 200 classes
     chosen_classes = np.arange(200)
     mask = np.isin(labels, chosen_classes)
     images = images[mask]
