@@ -274,19 +274,21 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
-                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
-                
-                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-                if cur_fid < best_fid:
-                    best_fid = cur_fid
-                
-                metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+                if not H.autoencoder_decode_for_metrics:
+                    metrics.update({'fid': float('nan'), 'best_fid': best_fid, 'precision': float('nan'), 'recall': float('nan')})
+                else:
+                    cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
+                    precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                    if cur_fid < best_fid:
+                        best_fid = cur_fid
 
-                if cur_fid == best_fid:
-                    fp = os.path.join(H.save_dir, 'best_fid')
-                    logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                    logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
-                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                    metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+
+                    if cur_fid == best_fid:
+                        fp = os.path.join(H.save_dir, 'best_fid')
+                        logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+                        logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+                        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
 
             safe_barrier()
 
@@ -329,6 +331,11 @@ def main():
     init_distributed_mode()
     
     H, logprint = set_up_hyperparams()
+    H.search_type = 'l2'
+    H.lpips_coef = 0.0
+    H.dino_coef = 0.0
+    if H.l2_coef == 0.0:
+        H.l2_coef = 1.0
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
     H.world_size = get_world_size()

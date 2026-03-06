@@ -229,6 +229,11 @@ def add_imle_arguments(parser):
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
+    parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl'])
+    parser.add_argument('--autoencoder_name_or_path', type=str, default='stabilityai/sd-vae-ft-mse')
+    parser.add_argument('--autoencoder_subfolder', type=str, default='')
+    parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
+
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--wandb_project', type=str, default='AdaptiveIMLE')  # used for wandb
     parser.add_argument('--use_wandb', type=int, default=0)

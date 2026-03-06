@@ -13,6 +13,7 @@ from torch.utils.data import Dataset
 from helpers.utils import get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
+from helpers.autoencoder import load_autoencoder, encode_images_to_latents
 
 
 def set_up_data(H):
@@ -21,74 +22,45 @@ def set_up_data(H):
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
 
-    shift_loss = -127.5
-    scale_loss = 1. / 127.5
     if H.dataset == 'imagenet32':
         trX, vaX, teX = imagenet32(H.data_root)
         H.image_size = 32
         H.image_channels = 3
-        shift = -116.2373
-        scale = 1. / 69.37404
     elif H.dataset in ['fewshot', 'fewshot512', 'fewshot64']:
         trX, vaX, teX = few_shot_image_folder(H.data_root, H.image_size)
         H.image_channels = 3
-        shift = -116.2373
-        scale = 1. / 69.37404
     elif H.dataset == 'imagenet64':
         trX, vaX, teX = imagenet64(H.data_root)
         H.image_size = 64
         H.image_channels = 3
-        shift = -115.92961967
-        scale = 1. / 69.37404
     elif H.dataset == 'ffhq_256':
         trX, vaX, teX = ffhq256(H.data_root)
         H.image_size = 256
         H.image_channels = 3
-        shift = -112.8666757481
-        scale = 1. / 69.84780273
     elif H.dataset == 'ffhq_1024':
         trX, vaX, teX = ffhq1024(H.data_root)
         H.image_size = 1024
         H.image_channels = 3
-        shift = -0.4387
-        scale = 1.0 / 0.2743
-        shift_loss = -0.5
-        scale_loss = 2.0
     elif H.dataset == 'cifar10':
         (trX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
         H.image_size = 32
         H.image_channels = 3
-        shift = -120.63838
-        scale = 1. / 64.16736
     elif H.dataset == "stl10":
         trX, vaX, teX = stl10(H.data_root)
         H.image_size = 64
         H.image_channels = 3
-        shift = -0.5    
-        scale = 1.0 / 0.5
     elif H.dataset == 'lsun':
         trX, vaX, teX = lsun_church(H.data_root)   # helper above
         H.image_size     = 256
         H.image_channels = 3
-        shift = -0.5               
-        scale = 1. / 0.5
     else:
         raise ValueError('unknown dataset: ', H.dataset)
 
-    do_low_bit = H.dataset in ['ffhq_256']
-
-    if H.test_eval:
-        print('DOING TEST')
-        eval_dataset = teX
-    else:
-        eval_dataset = None
-
     device = torch.device("cuda", torch.cuda.current_device())
 
-    shift = torch.tensor([shift], device=device).view(1, 1, 1, 1)
-    scale = torch.tensor([scale], device=device).view(1, 1, 1, 1)
-    shift_loss = torch.tensor([shift_loss], device=device).view(1, 1, 1, 1)
-    scale_loss = torch.tensor([scale_loss], device=device).view(1, 1, 1, 1)
+    autoencoder = load_autoencoder(H, device)
+    latent_probe = encode_images_to_latents(autoencoder, torch.zeros(1, 3, H.image_size, H.image_size, device=device), target_spatial=(H.image_size, H.image_size))
+    H.image_channels = latent_probe.shape[1]
 
     # if H.dataset == 'ffhq_1024':
     #     train_data = ImageFolder(trX, transforms.ToTensor())
@@ -139,11 +111,6 @@ def set_up_data(H):
 
 
     def preprocess_func(x):
-        nonlocal shift
-        nonlocal scale
-        nonlocal shift_loss
-        nonlocal scale_loss
-        nonlocal do_low_bit
         nonlocal untranspose
         'takes in a data example and returns the preprocessed input'
         'as well as the input processed for the loss'
@@ -151,13 +118,10 @@ def set_up_data(H):
             x[0] = x[0].permute(0, 2, 3, 1)
         inp = x[0].to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
-        # out = inp.clone()
-        # inp.add_(shift).mul_(scale)
-        # if do_low_bit:
-        #     5 bits of precision
-        #     out.mul_(1. / 8.).floor_().mul_(8.)
-        # out.add_(shift_loss).mul_(scale_loss)
-        return inp, inp
+        target = inp.permute(0, 3, 1, 2)
+        target = encode_images_to_latents(autoencoder, target, target_spatial=(H.image_size, H.image_size))
+        target = target.permute(0, 2, 3, 1).contiguous()
+        return inp, target
 
     return H, train_data, valid_data, preprocess_func
 

@@ -1,21 +1,19 @@
-from curses import update_lines_cols
-from math import comb, ceil
+from math import ceil
 import time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
-from transformers import AutoImageProcessor, AutoModel
+from torch.utils.data import DataLoader
+from transformers import AutoModel
 
 from LPNet import LPNet
-from helpers.utils import is_dist_avail_and_initialized, is_main_process, get_world_size, get_rank, safe_barrier
+from helpers.utils import is_main_process, get_world_size, get_rank, safe_barrier
 from models import parse_layer_string
-from helpers.angle_sampler import Angle_Generator
 from torch import autocast
-from diffusers import AutoencoderTiny
 import faiss
 from tqdm import tqdm
+from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn):
@@ -43,49 +41,47 @@ class Sampler:
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
-        ############
-        #  Can be removed
-        self.selected_dists_lpips = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_lpips[:] = np.inf
-
-        self.selected_dists_l2 = torch.empty([sz], dtype=torch.float32)
-        self.selected_dists_l2[:] = np.inf 
-        #############
-
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
         self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.H.image_size, self.H.image_size],
                                         dtype=torch.float32)
 
         self.pool_latents = None
 
+        self.autoencoder = None
+        self.autoencoder_native_latent_size = None
+        if getattr(H, 'autoencoder_decode_for_metrics', True):
+            self.autoencoder = load_autoencoder(H, self.device)
+            fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
+            native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
+            self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
+
+        if H.search_type != 'l2':
+            raise ValueError('This branch expects search_type=l2.')
+
         self.projections = []
-        self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
-        self.lpips_net.eval()
-        self.lpips_net.requires_grad_(False)
+        self.lpips_net = None
+        if H.search_type in ['lpips', 'combined']:
+            self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
+            self.lpips_net.eval()
+            self.lpips_net.requires_grad_(False)
+            if(self.H.compile):
+                self.lpips_net = torch.compile(self.lpips_net)
 
-        ## TODO: check this is required or not
-        if(self.H.compile):
-            self.lpips_net = torch.compile(self.lpips_net)
-
-        self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
-        self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
-
-        self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
-        
-        if(self.H.compile):
-            self.dino_encoder = torch.compile(self.dino_encoder)
+        self.dino_mean = None
+        self.dino_std = None
+        self.dino_encoder = None
+        if H.search_type == 'combined':
+            self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
+            self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
+            self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
+            if(self.H.compile):
+                self.dino_encoder = torch.compile(self.dino_encoder)
         
         self.nn_search_batch = H.nn_search_batch
 
-
-        # self.vae = AutoencoderTiny.from_pretrained("madebyollin/taesd").to(self.device)
-        # # self.vae = AutoencoderTiny.from_pretrained("./tiny-auto/models--madebyollin--taesd/snapshots/main").to(self.device)
-        # self.vae.eval()
-        # self.vae.requires_grad_(False)
-
         self.l2_projection = None
 
-        fake = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
+        fake = torch.zeros(1, H.image_channels, H.image_size, H.image_size, device=self.device)
 
         safe_barrier()
         if(H.search_type == 'lpips'):
@@ -107,12 +103,6 @@ class Sampler:
             self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
             sum_dims = H.proj_dim
 
-        # elif(H.search_type == 'vae'):
-        #     interpolated = self.vae.encode(fake).latents
-        #     interpolated = interpolated.reshape(interpolated.shape[0],-1)
-        #     self.l2_projection = F.normalize(torch.randn(interpolated.shape[1], H.proj_dim, device=self.device), p=2, dim=1)
-        #     sum_dims = H.proj_dim
-        
         elif(H.search_type == 'combined'):
             interpolated = F.interpolate(fake,scale_factor = H.l2_search_downsample, antialias=True, mode='bicubic')
             out, shapes = self.lpips_net(interpolated)
@@ -166,13 +156,6 @@ class Sampler:
 
         x = F.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
         return (x - self.dino_mean) / self.dino_std
-
-    # def get_vae_features(self, inp, permute=True):
-    #     if(permute):
-    #         inp = inp.permute(0, 3, 1, 2)
-    #     interpolated = self.vae.encode(inp).latents
-    #     interpolated = interpolated.reshape(interpolated.shape[0],-1)
-    #     return interpolated
 
     def get_projected(self, inp, permute=True):
         if(permute):
@@ -232,8 +215,6 @@ class Sampler:
                 self.dataset_proj[batch_slice] = self.get_projected(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'l2'):
                 self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
-            # elif(self.H.search_type == 'vae'):
-            #     self.dataset_proj[batch_slice] = self.get_vae_features(self.preprocess_fn(x)[1]).cpu()
             elif(self.H.search_type == 'combined'):
                 self.dataset_proj[batch_slice] = self.get_combined_feature(self.preprocess_fn(x)[1]).cpu()
             else:
@@ -245,7 +226,16 @@ class Sampler:
         with torch.no_grad():
             with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
-                px_z = gen(latents, None).permute(0, 2, 3, 1)
+                px_z = gen(latents, None)
+                if self.autoencoder is not None:
+                    px_z = decode_latents_to_images(self.autoencoder, px_z, self.autoencoder_native_latent_size)
+
+                if px_z.shape[1] == 1:
+                    px_z = px_z.repeat(1, 3, 1, 1)
+                elif px_z.shape[1] >= 3:
+                    px_z = px_z[:, :3]
+
+                px_z = px_z.permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
                 xhat = xhat.detach().cpu().numpy()
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
@@ -287,67 +277,15 @@ class Sampler:
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
-
-        l2_loss = self.l2_loss(inp, tar).mean()
-        res = 0
-        
-        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True)
-
-        if(inp.shape[2] < 32):
-            dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
+        if self.H.loss_type == 'huber':
+            per_elem = self.pseudo_huber((inp - tar) ** 2)
         else:
-            dino_loss = torch.tensor(0.0, device=self.device)
+            per_elem = self.l2_loss(inp, tar)
 
-
-        if(self.H.loss_type == 'huber'):
-            loss = self.H.lpips_coef * self.pseudo_huber(lpips_loss) + self.H.l2_coef * self.pseudo_huber(l2_loss) + self.H.dino_coef * self.pseudo_huber(dino_loss)    
-        else:
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-
-        return loss
+        if use_mean:
+            return per_elem.mean()
+        return per_elem.reshape(per_elem.shape[0], -1).mean(dim=1)
     
-    ############### Can be removed ###########
-
-    
-    def calc_dists_existing(self, dataset_tensor, gen, dists=None, dists_lpips = None, dists_l2 = None, latents=None, to_update=None, snoise=None, logging=False):
-        if dists is None:
-            dists = self.selected_dists
-        if dists_lpips is None:
-            dists_lpips = self.selected_dists_lpips
-        if dists_l2 is None:
-            dists_l2 = self.selected_dists_l2
-        if latents is None:
-            latents = self.selected_latents
-
-        if to_update is not None:
-            latents = latents[to_update]
-            dists = dists[to_update]
-            dataset_tensor = dataset_tensor[to_update]
-
-        for ind, x in enumerate(DataLoader(TensorDataset(dataset_tensor), batch_size=self.H.n_batch)):
-            _, target = self.preprocess_fn(x)
-            batch_slice = slice(ind * self.H.n_batch, ind * self.H.n_batch + target.shape[0])
-            cur_latents = latents[batch_slice]
-            with torch.no_grad():
-                with autocast(device_type='cuda'):
-                    out = gen(cur_latents, None)
-                    if(logging):
-                        dist, dist_lpips, dist_l2 = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False, logging=True)
-                        dists[batch_slice] = torch.squeeze(dist)
-                        dists_lpips[batch_slice] = torch.squeeze(dist_lpips)
-                        dists_l2[batch_slice] = torch.squeeze(dist_l2)
-                    else:
-                        dist = self.calc_loss(target.permute(0, 3, 1, 2), out, use_mean=False)
-                        dists[batch_slice] = torch.squeeze(dist)
-        
-        if(logging):
-            return dists, dists_lpips, dists_l2
-        else:
-            return dists
-    
-    ############### Can be removed ###########
-
-
     def resample_pool(self, gen):
 
         gen.eval()   
@@ -375,8 +313,6 @@ class Sampler:
                         proj = self.get_projected(outputs, False)
                     elif self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
-                    # elif self.H.search_type == 'vae':
-                    #     proj = self.get_vae_features(outputs, False)
                     elif self.H.search_type == 'combined':
                         proj = self.get_combined_feature(outputs, False)
                     else:
