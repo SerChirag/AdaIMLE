@@ -267,6 +267,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
             'unique_indices': sampler.unique_indices,
+            'total_excluded': getattr(sampler, 'total_excluded', 0),
+            'total_excluded_percentage': getattr(sampler, 'total_excluded_percentage', 0),
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

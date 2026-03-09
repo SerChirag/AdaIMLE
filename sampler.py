@@ -62,6 +62,8 @@ class Sampler:
         self.nn_search_batch = H.nn_search_batch
 
         self.l2_projection = None
+        self.total_excluded = 0
+        self.total_excluded_percentage = 0.0
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
@@ -240,18 +242,16 @@ class Sampler:
         """
         Hard-first greedy Top-K matching (unique when possible) using self.gpu_index_flat.
 
-        Logic:
-        1) Build FAISS index once on the FULL dataset.
-        2) Compute hardness score per query using k=2 margin (d2 - d1).
-        3) Process queries in hard-first order (small margin first).
-        4) For each query, pick the nearest *unused* dataset element from its Top-K list.
-        5) If all Top-K are used, fall back to 1-NN (collision allowed) so it always returns.
+        RS-IMLE Logic:
+        Prior to matching, if self.ignore_radius > 0, we identify dataset samples (pool latents)
+        that are too close to queries (dataset latents). We drop these from consideration so they
+        are not selected. To ensure we can assign one latent per query, we guarantee that the dataset
+        retains at least Nq samples (dropping the closest ones first).
 
         Returns:
             distances: (Nq,) torch.float32   # squared L2 from FAISS
             indices:   (Nq,) torch.long
         """
-
         topk = self.H.imle_db_topk
         tie_shuffle = True  # avoid ordering bias for equal/near-equal margins
 
@@ -260,16 +260,66 @@ class Sampler:
         if Nq == 0:
             return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
-        topk = int(min(max(1, topk), Nd))
+        if isinstance(dataset, torch.Tensor):
+            dataset_np = np.ascontiguousarray(dataset.detach().cpu().numpy(), dtype=np.float32)
+        else:
+            dataset_np = np.ascontiguousarray(dataset, dtype=np.float32)
+
+        if isinstance(queries, torch.Tensor):
+            queries_np = np.ascontiguousarray(queries.detach().cpu().numpy(), dtype=np.float32)
+        else:
+            queries_np = np.ascontiguousarray(queries, dtype=np.float32)
+
 
         # ---- Build index once on the full dataset ----
         self.gpu_index_flat.reset()
-        self.gpu_index_flat.add(dataset)
+        self.gpu_index_flat.add(dataset_np)
+
+        # ---- RS-IMLE logic: reject dataset samples that are too close to queries ----
+        original_indices_map = None
+        if getattr(self.H, 'use_rs_imle', False):
+            k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
+            rs_radius = getattr(self.H, 'rs_radius', 10.0)
+            distances, indices = self.gpu_index_flat.search(queries_np, k_ignore)
+            easy_mask = distances < rs_radius
+            
+            flat_indices = indices[easy_mask]
+            flat_distances = distances[easy_mask]
+            
+            if len(flat_indices) > 0:
+                min_dist = np.full(Nd, np.inf, dtype=np.float32)
+                np.minimum.at(min_dist, flat_indices, flat_distances)
+                
+                too_close_indices = np.where(min_dist < np.inf)[0]
+                max_drops = max(0, Nd - Nq)
+                
+                if len(too_close_indices) > max_drops:
+                    # Drop the `max_drops` closest ones
+                    sorted_by_dist = too_close_indices[np.argsort(min_dist[too_close_indices])]
+                    drop_indices = sorted_by_dist[:max_drops]
+                else:
+                    drop_indices = too_close_indices
+
+                if len(drop_indices) > 0:
+                    self.total_excluded = len(drop_indices)
+                    self.total_excluded_percentage = self.total_excluded / Nd
+
+                    keep_mask = np.ones(Nd, dtype=bool)
+                    keep_mask[drop_indices] = False
+                    
+                    dataset_np = dataset_np[keep_mask]
+                    original_indices_map = np.where(keep_mask)[0]
+                    Nd = dataset_np.shape[0]
+                    
+                    self.gpu_index_flat.reset()
+                    self.gpu_index_flat.add(dataset_np)
+
+        topk = int(min(max(1, topk), Nd))
 
         # ---- 1) Hardness (margin = d2 - d1) ----
         # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
-            D2, _ = self.gpu_index_flat.search(queries, 2)  # (Nq,2)
+            D2, _ = self.gpu_index_flat.search(queries_np, 2)  # (Nq,2)
             margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
@@ -281,7 +331,7 @@ class Sampler:
             order = np.argsort(margin, kind="stable")
 
         # ---- 2) Get Top-K candidate lists for all queries ----
-        D, I = self.gpu_index_flat.search(queries, topk)  # (Nq,K), squared L2 + indices
+        D, I = self.gpu_index_flat.search(queries_np, topk)  # (Nq,K), squared L2 + indices
 
         # ---- 3) Greedy unique assignment in hard-first order ----
         used = np.zeros(Nd, dtype=bool)
@@ -309,6 +359,10 @@ class Sampler:
             if chosen == -1:
                 chosen = int(cand[0])
                 chosen_d = float(cd[0])
+
+            # Map the local pool index back to the original index if we dropped elements
+            if original_indices_map is not None:
+                chosen = int(original_indices_map[chosen])
 
             out_idx[qi] = chosen
             out_dst[qi] = chosen_d

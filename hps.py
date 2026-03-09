@@ -204,6 +204,11 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
     parser.add_argument('--zero_init', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
+    parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
+
+    parser.add_argument('--rs_radius', type=float, default=100.0)
+    parser.add_argument('--rs_knn_ignore', type=int, default=10)
+
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
     
