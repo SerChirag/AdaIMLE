@@ -59,6 +59,22 @@ imagenet32_200.convnext_expansion = 4
 imagenet32_200.num_classes = 1000
 HPARAMS_REGISTRY['imagenet32_200'] = imagenet32_200
 
+imagenet32_100 = Hyperparams()
+imagenet32_100.width = 512
+imagenet32_100.lr = 0.0005
+imagenet32_100.wd = 0.01
+imagenet32_100.dec_blocks = "1x2,4m1,4x4,8m4,8x9,16m8,16x19,32m16,32x40" 
+imagenet32_100.warmup_iters = 5000
+imagenet32_100.dataset = 'imagenet32_100'
+imagenet32_100.n_batch = 32
+imagenet32_100.imle_batch = 32
+imagenet32_100.ema_rate = 0.9999
+imagenet32_100.l2_search_downsample = 1.0
+imagenet32_100.multi_res_scales = '12,16,20,24,28'
+imagenet32_100.convnext_expansion = 4
+imagenet32_100.num_classes = 1000
+HPARAMS_REGISTRY['imagenet32_100'] = imagenet32_100
+
 
 imagenet64 = Hyperparams()
 imagenet64.width = 512
