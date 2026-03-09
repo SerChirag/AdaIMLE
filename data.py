@@ -31,8 +31,16 @@ def set_up_data(H):
         H.image_channels = 3
         shift = -116.2373
         scale = 1. / 69.37404
-    if H.dataset == 'imagenet32_200':
+    elif H.dataset == 'imagenet32_200':
         (trX, trY) = imagenet32_200(H.data_root)
+        vaX = None
+        teX = None
+        H.image_size = 32
+        H.image_channels = 3
+        shift = -116.2373
+        scale = 1. / 69.37404   
+    elif H.dataset == 'imagenet32_100':
+        (trX, trY) = imagenet32_100(H.data_root)
         vaX = None
         teX = None
         H.image_size = 32
@@ -139,7 +147,7 @@ def set_up_data(H):
         train_len = train_data.ds.num_rows  
         untranspose = True
     
-    elif H.dataset == 'imagenet32' or H.dataset == 'imagenet32_200':
+    elif H.dataset == 'imagenet32' or H.dataset == 'imagenet32_200' or H.dataset == 'imagenet32_100':
         train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY))
         valid_data = None
         train_len = len(train_data)
@@ -289,6 +297,38 @@ def imagenet32_200(data_root):
     labels = labels[mask]
 
     return (images, labels)
+
+def imagenet32_100(data_root):
+
+    files = sorted([f for f in os.listdir(data_root) if f.endswith(".npz")])
+
+    images, labels = [], []
+
+    for f in files:
+        batch = np.load(os.path.join(data_root, f))
+        X = batch["data"]        # shape (N, 3072)
+        Y = batch["labels"]      # shape (N,)
+        
+        # reshape to (N, 3, 32, 32)
+        X = X.reshape(-1, 3, 32, 32)
+        images.append(X)
+        labels.append(Y)
+
+    images = np.concatenate(images)
+    labels = np.concatenate(labels) - 1
+
+    sort_indices = np.argsort(labels)
+    images = images[sort_indices]
+    labels = labels[sort_indices]
+
+    # Select first 100 classes
+    chosen_classes = np.arange(100)
+    mask = np.isin(labels, chosen_classes)
+    images = images[mask]
+    labels = labels[mask]
+
+    return (images, labels)
+
 
 def imagenet64(data_root):
 

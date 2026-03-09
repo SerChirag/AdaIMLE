@@ -30,6 +30,10 @@ class Sampler:
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
+
+        if(is_main_process()):
+             print(f"Initialized Sampler with dataset size {sz}")
+             
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float16)
         self.last_selected_latents = torch.empty([H.num_images_visualize, H.latent_dim], dtype=torch.float16)
 
