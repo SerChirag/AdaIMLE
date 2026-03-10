@@ -24,7 +24,8 @@ class Sampler:
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
-        self.l2_loss = torch.nn.MSELoss(reduce=False).to(self.device)
+        self.l2_loss = torch.nn.MSELoss(reduction=False).to(self.device)
+        self.l1_loss = torch.nn.L1Loss(reduction=False).to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
@@ -149,37 +150,6 @@ class Sampler:
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
-    def get_lpips_loss(self, inp, tar, use_mean=True):
-        res = 0
-        if(inp.shape[2] < 32):
-            inp_interpolated = F.interpolate(inp, size=(32,32), mode='bicubic')
-            tar_interpolated = F.interpolate(tar, size=(32,32), mode='bicubic')
-        else:
-            inp_interpolated = inp
-            tar_interpolated = tar
-        inp_feat, inp_shape = self.lpips_net(inp_interpolated)
-        tar_feat, _ = self.lpips_net(tar_interpolated)
-        for i, g_feat in enumerate(inp_feat):
-            lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
-
-            # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-            #     lpips_feature_loss[bool_mask] = 0.0
-
-            res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
-        
-        if use_mean:
-            return res.mean()
-        else:
-            return res
-    
-    def get_dino_loss(self, inp, tar, use_mean=True):
-        dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
-        tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
-        dino_loss = self.l2_loss(dino_feat, tar_feat)
-        if use_mean:
-            return dino_loss.mean()
-        else:
-            return dino_loss
     
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
@@ -187,8 +157,11 @@ class Sampler:
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
+        if self.H.loss_type == 'pseudo_l1':
+            per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
         else:
             per_elem = self.l2_loss(inp, tar)
+            
 
         if use_mean:
             return per_elem.mean()

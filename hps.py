@@ -258,7 +258,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
 
-    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber"], help="type of loss")
+    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
     
     # some metric args
