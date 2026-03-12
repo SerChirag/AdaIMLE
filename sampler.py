@@ -157,8 +157,10 @@ class Sampler:
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
-        if self.H.loss_type == 'pseudo_l1':
+        elif self.H.loss_type == 'pseudo_l1':
             per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
+        elif self.H.loss_type == 'cauchy':
+            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
         else:
             per_elem = self.l2_loss(inp, tar)
             
