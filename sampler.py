@@ -24,8 +24,8 @@ class Sampler:
 
         self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
         self.preprocess_fn = preprocess_fn
-        self.l2_loss = torch.nn.MSELoss(reduction=False).to(self.device)
-        self.l1_loss = torch.nn.L1Loss(reduction=False).to(self.device)
+        self.l2_loss = torch.nn.MSELoss(reduction='none').to(self.device)
+        self.l1_loss = torch.nn.L1Loss(reduction='none').to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
         self.sz = sz
