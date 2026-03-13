@@ -337,9 +337,9 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=20)  # top-k for imle database search
+    parser.add_argument('--imle_db_topk', type=int, default=1)  # top-k for imle database search
 
-    parser.add_argument("--huber_delta", type=float, default=0.2, help="delta for huber loss")
+    parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
