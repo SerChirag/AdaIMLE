@@ -21,6 +21,11 @@ try:
 except ImportError:
     xm = None
 
+try:
+    import torch_xla.runtime as xr
+except ImportError:
+    xr = None
+
 _RUNTIME_BACKEND = "cuda"
 
 def init_distributed_mode(timeout_sec=4800, backend="cuda"):
@@ -83,11 +88,15 @@ def init_distributed_mode(timeout_sec=4800, backend="cuda"):
 
 def is_dist_avail_and_initialized(): return dist.is_available() and dist.is_initialized()
 def get_world_size():
+    if _RUNTIME_BACKEND == "xla" and xr is not None:
+        return xr.world_size()
     if _RUNTIME_BACKEND == "xla" and xm is not None:
         return xm.xrt_world_size()
     return dist.get_world_size() if is_dist_avail_and_initialized() else 1
 
 def get_rank():
+    if _RUNTIME_BACKEND == "xla" and xr is not None:
+        return xr.global_ordinal()
     if _RUNTIME_BACKEND == "xla" and xm is not None:
         return xm.get_ordinal()
     return dist.get_rank() if is_dist_avail_and_initialized() else 0

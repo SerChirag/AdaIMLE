@@ -235,14 +235,18 @@ def load_imle(H, logprint):
     ema_imle.requires_grad_(False)
     ema_imle.eval()
 
-    ddp_dev = torch.cuda.current_device() if torch.cuda.is_available() else None
-
     if(is_dist_avail_and_initialized() and H.backend != 'xla'):
-        imle = DDP(imle, device_ids=[ddp_dev], 
-                    output_device=ddp_dev,
-                    gradient_as_bucket_view=True,
-                    static_graph=True
-                    )
+        if torch.cuda.is_available() and device.type == 'cuda':
+            ddp_dev = torch.cuda.current_device()
+            imle = DDP(imle,
+                       device_ids=[ddp_dev],
+                       output_device=ddp_dev,
+                       gradient_as_bucket_view=True,
+                       static_graph=True)
+        else:
+            imle = DDP(imle,
+                       gradient_as_bucket_view=True,
+                       static_graph=True)
     
     if(H.compile and H.backend != 'xla'):
         imle = torch.compile(imle) 

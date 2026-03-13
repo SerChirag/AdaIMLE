@@ -8,7 +8,7 @@ import torch
 from torch.utils.data.distributed import DistributedSampler
 import torch.nn as nn
 from cleanfid import fid
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Subset
 import torch.nn.functional as F
 from models import IMLE
 import numpy as np
@@ -98,11 +98,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     if H.subset_len != -1:
         subset_len = H.subset_len
 
+    train_data = data_train
+    if subset_len < len(data_train):
+        train_data = Subset(data_train, list(range(subset_len)))
+
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
+    subset_len = H.subset_len if H.subset_len != -1 else len(train_data)
 
 
     sampler = Sampler(H, subset_len, preprocess_fn)
@@ -110,10 +114,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     device = H.device
 
     epoch = starting_epoch 
-    sampler.init_projection(data_train)
+    sampler.init_projection(train_data)
     
     safe_barrier()
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
+    viz_batch_original, _ = get_sample_for_visualization(train_data, preprocess_fn, H.num_images_visualize, H.dataset)
 
 
     latent_for_visualization = []
@@ -151,7 +155,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         # Create a dataset that pairs images with their current latents.
         safe_barrier()        
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
+        comb_dataset = ZippedDataset(train_data, TensorDataset(sampler.selected_latents))
 
         # Use a DistributedSampler if in distributed training.
         train_sampler = DistributedSampler(comb_dataset, 
@@ -350,6 +354,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 def main():
     H, logprint = set_up_hyperparams()
+
+    if H.backend == 'xla':
+        local_rank = os.environ.get('LOCAL_RANK')
+        local_world_size = os.environ.get('LOCAL_WORLD_SIZE') or os.environ.get('WORLD_SIZE')
+        if local_rank is not None:
+            os.environ.setdefault('PJRT_LOCAL_PROCESS_RANK', local_rank)
+        if local_world_size is not None:
+            os.environ.setdefault('PJRT_LOCAL_PROCESS_COUNT', local_world_size)
+
     init_distributed_mode(backend=H.backend)
 
     if H.backend == 'xla':

@@ -13,7 +13,6 @@ from helpers.utils import is_dist_avail_and_initialized, is_main_process, get_wo
 from models import parse_layer_string
 from helpers.angle_sampler import Angle_Generator
 from torch import autocast
-from diffusers import AutoencoderTiny
 import faiss
 from tqdm import tqdm
 from contextlib import nullcontext
