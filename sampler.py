@@ -152,22 +152,26 @@ class Sampler:
 
     
     def pseudo_huber(self, diff):
-        return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
+        delta = self.H.huber_delta
+        return 2.0 * delta**2 * (torch.sqrt(1 + (diff / delta)**2) - 1)
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
-        if self.H.loss_type == 'huber':
-            per_elem = self.pseudo_huber((inp - tar) ** 2)
-        elif self.H.loss_type == 'pseudo_l1':
-            per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
-        elif self.H.loss_type == 'cauchy':
-            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
-        else:
-            per_elem = self.l2_loss(inp, tar)
-            
+        sq = (inp - tar).pow(2)
+        mse = sq.reshape(sq.shape[0], -1).mean(dim=1)   # (N,)
+        residual = torch.sqrt(mse + 1e-12)              # per-sample RMSE
 
-        if use_mean:
-            return per_elem.mean()
-        return per_elem.reshape(per_elem.shape[0], -1).mean(dim=1)
+        if self.H.loss_type == 'huber':
+            per_sample = self.pseudo_huber(residual)
+        elif self.H.loss_type == 'pseudo_l1':
+            per_sample = residual * self.H.huber_delta
+        elif self.H.loss_type == 'cauchy':
+            per_sample = torch.log1p(0.5 * (residual / self.H.loss_scale)**2)
+        elif self.H.loss_type == 'mclure':
+            per_sample = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
+        else:
+            per_sample = mse  
+
+        return per_sample.mean() if use_mean else per_sample
     
     def resample_pool(self, gen):
 
