@@ -166,6 +166,8 @@ class Sampler:
             per_sample = residual * self.H.huber_delta
         elif self.H.loss_type == 'cauchy':
             per_sample = torch.log1p(0.5 * (residual / self.H.loss_scale)**2)
+        elif self.H.loss_type == 'rmse':
+            per_sample = residual
         elif self.H.loss_type == 'mclure':
             per_sample = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
         else:
