@@ -251,7 +251,7 @@ class Sampler:
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
-    def get_lpips_loss(self, inp, tar, use_mean=True):
+    def get_lpips_loss(self, inp, tar, use_mean=True, apply_huber=False):
         res = 0
         if(inp.shape[2] < 32):
             inp_interpolated = F.interpolate(inp, size=(32,32), mode='bicubic')
@@ -264,47 +264,50 @@ class Sampler:
         for i, g_feat in enumerate(inp_feat):
             lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
 
-            # if(self.H.use_eps_ignore and self.H.use_eps_ignore_advanced):
-            #     lpips_feature_loss[bool_mask] = 0.0
+            if apply_huber:
+                lpips_feature_loss = self.pseudo_huber(lpips_feature_loss)
 
             res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
         
-        if use_mean:
-            return res.mean()
-        else:
-            return res
+        return res.mean()
+
     
-    def get_dino_loss(self, inp, tar, use_mean=True):
+    def get_dino_loss(self, inp, tar, use_mean=True, apply_huber=False):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
         tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
         dino_loss = self.l2_loss(dino_feat, tar_feat)
-        if use_mean:
-            return dino_loss.mean()
-        else:
-            return dino_loss
+        if apply_huber:
+            dino_loss = self.pseudo_huber(dino_loss)
+
+        return dino_loss.mean()
     
     def pseudo_huber(self, diff):
-        return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
+        delta = self.H.huber_delta
+        return delta**2 * (torch.sqrt(1.0 + (diff) / delta ** 2) - 1.0)
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
 
-        l2_loss = self.l2_loss(inp, tar).mean()
-        res = 0
-        
-        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True)
+        apply_huber = self.H.loss_type == 'huber'
+
+        l2_residual = self.l2_loss(inp, tar)
+        if apply_huber:
+            l2_loss = self.pseudo_huber(l2_residual).mean()
+        else:
+            l2_loss = l2_residual.mean()
+
+        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True, apply_huber=apply_huber)
 
         if(inp.shape[2] < 32):
-            dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
+            dino_loss = self.get_dino_loss(inp, tar, use_mean=True, apply_huber=apply_huber)
         else:
-            dino_loss = torch.tensor(0.0, device=self.device)
+            dino_loss = torch.zeros(inp.shape[0], device=self.device)
 
+        lpips_term = self.H.lpips_coef * lpips_loss
+        l2_term = self.H.l2_coef * l2_loss
+        dino_term = self.H.dino_coef * dino_loss
+        loss = lpips_term + l2_term + dino_term
 
-        if(self.H.loss_type == 'huber'):
-            loss = self.H.lpips_coef * self.pseudo_huber(lpips_loss) + self.H.l2_coef * self.pseudo_huber(l2_loss) + self.H.dino_coef * self.pseudo_huber(dino_loss)    
-        else:
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
-
-        return loss
+        return loss.mean()
     
     ############### Can be removed ###########
 
