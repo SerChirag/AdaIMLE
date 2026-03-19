@@ -50,8 +50,6 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
         px_z = imle(latents, train=True)
         loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
         loss_measure = loss.clone()
-        if(H.frac_loss):
-            loss = loss * (8 / px_z[-1].shape[2])
         num_resolutions = 1
 
         if(H.use_multi_res):
@@ -59,23 +57,14 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
             for i in range(2,len(px_z)-1):
                 px_z_scale = px_z[i]
 
-                if(H.use_resize_right):
-                    targets_scale = resize_right.resize(targets_permuted, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
-                                                        interp_method=interp_methods.cubic, antialiasing =True)
-                else:
-                    targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
                                                   antialias=True, mode='bicubic', align_corners=H.align_corners)
-                
-                if(H.frac_loss):
-                    loss_scale = loss_fn(px_z_scale, targets_scale) * (8 / px_z_scale.shape[2])
-                else:
-                    loss_scale = loss_fn(px_z_scale, targets_scale)
+
+                loss_scale = loss_fn(px_z_scale, targets_scale)
                 
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
-    if(not H.frac_loss):
-        loss = loss / num_resolutions
 
     loss = loss / (H.accumulation_steps)
     

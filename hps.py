@@ -185,8 +185,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
-    parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
-    parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
+    parser.add_argument('--pixel_coef', type=float, default=0.1)  # pixel loss coefficient
+    parser.add_argument('--dino_coef', type=float, default=1.0)  # dino loss coefficient
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
@@ -251,9 +251,9 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
 
-    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber"], help="type of loss")
+    parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "welsch", "mclure"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
-    
+    parser.add_argument("--loss_scale", type=float, default=1.0, help="scale for general robust losses, e.g. pseudo-huber, pseudo-l1, cauchy")
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")
     parser.add_argument("--batch", type=int, default=16, help="batch size for the models")

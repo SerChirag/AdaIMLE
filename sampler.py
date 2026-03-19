@@ -251,7 +251,7 @@ class Sampler:
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
-    def get_lpips_loss(self, inp, tar, use_mean=True, apply_huber=False):
+    def get_lpips_loss(self, inp, tar, use_mean=True):
         res = 0
         if(inp.shape[2] < 32):
             inp_interpolated = F.interpolate(inp, size=(32,32), mode='bicubic')
@@ -262,50 +262,73 @@ class Sampler:
         inp_feat, inp_shape = self.lpips_net(inp_interpolated)
         tar_feat, _ = self.lpips_net(tar_interpolated)
         for i, g_feat in enumerate(inp_feat):
-            lpips_feature_loss = (g_feat - tar_feat[i]) ** 2
+            lpips_feature_residual = (g_feat - tar_feat[i])
 
-            if apply_huber:
-                lpips_feature_loss = self.pseudo_huber(lpips_feature_loss)
+            if self.H.loss_type == 'huber':
+                lpips_feature_loss = self.pseudo_huber(lpips_feature_residual)
+            elif self.H.loss_type == 'mclure':
+                lpips_feature_loss = self.mclure_loss(lpips_feature_residual)
+            elif self.H.loss_type == 'welsch':
+                lpips_feature_loss = self.welsch_loss(lpips_feature_residual)
+            else:
+                lpips_feature_loss = lpips_feature_residual.pow(2)
 
             res += torch.sum(lpips_feature_loss, dim=1) / (inp_shape[i] ** 2)
         
         return res.mean()
 
     
-    def get_dino_loss(self, inp, tar, use_mean=True, apply_huber=False):
+    def get_dino_loss(self, inp, tar, use_mean=True):
         dino_feat = self.get_dino_features(inp, scale_factor=1, permute=False)
         tar_feat = self.get_dino_features(tar, scale_factor=1, permute=False)
-        dino_loss = self.l2_loss(dino_feat, tar_feat)
-        if apply_huber:
-            dino_loss = self.pseudo_huber(dino_loss)
+        dino_residual = (dino_feat - tar_feat) 
+
+        if self.H.loss_type == 'huber':
+            dino_loss = self.pseudo_huber(dino_residual)
+        elif self.H.loss_type == 'mclure':
+            dino_loss = self.mclure_loss(dino_residual)
+        elif self.H.loss_type == 'welsch':
+            dino_loss = self.welsch_loss(dino_residual)
+        else:
+            dino_loss = dino_residual.pow(2)
 
         return dino_loss.mean()
     
-    def pseudo_huber(self, diff):
-        delta = self.H.huber_delta
-        return delta**2 * (torch.sqrt(1.0 + (diff) / delta ** 2) - 1.0)
+    def pseudo_huber(self, residual):
+        return self.H.huber_delta**2 * (torch.sqrt(1.0 + (residual / self.H.huber_delta) ** 2) - 1.0)
+
+    def mclure_loss(self, residual):
+        return (residual ** 2) / (residual ** 2 + self.H.loss_scale ** 2)
+
+    def welsch_loss(self, residual):
+        return 1 - torch.exp(-(residual / self.H.loss_scale)**2)
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
 
-        apply_huber = self.H.loss_type == 'huber'
-
-        l2_residual = self.l2_loss(inp, tar)
-        if apply_huber:
-            l2_loss = self.pseudo_huber(l2_residual).mean()
+        pixel_residual = (inp - tar)
+        
+        if self.H.loss_type == 'huber':
+            pixel_loss = self.pseudo_huber(pixel_residual).mean()
+        elif self.H.loss_type == 'mclure':
+            pixel_loss = self.mclure_loss(pixel_residual).mean()
+        elif self.H.loss_type == 'welsch':
+            pixel_loss = self.welsch_loss(pixel_residual).mean()
         else:
-            l2_loss = l2_residual.mean()
+            pixel_loss = pixel_residual.pow(2).mean()
 
-        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True, apply_huber=apply_huber)
+        lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True)
 
-        if(inp.shape[2] < 32):
-            dino_loss = self.get_dino_loss(inp, tar, use_mean=True, apply_huber=apply_huber)
+        if(inp.shape[2] >= 32):
+            dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
         else:
-            dino_loss = torch.zeros(inp.shape[0], device=self.device)
+            dino_loss = torch.zeros(1, device=self.device)
 
         lpips_term = self.H.lpips_coef * lpips_loss
-        l2_term = self.H.l2_coef * l2_loss
+        pixel_term = self.H.pixel_coef * pixel_loss
         dino_term = self.H.dino_coef * dino_loss
-        loss = lpips_term + l2_term + dino_term
+
+        # print(f"Pixel Loss: {pixel_loss.item():.2f}, LPIPS Loss: {lpips_loss.item():.2f}, DINO Loss: {dino_loss.item():.2f}")
+        loss = lpips_term + pixel_term + dino_term
 
         return loss.mean()
     
