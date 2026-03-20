@@ -159,15 +159,21 @@ class Sampler:
             per_elem = self.pseudo_huber((inp - tar) ** 2)
         elif self.H.loss_type == 'pseudo_l1':
             per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
+        elif self.H.loss_type == 'mclure':
+            residual = inp - tar
+            per_elem = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
+        elif self.H.loss_type == 'welsch':
+            residual = inp - tar
+            per_elem = (1 - torch.exp(-(residual / self.H.loss_scale)**2))
+        elif self.H.loss_type == 'rmse':
+            l2_loss = (inp - tar).pow(2).flatten(1).mean(dim=1)
+            per_elem = torch.sqrt(l2_loss + 1e-8)
         elif self.H.loss_type == 'cauchy':
             per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
         else:
             per_elem = self.l2_loss(inp, tar)
-            
 
-        if use_mean:
-            return per_elem.mean()
-        return per_elem.reshape(per_elem.shape[0], -1).mean(dim=1)
+        return per_elem.mean()
     
     def resample_pool(self, gen):
 

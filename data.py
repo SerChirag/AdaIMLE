@@ -112,8 +112,7 @@ def set_up_data(H):
     
         
     H.global_batch_size = H.n_batch * get_world_size()
-    H.total_iters = H.num_epochs * np.ceil(train_len // H.global_batch_size)
-
+    H.total_iters = H.num_epochs * ((train_len + H.global_batch_size - 1) // H.global_batch_size)
 
     def preprocess_func(x):
         nonlocal untranspose
