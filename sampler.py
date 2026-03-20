@@ -318,7 +318,7 @@ class Sampler:
 
         lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True)
 
-        if(inp.shape[2] >= 32):
+        if(inp.shape[2] > 32):
             dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
         else:
             dino_loss = torch.zeros(1, device=self.device)
