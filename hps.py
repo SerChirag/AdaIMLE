@@ -256,6 +256,9 @@ def add_imle_arguments(parser):
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1", "cauchy", "mclure", "rmse", "welsch"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
     parser.add_argument("--loss_scale", type=float, default=4.0, help="scale for general robust losses, e.g. pseudo-huber, pseudo-l1, cauchy")
+    parser.add_argument("--loss_scale_init", type=float, default=None, help="initial loss scale for annealing (defaults to loss_scale if not set)")
+    parser.add_argument("--loss_scale_final", type=float, default=None, help="final loss scale for annealing (defaults to loss_scale if not set)")
+    parser.add_argument("--loss_scale_schedule", type=str, default="linear", choices=["linear", "cosine"], help="annealing schedule for loss_scale")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")

@@ -1,3 +1,4 @@
+import math
 from math import ceil
 import time
 
@@ -28,6 +29,10 @@ class Sampler:
         self.l1_loss = torch.nn.L1Loss(reduction='none').to(self.device)
         self.H = H
         self.latent_lr = H.latent_lr
+        loss_scale_default = H.loss_scale
+        self.loss_scale_init = H.loss_scale_init if H.loss_scale_init is not None else loss_scale_default
+        self.loss_scale_final = H.loss_scale_final if H.loss_scale_final is not None else loss_scale_default
+        self.loss_scale = self.loss_scale_init
         self.sz = sz
         self.unique_indices = 0
         self.entire_ds = torch.arange(sz)
@@ -151,6 +156,13 @@ class Sampler:
                 return xhat
 
     
+    def update_loss_scale(self, epoch, num_epochs):
+        t = epoch / max(num_epochs - 1, 1)
+        if self.H.loss_scale_schedule == 'cosine':
+            self.loss_scale = self.loss_scale_final + 0.5 * (self.loss_scale_init - self.loss_scale_final) * (1 + math.cos(math.pi * t))
+        else:  # linear
+            self.loss_scale = self.loss_scale_init + (self.loss_scale_final - self.loss_scale_init) * t
+
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
@@ -161,15 +173,15 @@ class Sampler:
             per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
         elif self.H.loss_type == 'mclure':
             residual = inp - tar
-            per_elem = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
+            per_elem = (residual ** 2) / (self.loss_scale**2 + residual ** 2)
         elif self.H.loss_type == 'welsch':
             residual = inp - tar
-            per_elem = (1 - torch.exp(-(residual / self.H.loss_scale)**2))
+            per_elem = (1 - torch.exp(-(residual / self.loss_scale)**2))
         elif self.H.loss_type == 'rmse':
             l2_loss = (inp - tar).pow(2).flatten(1).mean(dim=1)
             per_elem = torch.sqrt(l2_loss + 1e-8)
         elif self.H.loss_type == 'cauchy':
-            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
+            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.loss_scale)**2)
         else:
             per_elem = self.l2_loss(inp, tar)
 

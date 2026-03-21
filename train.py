@@ -112,6 +112,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     while (epoch < H.num_epochs):
 
         safe_barrier()
+        sampler.update_loss_scale(epoch, H.num_epochs)
         # Update the IMLE force resampling every imle_force_resample epochs.
         if epoch % H.imle_force_resample == 0:
             torch.cuda.empty_cache()
