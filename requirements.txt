@@ -4,9 +4,5 @@ comet_ml
 imageio==2.9.0
 numpy
 pandas
-torch
 scikit_learn
-torchvision
-sck
 tqdm==4.64.0
-wandb

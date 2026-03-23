@@ -104,6 +104,8 @@ def get_rank():
 def is_main_process(): return get_rank() == 0
 
 def safe_barrier():
+    if get_world_size() <= 1:
+        return
     if _RUNTIME_BACKEND == "xla" and xm is not None:
         xm.rendezvous("safe_barrier")
     elif is_dist_avail_and_initialized():
@@ -287,4 +289,3 @@ class ZippedDataset(data.Dataset):
 
     def __len__(self):
         return len(self.datasets[0])
-

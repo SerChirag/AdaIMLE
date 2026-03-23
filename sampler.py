@@ -81,13 +81,13 @@ class Sampler:
         if(self.H.compile):
             self.lpips_net = torch.compile(self.lpips_net)
 
-        self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
-        self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
+        # self.dino_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=self.device).view(1, 3, 1, 1)
+        # self.dino_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=self.device).view(1, 3, 1, 1)
 
-        self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
+        # self.dino_encoder = AutoModel.from_pretrained("./models--facebook--dinov2-base/snapshots/main").eval().to(self.device)
         
-        if(self.H.compile):
-            self.dino_encoder = torch.compile(self.dino_encoder)
+        # if(self.H.compile):
+        #     self.dino_encoder = torch.compile(self.dino_encoder)
         
         self.nn_search_batch = H.nn_search_batch
 
@@ -313,16 +313,20 @@ class Sampler:
         
         lpips_loss = self.get_lpips_loss(inp, tar, use_mean=True)
 
-        if(inp.shape[2] < 32):
-            dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
-        else:
-            dino_loss = torch.tensor(0.0, device=self.device)
+        # if(inp.shape[2] < 32):
+        #     dino_loss = self.get_dino_loss(inp, tar, use_mean=True)
+        # else:
+        #     dino_loss = torch.tensor(0.0, device=self.device)
 
 
         if(self.H.loss_type == 'huber'):
-            loss = self.H.lpips_coef * self.pseudo_huber(lpips_loss) + self.H.l2_coef * self.pseudo_huber(l2_loss) + self.H.dino_coef * self.pseudo_huber(dino_loss)    
+            # loss = self.H.lpips_coef * self.pseudo_huber(lpips_loss) + self.H.l2_coef * self.pseudo_huber(l2_loss) + self.H.dino_coef * self.pseudo_huber(dino_loss)  
+            loss = self.H.lpips_coef * self.pseudo_huber(lpips_loss) + self.H.l2_coef * self.pseudo_huber(l2_loss)   
+  
         else:
-            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
+            # loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss + self.H.dino_coef * dino_loss
+            loss = self.H.lpips_coef * lpips_loss + self.H.l2_coef * l2_loss 
+
 
         return loss
     

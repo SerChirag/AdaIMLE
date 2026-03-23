@@ -194,7 +194,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
                                optimizer, sampler.calc_loss, scaler)
             
-            epoch_loss_sum += loss.item()
             epoch_iter_count += 1
 
             accum_counter += 1
@@ -209,7 +208,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     scaler.step(optimizer)
                     scaler.update()
                 scheduler.step()
-                imle.zero_grad(set_to_none=True)
+                imle.zero_grad(set_to_none=(H.backend != 'xla'))
                 base_imle = imle.module if hasattr(imle, 'module') else imle
                 update_ema(base_imle, ema_imle, H.ema_rate)
             
@@ -234,7 +233,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(f'Saving model@ {iterate} to {fp}')
                 save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
             safe_barrier()
-        
+            # Read loss scalar after the XLA sync so backward+optimizer execute as one
+            # fused graph. Calling loss.item() before the optimizer step forces a premature
+            # sync that splits the graph and can leave in-place-modified gradient/parameter
+            # buffers in an invalid state (buffer-is-deleted error on the next sync).
+            epoch_loss_sum += loss.item()
+
         if accum_counter % H.accumulation_steps != 0:
             scaler.unscale_(optimizer)  # Unscale gradients before clipping
             torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
@@ -244,7 +248,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 scaler.step(optimizer)
                 scaler.update()
             scheduler.step()
-            imle.zero_grad(set_to_none=True)
+            imle.zero_grad(set_to_none=(H.backend != 'xla'))
             base_imle = imle.module if hasattr(imle, 'module') else imle
             update_ema(base_imle, ema_imle, H.ema_rate)
         
