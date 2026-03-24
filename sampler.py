@@ -52,6 +52,9 @@ class Sampler:
 
         self.decode_for_metrics = bool(getattr(H, 'autoencoder_decode_for_metrics', True))
         self.autoencoder = load_autoencoder(H, self.device)
+        if(H.compile):
+            self.autoencoder = torch.compile(self.autoencoder) 
+
         self.autoencoder_native_latent_size = None
         fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
         native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
@@ -94,10 +97,15 @@ class Sampler:
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
 
-        self.faiss_res = faiss.StandardGpuResources()  # one per process
-        index_flat = faiss.IndexFlatL2(self.dci_dim)  # identical API to IndexFlatL2
-        dev_id = torch.cuda.current_device()
-        self.gpu_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+        self.faiss_use_cpu = bool(getattr(H, 'faiss_use_cpu', False))
+        self.faiss_res = None
+        if self.faiss_use_cpu:
+            self.faiss_index_flat = faiss.IndexFlatL2(self.dci_dim)
+        else:
+            self.faiss_res = faiss.StandardGpuResources()  # one per process
+            index_flat = faiss.IndexFlatL2(self.dci_dim)
+            dev_id = torch.cuda.current_device()
+            self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     
     def get_l2_feature(self, inp, permute=True):
@@ -221,7 +229,7 @@ class Sampler:
 
     def nn_search_batched(self, queries, dataset):
         """
-        Hard-first greedy Top-K matching (unique when possible) using self.gpu_index_flat.
+        Hard-first greedy Top-K matching (unique when possible) using self.faiss_index_flat.
 
         RS-IMLE Logic:
         Prior to matching, if self.ignore_radius > 0, we identify dataset samples (pool latents)
@@ -253,15 +261,15 @@ class Sampler:
 
 
         # ---- Build index once on the full dataset ----
-        self.gpu_index_flat.reset()
-        self.gpu_index_flat.add(dataset_np)
+        self.faiss_index_flat.reset()
+        self.faiss_index_flat.add(dataset_np)
 
         # ---- RS-IMLE logic: reject dataset samples that are too close to queries ----
         original_indices_map = None
         if getattr(self.H, 'use_rs_imle', False):
             k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
             rs_radius = getattr(self.H, 'rs_radius', 10.0)
-            distances, indices = self.gpu_index_flat.search(queries_np, k_ignore)
+            distances, indices = self.faiss_index_flat.search(queries_np, k_ignore)
             easy_mask = distances < rs_radius
             
             flat_indices = indices[easy_mask]
@@ -292,15 +300,15 @@ class Sampler:
                     original_indices_map = np.where(keep_mask)[0]
                     Nd = dataset_np.shape[0]
                     
-                    self.gpu_index_flat.reset()
-                    self.gpu_index_flat.add(dataset_np)
+                    self.faiss_index_flat.reset()
+                    self.faiss_index_flat.add(dataset_np)
 
         topk = int(min(max(1, topk), Nd))
 
         # ---- 1) Hardness (margin = d2 - d1) ----
         # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
-            D2, _ = self.gpu_index_flat.search(queries_np, 2)  # (Nq,2)
+            D2, _ = self.faiss_index_flat.search(queries_np, 2)  # (Nq,2)
             margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
@@ -312,7 +320,7 @@ class Sampler:
             order = np.argsort(margin, kind="stable")
 
         # ---- 2) Get Top-K candidate lists for all queries ----
-        D, I = self.gpu_index_flat.search(queries_np, topk)  # (Nq,K), squared L2 + indices
+        D, I = self.faiss_index_flat.search(queries_np, topk)  # (Nq,K), squared L2 + indices
 
         # ---- 3) Greedy unique assignment in hard-first order ----
         used = np.zeros(Nd, dtype=bool)
@@ -349,7 +357,7 @@ class Sampler:
             out_dst[qi] = chosen_d
 
         # ---- Cleanup ----
-        self.gpu_index_flat.reset()
+        self.faiss_index_flat.reset()
 
         return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
 
@@ -423,5 +431,5 @@ class Sampler:
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         safe_barrier()  # Ensure synchronization before leaving the function
-        self.gpu_index_flat.reset()
+        self.faiss_index_flat.reset()
 

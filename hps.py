@@ -252,6 +252,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1", "cauchy", "mclure", "rmse", "welsch"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
