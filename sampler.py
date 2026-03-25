@@ -102,15 +102,12 @@ class Sampler:
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
 
-        self.faiss_use_cpu = bool(getattr(H, 'faiss_use_cpu', False))
         self.faiss_res = None
-        if self.faiss_use_cpu:
-            self.faiss_index_flat = faiss.IndexFlatL2(self.dci_dim)
-        else:
-            self.faiss_res = faiss.StandardGpuResources()  # one per process
-            index_flat = faiss.IndexFlatL2(self.dci_dim)
-            dev_id = torch.cuda.current_device()
-            self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+
+        self.faiss_res = faiss.StandardGpuResources()  # one per process
+        index_flat = faiss.IndexFlatL2(self.dci_dim)
+        dev_id = torch.cuda.current_device()
+        self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     
     def get_l2_feature(self, inp, permute=True):
@@ -247,9 +244,9 @@ class Sampler:
         # Aggregate the full pool latents and projected features
         if self.rank == 0:
             full_combined = torch.cat(self._gathered_combined_main, dim=0)
-            # Keep latents on GPU on rank 0; only projections need to be on CPU for FAISS.
+            # Keep both latents and projections on GPU on rank 0.
             self.pool_latents = full_combined[:, :self.H.latent_dim]
-            self.pool_samples_proj = full_combined[:, self.H.latent_dim:].cpu()
+            self.pool_samples_proj = full_combined[:, self.H.latent_dim:]
     
 
     def nn_search_batched(self, queries, dataset):
@@ -416,7 +413,7 @@ class Sampler:
                 local_ds_feats = self.dataset_proj
 
                 # Pool features (as computed from resample_pool).
-                pool_feats = self.pool_samples_proj.numpy()
+                pool_feats = self.pool_samples_proj
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
                 local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
