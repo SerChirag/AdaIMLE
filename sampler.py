@@ -12,6 +12,7 @@ from helpers.utils import is_main_process, get_world_size, get_rank, safe_barrie
 from models import parse_layer_string
 from torch import autocast
 import faiss
+import faiss.contrib.torch_utils
 from tqdm import tqdm
 from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
 
@@ -271,41 +272,119 @@ class Sampler:
         if Nq == 0:
             return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
-        if isinstance(dataset, torch.Tensor):
-            dataset_np = np.ascontiguousarray(dataset.detach().cpu().numpy(), dtype=np.float32)
-        else:
-            dataset_np = np.ascontiguousarray(dataset, dtype=np.float32)
+        if isinstance(dataset, torch.Tensor) and isinstance(queries, torch.Tensor):
+            dataset_t = dataset.contiguous()
+            queries_t = queries.contiguous()
 
-        if isinstance(queries, torch.Tensor):
-            queries_np = np.ascontiguousarray(queries.detach().cpu().numpy(), dtype=np.float32)
-        else:
-            queries_np = np.ascontiguousarray(queries, dtype=np.float32)
+            self.faiss_index_flat.reset()
+            self.faiss_index_flat.add(dataset_t)
 
+            original_indices_map = None
+            if getattr(self.H, 'use_rs_imle', False):
+                k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
+                rs_radius = getattr(self.H, 'rs_radius', 10.0)
+                distances, indices = self.faiss_index_flat.search(queries_t, k_ignore)
+                easy_mask = distances < rs_radius
 
-        # ---- Build index once on the full dataset ----
+                flat_indices = indices[easy_mask].long()
+                flat_distances = distances[easy_mask].float()
+
+                if flat_indices.numel() > 0:
+                    min_dist = torch.full((Nd,), float('inf'), dtype=torch.float32, device=dataset_t.device)
+                    min_dist.scatter_reduce_(0, flat_indices, flat_distances, reduce='amin', include_self=True)
+
+                    too_close_indices = torch.nonzero(torch.isfinite(min_dist), as_tuple=False).squeeze(1)
+                    max_drops = max(0, Nd - Nq)
+
+                    if too_close_indices.numel() > max_drops:
+                        sorted_by_dist = too_close_indices[torch.argsort(min_dist[too_close_indices])]
+                        drop_indices = sorted_by_dist[:max_drops]
+                    else:
+                        drop_indices = too_close_indices
+
+                    if drop_indices.numel() > 0:
+                        self.total_excluded = int(drop_indices.numel())
+                        self.total_excluded_percentage = self.total_excluded / Nd
+
+                        keep_mask = torch.ones(Nd, dtype=torch.bool, device=dataset_t.device)
+                        keep_mask[drop_indices] = False
+
+                        dataset_t = dataset_t[keep_mask]
+                        original_indices_map = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
+                        Nd = int(dataset_t.shape[0])
+
+                        self.faiss_index_flat.reset()
+                        self.faiss_index_flat.add(dataset_t)
+
+            topk = int(min(max(1, topk), Nd))
+
+            if Nd >= 2:
+                D2, _ = self.faiss_index_flat.search(queries_t, 2)
+                margin = D2[:, 0]
+            else:
+                margin = torch.zeros(Nq, dtype=torch.float32, device=queries_t.device)
+
+            if tie_shuffle:
+                perm = torch.randperm(Nq, device=queries_t.device)
+                order = perm[torch.argsort(margin[perm], stable=True)]
+            else:
+                order = torch.argsort(margin, stable=True)
+
+            D, I = self.faiss_index_flat.search(queries_t, topk)
+
+            used = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
+            out_idx = torch.full((Nq,), -1, dtype=torch.long, device=queries_t.device)
+            out_dst = torch.full((Nq,), float('inf'), dtype=torch.float32, device=queries_t.device)
+
+            for qi in order.tolist():
+                cand = I[qi]
+                cd = D[qi]
+
+                chosen = None
+                for k in range(topk):
+                    j = int(cand[k].item())
+                    if not bool(used[j].item()):
+                        chosen = j
+                        out_dst[qi] = cd[k]
+                        used[j] = True
+                        break
+
+                if chosen is None:
+                    chosen = int(cand[0].item())
+                    out_dst[qi] = cd[0]
+
+                if original_indices_map is not None:
+                    chosen = int(original_indices_map[chosen].item())
+
+                out_idx[qi] = chosen
+
+            self.faiss_index_flat.reset()
+            return out_dst, out_idx
+
+        dataset_np = np.ascontiguousarray(dataset, dtype=np.float32)
+        queries_np = np.ascontiguousarray(queries, dtype=np.float32)
+
         self.faiss_index_flat.reset()
         self.faiss_index_flat.add(dataset_np)
 
-        # ---- RS-IMLE logic: reject dataset samples that are too close to queries ----
         original_indices_map = None
         if getattr(self.H, 'use_rs_imle', False):
             k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
             rs_radius = getattr(self.H, 'rs_radius', 10.0)
             distances, indices = self.faiss_index_flat.search(queries_np, k_ignore)
             easy_mask = distances < rs_radius
-            
+
             flat_indices = indices[easy_mask]
             flat_distances = distances[easy_mask]
-            
+
             if len(flat_indices) > 0:
                 min_dist = np.full(Nd, np.inf, dtype=np.float32)
                 np.minimum.at(min_dist, flat_indices, flat_distances)
-                
+
                 too_close_indices = np.where(min_dist < np.inf)[0]
                 max_drops = max(0, Nd - Nq)
-                
+
                 if len(too_close_indices) > max_drops:
-                    # Drop the `max_drops` closest ones
                     sorted_by_dist = too_close_indices[np.argsort(min_dist[too_close_indices])]
                     drop_indices = sorted_by_dist[:max_drops]
                 else:
@@ -317,20 +396,18 @@ class Sampler:
 
                     keep_mask = np.ones(Nd, dtype=bool)
                     keep_mask[drop_indices] = False
-                    
+
                     dataset_np = dataset_np[keep_mask]
                     original_indices_map = np.where(keep_mask)[0]
                     Nd = dataset_np.shape[0]
-                    
+
                     self.faiss_index_flat.reset()
                     self.faiss_index_flat.add(dataset_np)
 
         topk = int(min(max(1, topk), Nd))
 
-        # ---- 1) Hardness (margin = d2 - d1) ----
-        # Need k=2 even if topk==1, to get a margin; if Nd==1 margin is 0.
         if Nd >= 2:
-            D2, _ = self.faiss_index_flat.search(queries_np, 2)  # (Nq,2)
+            D2, _ = self.faiss_index_flat.search(queries_np, 2)
             margin = D2[:, 0]
         else:
             margin = np.zeros(Nq, dtype=np.float32)
@@ -341,46 +418,36 @@ class Sampler:
         else:
             order = np.argsort(margin, kind="stable")
 
-        # ---- 2) Get Top-K candidate lists for all queries ----
-        D, I = self.faiss_index_flat.search(queries_np, topk)  # (Nq,K), squared L2 + indices
+        D, I = self.faiss_index_flat.search(queries_np, topk)
 
-        # ---- 3) Greedy unique assignment in hard-first order ----
         used = np.zeros(Nd, dtype=bool)
 
         out_idx = np.full(Nq, -1, dtype=np.int64)
         out_dst = np.full(Nq, np.inf, dtype=np.float32)
 
         for qi in order:
-            cand = I[qi]   # (K,)
-            cd   = D[qi]   # (K,)
+            cand = I[qi]
+            cd = D[qi]
 
             chosen = -1
-            chosen_d = None
-
-            # First unused among top-K (already sorted by distance)
             for k in range(topk):
                 j = int(cand[k])
                 if not used[j]:
                     chosen = j
-                    chosen_d = float(cd[k])
+                    out_dst[qi] = float(cd[k])
                     used[j] = True
                     break
 
-            # If no unused candidate exists, return 1-NN anyway (collision allowed)
             if chosen == -1:
                 chosen = int(cand[0])
-                chosen_d = float(cd[0])
+                out_dst[qi] = float(cd[0])
 
-            # Map the local pool index back to the original index if we dropped elements
             if original_indices_map is not None:
                 chosen = int(original_indices_map[chosen])
 
             out_idx[qi] = chosen
-            out_dst[qi] = chosen_d
 
-        # ---- Cleanup ----
         self.faiss_index_flat.reset()
-
         return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
 
 
@@ -410,7 +477,7 @@ class Sampler:
 
             if(is_main_process()):
 
-                local_ds_feats = self.dataset_proj
+                local_ds_feats = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj
