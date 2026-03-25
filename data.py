@@ -112,8 +112,8 @@ def set_up_data(H):
     
         
     H.global_batch_size = H.n_batch * get_world_size()
-    H.train_len = train_len
     effective_len = H.subset_len if H.subset_len != -1 else train_len
+    H.train_len = effective_len
     H.total_iters = H.num_epochs * ((effective_len + H.global_batch_size - 1) // H.global_batch_size)
 
     if H.subset_len != -1:
