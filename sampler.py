@@ -144,6 +144,14 @@ class Sampler:
                 else:
                     exit()
 
+        # Pin host memory so per-batch H2D copies can use faster async transfer.
+        if torch.cuda.is_available() and not self.dataset_proj_torch.is_pinned():
+            try:
+                self.dataset_proj_torch = self.dataset_proj_torch.pin_memory()
+            except RuntimeError as e:
+                if is_main_process():
+                    print(f"Warning: could not pin dataset_proj_torch ({e}); continuing without pinned cache.")
+
         # Keep a torch tensor for fast indexed target lookup in training,
         # and a NumPy view for FAISS nearest-neighbor search.
         self.dataset_proj = self.dataset_proj_torch.numpy()
@@ -239,7 +247,8 @@ class Sampler:
         # Aggregate the full pool latents and projected features
         if self.rank == 0:
             full_combined = torch.cat(self._gathered_combined_main, dim=0)
-            self.pool_latents = full_combined[:, :self.H.latent_dim].cpu()
+            # Keep latents on GPU on rank 0; only projections need to be on CPU for FAISS.
+            self.pool_latents = full_combined[:, :self.H.latent_dim]
             self.pool_samples_proj = full_combined[:, self.H.latent_dim:].cpu()
     
 
@@ -415,10 +424,11 @@ class Sampler:
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz
 
-                new_latents = self.pool_latents[local_indices]
+                local_indices = local_indices.to(device=self.pool_latents.device, non_blocking=True)
+                new_latents = self.pool_latents.index_select(0, local_indices)
 
             if is_main_process():
-                full_updated_latents = new_latents.to(self.device)
+                full_updated_latents = new_latents
                 perturbation = self.H.imle_perturb_coef * torch.randn(
                     (self.sz, self.H.latent_dim), 
                     device=self.device,
