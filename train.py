@@ -77,24 +77,17 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
-    subset_len = len(data_train)
-    if H.subset_len != -1:
-        subset_len = H.subset_len
-
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
-
-
-    sampler = Sampler(H, subset_len, preprocess_fn)
-    safe_barrier()    
+    sampler = Sampler(H, len(data_train), preprocess_fn)
+    safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
-    epoch = starting_epoch 
+    epoch = starting_epoch
     sampler.init_projection(data_train)
-    
+
     safe_barrier()
     viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
@@ -234,7 +227,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
-            generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+            generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
             safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
@@ -349,9 +342,6 @@ def main():
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
         # generate_and_save(H, imle, sampler, 5000)
         safe_barrier()        
@@ -370,13 +360,9 @@ def main():
             print("Generating interpolations")
             os.makedirs(f'{H.save_dir}/interp', exist_ok=True)
 
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        
         imle.eval()
         with torch.no_grad():
-            sampler = Sampler(H, subset_len, preprocess_fn)
+            sampler = Sampler(H, len(data_train), preprocess_fn)
             safe_barrier()
             rank = get_rank()
             world_size = get_world_size()

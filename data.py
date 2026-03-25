@@ -2,7 +2,7 @@ import numpy as np
 import pickle
 import os
 import torch
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Subset
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
@@ -112,7 +112,15 @@ def set_up_data(H):
     
         
     H.global_batch_size = H.n_batch * get_world_size()
-    H.total_iters = H.num_epochs * ((train_len + H.global_batch_size - 1) // H.global_batch_size)
+    H.train_len = train_len
+    effective_len = H.subset_len if H.subset_len != -1 else train_len
+    H.total_iters = H.num_epochs * ((effective_len + H.global_batch_size - 1) // H.global_batch_size)
+
+    if H.subset_len != -1:
+        g = torch.Generator()
+        g.manual_seed(H.seed)  # same seed on all ranks → identical indices everywhere
+        subset_indices = torch.randperm(train_len, generator=g)[:H.subset_len].tolist()
+        train_data = Subset(train_data, subset_indices)
 
     def preprocess_func(x):
         nonlocal untranspose
