@@ -71,19 +71,10 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     initial = initial[:mb]
     last_latents = last_latents[:mb]
     latent_rows = [initial, last_latents] + [latent_for_visualization[t] for t in range(H.num_rows_visualize)]
-
-    # Normalize rows to a common device before concatenation.
-    # sampler.sample() moves the merged tensor to model device internally.
-    normalized_rows = []
-    for row in latent_rows:
-        if not torch.is_tensor(row):
-            row = torch.as_tensor(row)
-        normalized_rows.append(row[:mb].detach().cpu())
-
-    sampled_rows = sampler.sample(torch.cat(normalized_rows, dim=0), imle, None)
+    sampled_rows = sampler.sample(torch.cat(latent_rows, dim=0), imle, None)
 
     batches = [orig[:mb]]
-    for row_idx in range(len(normalized_rows)):
+    for row_idx in range(len(latent_rows)):
         start = row_idx * mb
         end = start + mb
         batches.append(sampled_rows[start:end])
@@ -95,7 +86,9 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)
     if(experiment):
-        experiment.log_image(fname, overwrite=True)
+        # experiment.log_image(fname, overwrite=True)
+        experiment.log_image(image_data=im, name="latest.png")
+
 
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     # Get the current process rank and world size.
