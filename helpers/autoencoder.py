@@ -47,7 +47,7 @@ def encode_images_to_latents(autoencoder, images_chw, target_spatial=None):
     if autoencoder is None:
         return images_chw
 
-    with torch.no_grad():
+    with torch.inference_mode():
         encoded = autoencoder.encode(images_chw)
         latents = _extract_latents(encoded)
 
@@ -69,7 +69,7 @@ def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
         latents = F.interpolate(latents, size=latent_spatial, mode='bicubic', align_corners=False)
 
     scaling_factor = getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0)
-    with torch.no_grad():
+    with torch.inference_mode():
         decoded = autoencoder.decode(latents / scaling_factor)
         images = _extract_sample(decoded)
 

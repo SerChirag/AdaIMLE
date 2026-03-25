@@ -74,7 +74,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 
     imle.eval()
 
-    with torch.no_grad():
+    with torch.inference_mode():
         # Process images in batches
         for i in range(0, n_local, H.imle_batch):
             current_batch_size = min(H.imle_batch, n_local - i)
@@ -108,7 +108,7 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
 
     imle.eval()
 
-    with torch.no_grad():
+    with torch.inference_mode():
         # Process images in batches
         for i in range(0, n_local, H.imle_batch):
             current_batch_size = min(H.imle_batch, n_local - i)

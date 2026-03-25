@@ -142,7 +142,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch % 20 == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
-            with torch.no_grad():
+            with torch.inference_mode():
                 imle.eval()
                 generate_for_NN(sampler, viz_batch_original, latents,
                                 viz_batch_original.shape, imle,
@@ -194,7 +194,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
                     imle.eval()
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         generate_visualization(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
                                                 sampler.last_selected_latents[0: H.num_images_visualize],
@@ -270,7 +270,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
-            with torch.no_grad():
+            with torch.inference_mode():
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
                                         sampler.last_selected_latents[0: H.num_images_visualize],
@@ -375,7 +375,7 @@ def main():
             os.makedirs(f'{H.save_dir}/interp', exist_ok=True)
 
         imle.eval()
-        with torch.no_grad():
+        with torch.inference_mode():
             sampler = Sampler(H, len(data_train), preprocess_fn)
             safe_barrier()
             rank = get_rank()

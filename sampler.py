@@ -85,6 +85,8 @@ class Sampler:
         self.dataset_proj_torch = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
         self.dataset_proj = None
         self.pool_samples_proj = None
+        self._local_pool_latents = None
+        self._local_pool_proj = None
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -143,7 +145,7 @@ class Sampler:
         self.dataset_proj = self.dataset_proj_torch.numpy()
 
     def sample(self, latents, gen, snoise=None):
-        with torch.no_grad():
+        with torch.inference_mode():
             with autocast(device_type='cuda'):
                 latents = latents.to(self.device)
                 px_z = gen(latents, None)
@@ -193,28 +195,36 @@ class Sampler:
         # Determine local pool size
         local_pool_size = ceil(self.pool_size / self.world_size)
 
+        # Reuse local buffers across resamples to avoid repeated allocations.
+        if self._local_pool_latents is None or self._local_pool_latents.shape[0] != local_pool_size:
+            self._local_pool_latents = torch.empty((local_pool_size, self.H.latent_dim), device=self.device)
+            self._local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
 
-        # Generate local pool latents and prepare container for projected features
-        local_pool_latents = torch.randn((local_pool_size, self.H.latent_dim), 
-                                         device=self.device, 
-                                         generator=self.generator_seed)
-        # Assuming pool_samples_proj is preallocated with shape (self.pool_size, projection_dim)
-
-        local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
+        # Preserve existing behavior: regenerate the entire local pool each resample.
+        self._local_pool_latents.copy_(
+            torch.randn(
+                (local_pool_size, self.H.latent_dim),
+                device=self.device,
+                generator=self.generator_seed,
+            )
+        )
 
         # Process local chunk in batches, including the tail batch.
-        for start in range(0, local_pool_size, self.H.imle_batch):
-            end = min(start + self.H.imle_batch, local_pool_size)
-            batch_slice = slice(start, end)
-            cur_latents = local_pool_latents[batch_slice]
-            with torch.no_grad():
+        with torch.inference_mode():
+            for start in range(0, local_pool_size, self.H.imle_batch):
+                end = min(start + self.H.imle_batch, local_pool_size)
+                batch_slice = slice(start, end)
+                cur_latents = self._local_pool_latents[batch_slice]
                 with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
                         exit()
-                    local_pool_proj[batch_slice] = proj
+                    self._local_pool_proj[batch_slice] = proj
+
+        local_pool_latents = self._local_pool_latents
+        local_pool_proj = self._local_pool_proj
 
         # One collective for both latents and projections to reduce comm overhead.
         local_pool_combined = torch.cat((local_pool_latents, local_pool_proj), dim=1)
@@ -386,7 +396,7 @@ class Sampler:
 
         self.selected_dists_tmp[:] = np.inf
 
-        with torch.no_grad():
+        with torch.inference_mode():
 
             if(is_main_process()):
 

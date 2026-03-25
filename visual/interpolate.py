@@ -11,7 +11,7 @@ def slerp(low, high, val):
     return res
 
 def sample_from_out(px_z):
-    with torch.no_grad():
+    with torch.inference_mode():
         px_z = px_z.permute(0, 2, 3, 1)
         xhat = (px_z + 1.0) * 127.5
         xhat = xhat.detach().cpu().numpy()

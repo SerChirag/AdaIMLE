@@ -362,7 +362,7 @@ def toy():
 
 def compute_prec_recall(path_real, path_fake, batch_size=50, k=3, num_samples=10000):
     ipr = IPR(batch_size, k, num_samples)
-    with torch.no_grad():
+    with torch.inference_mode():
         ipr.compute_manifold_ref(path_real)
         precision, recall = ipr.precision_and_recall(path_fake)
     return precision, recall
@@ -387,7 +387,7 @@ if __name__ == '__main__':
     # Example usage: with real and fake paths
     # python improved_precision_recall.py [path_real] [path_fake]
     ipr = IPR(args.batch_size, args.k, args.num_samples)
-    with torch.no_grad():
+    with torch.inference_mode():
         # real
         ipr.compute_manifold_ref(args.path_real)
 
