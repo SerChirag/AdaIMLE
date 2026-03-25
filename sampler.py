@@ -88,7 +88,7 @@ class Sampler:
         self._local_pool_latents = None
         self._local_pool_proj = None
         self._local_pool_combined = None
-        self._gathered_combined = None
+        self._gathered_combined_main = None
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -202,7 +202,8 @@ class Sampler:
             self._local_pool_latents = torch.empty((local_pool_size, self.H.latent_dim), device=self.device)
             self._local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
             self._local_pool_combined = torch.empty((local_pool_size, self.H.latent_dim + self.dci_dim), device=self.device)
-            self._gathered_combined = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
+            if self.rank == 0:
+                self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
 
         # Preserve existing behavior: regenerate the entire local pool each resample.
         self._local_pool_latents.normal_(mean=0.0, std=1.0, generator=self.generator_seed)
@@ -224,14 +225,20 @@ class Sampler:
         # One collective for both latents and projections to reduce comm overhead.
         self._local_pool_combined[:, :self.H.latent_dim].copy_(self._local_pool_latents)
         self._local_pool_combined[:, self.H.latent_dim:].copy_(self._local_pool_proj)
-        torch.distributed.all_gather(self._gathered_combined, self._local_pool_combined)
+        if self.rank == 0:
+            if self._gathered_combined_main is None or len(self._gathered_combined_main) != self.world_size:
+                self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
+            torch.distributed.gather(self._local_pool_combined, gather_list=self._gathered_combined_main, dst=0)
+        else:
+            torch.distributed.gather(self._local_pool_combined, gather_list=None, dst=0)
 
         gen.train()
 
         # Aggregate the full pool latents and projected features
-        full_combined = torch.cat(self._gathered_combined, dim=0)
-        self.pool_latents = full_combined[:, :self.H.latent_dim].cpu()
-        self.pool_samples_proj = full_combined[:, self.H.latent_dim:].cpu()
+        if self.rank == 0:
+            full_combined = torch.cat(self._gathered_combined_main, dim=0)
+            self.pool_latents = full_combined[:, :self.H.latent_dim].cpu()
+            self.pool_samples_proj = full_combined[:, self.H.latent_dim:].cpu()
     
 
     def nn_search_batched(self, queries, dataset):
