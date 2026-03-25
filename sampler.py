@@ -81,8 +81,9 @@ class Sampler:
             exit()
 
         self.dci_dim = sum_dims
-
-        self.dataset_proj = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
+        self.latent_channels = H.image_channels
+        self.dataset_proj_torch = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
+        self.dataset_proj = None
         self.pool_samples_proj = None
 
         self.knn_ignore = H.knn_ignore
@@ -133,11 +134,13 @@ class Sampler:
         for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
             batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
             if(self.H.search_type == 'l2'):
-                self.dataset_proj[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
             else:
                 exit()
 
-        self.dataset_proj = self.dataset_proj.cpu().numpy().astype(np.float32)
+        # Keep a torch tensor for fast indexed target lookup in training,
+        # and a NumPy view for FAISS nearest-neighbor search.
+        self.dataset_proj = self.dataset_proj_torch.numpy()
 
     def sample(self, latents, gen, snoise=None):
         with torch.no_grad():
