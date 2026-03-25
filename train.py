@@ -169,12 +169,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         for cur, indices in data_loader:
             latents = cur[1][0]
             flat_target = sampler.dataset_proj_torch.index_select(0, indices)
-            target = flat_target.view(
+            target_bchw = flat_target.view(
                 flat_target.shape[0],
-                H.latent_spatial_size,
-                H.latent_spatial_size,
                 H.image_channels,
+                H.latent_spatial_size,
+                H.latent_spatial_size,
             )
+            target = target_bchw.permute(0, 2, 3, 1).contiguous()
             target = target.to(device, non_blocking=True)
             latents = latents.to(device, non_blocking=True)
 
