@@ -71,18 +71,11 @@ def training_step_imle(H, n, targets, latents, labels, imle, ema_imle, optimizer
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
-    subset_len = len(data_train)
-    if H.subset_len != -1:
-        subset_len = H.subset_len
-
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
-
-
-    sampler = Sampler(H, subset_len, preprocess_fn)
+    sampler = Sampler(H, len(data_train), preprocess_fn)
     safe_barrier()    
     device = torch.device("cuda", torch.cuda.current_device())
 
@@ -176,7 +169,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             x = cur[0][0]
             labels = torch.squeeze(cur[0][1])
             latents = cur[1][0]
-            target = preprocess_fn(x).to(device)
+            _, target = preprocess_fn(x)
+            target = target.to(device)
             latents = latents.to(device)
             labels = labels.to(device)
 
@@ -238,27 +232,32 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
+            'unique_indices': sampler.unique_indices,
+            'total_excluded': getattr(sampler, 'total_excluded', 0),
+            'total_excluded_percentage': getattr(sampler, 'total_excluded_percentage', 0),
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
-            generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+            generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
             safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
-                cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
-                
-                precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
-                if cur_fid < best_fid:
-                    best_fid = cur_fid
-                
-                metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+                if not H.autoencoder_decode_for_metrics:
+                    metrics.update({'fid': float('nan'), 'best_fid': best_fid, 'precision': float('nan'), 'recall': float('nan')})
+                else:
+                    cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
+                    precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                    if cur_fid < best_fid:
+                        best_fid = cur_fid
 
-                if cur_fid == best_fid:
-                    fp = os.path.join(H.save_dir, 'best_fid')
-                    logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
-                    logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
-                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                    metrics.update({'fid': cur_fid, 'best_fid': best_fid, 'precision': precision, 'recall': recall})
+
+                    if cur_fid == best_fid:
+                        fp = os.path.join(H.save_dir, 'best_fid')
+                        logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
+                        logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+                        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
 
             safe_barrier()
 
@@ -304,6 +303,11 @@ def main():
     init_distributed_mode()
 
     H, logprint = set_up_hyperparams()
+    H.search_type = 'l2'
+    H.lpips_coef = 0.0
+    H.dino_coef = 0.0
+    if H.l2_coef == 0.0:
+        H.l2_coef = 1.0
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
 
     H.world_size = get_world_size()
@@ -366,9 +370,6 @@ def main():
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
         # generate_and_save(H, imle, sampler, 5000)
         safe_barrier()        
@@ -387,13 +388,9 @@ def main():
             print("Generating interpolations")
             os.makedirs(f'{H.save_dir}/interp', exist_ok=True)
 
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        
         imle.eval()
         with torch.no_grad():
-            sampler = Sampler(H, subset_len, preprocess_fn)
+            sampler = Sampler(H, len(data_train), preprocess_fn)
             safe_barrier()
             rank = get_rank()
             world_size = get_world_size()

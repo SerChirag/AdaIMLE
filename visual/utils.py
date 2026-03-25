@@ -34,8 +34,6 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
     images, labels, indices = x
     orig_image = (images).to(torch.uint8).permute(0, 2, 3, 1) if dataset == 'lsun' else images
-    preprocessed = preprocess_fn(images)
-    preprocessed = preprocessed.cpu().numpy()
 
     return orig_image, torch.squeeze(labels), torch.squeeze(indices)
 
@@ -98,9 +96,10 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
                                        device=imle.device, 
                                        generator=sampler.generator_seed)
+            label_batch = torch.randint(0, H.num_classes, (current_batch_size,), device=imle.device)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
-            samp = sampler.sample(latent_batch, imle, None)
+            samp = sampler.sample(latent_batch, label_batch, imle, None)
             # Save each sample with its corresponding global index
             for j in range(current_batch_size):
                 global_index = indices[i + j]

@@ -225,6 +225,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_scaler_path', type=str, default=None)  # restore optimizer from scheduler
 
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
+    parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl'])
+    parser.add_argument('--autoencoder_name_or_path', type=str, default='stabilityai/sd-vae-ft-mse')
+    parser.add_argument('--autoencoder_subfolder', type=str, default='')
+    parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate
     parser.add_argument('--warmup_iters', type=float, default=2000)  # number of iterations for warmup for scheduler
@@ -317,7 +321,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
-    parser.add_argument('--loss_type', type=str, default='l2', choices=['huber', 'l2']) # search type for loss type
+    parser.add_argument('--loss_type', type=str, default='l2', choices=['l2', 'huber', 'pseudo_l1', 'cauchy', 'mclure', 'rmse', 'welsch']) # search type for loss type
     parser.add_argument('--l2_search_downsample', type=float, default=0.125) # downsample factor for l2 search
 
     parser.add_argument('--wandb_name', type=str, default='AdaptiveIMLE')  # used for wandb
@@ -339,7 +343,8 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=20)  # top-k for imle database search
 
-    parser.add_argument("--huber_delta", type=float, default=0.2, help="delta for huber loss")
+    parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
+    parser.add_argument("--loss_scale", type=float, default=4.0, help="scale for general robust losses")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")

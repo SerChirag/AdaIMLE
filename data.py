@@ -2,7 +2,7 @@ import numpy as np
 import pickle
 import os
 import torch
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, Subset
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
@@ -10,9 +10,10 @@ from PIL import Image
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
-from helpers.utils import ZippedDataset, get_world_size
+from helpers.utils import get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
+from helpers.autoencoder import load_autoencoder, encode_images_to_latents
 
 
 def set_up_data(H):
@@ -20,6 +21,7 @@ def set_up_data(H):
     blocks = parse_layer_string(H.dec_blocks)
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+    H.latent_spatial_size = max(H.block_res)
 
     shift_loss = -127.5
     scale_loss = 1. / 127.5
@@ -121,6 +123,14 @@ def set_up_data(H):
 
     device = torch.device("cuda", torch.cuda.current_device())
 
+    autoencoder = load_autoencoder(H, device)
+    latent_probe = encode_images_to_latents(
+        autoencoder,
+        torch.zeros(1, 3, H.image_size, H.image_size, device=device),
+        target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
+    )
+    H.image_channels = latent_probe.shape[1]
+
     shift = torch.tensor([shift], device=device).view(1, 1, 1, 1)
     scale = torch.tensor([scale], device=device).view(1, 1, 1, 1)
     shift_loss = torch.tensor([shift_loss], device=device).view(1, 1, 1, 1)
@@ -189,7 +199,15 @@ def set_up_data(H):
     
         
     H.global_batch_size = H.n_batch * get_world_size()
-    H.total_iters = H.num_epochs * np.ceil(train_len // H.global_batch_size)
+    effective_len = H.subset_len if H.subset_len != -1 else train_len
+    H.train_len = effective_len
+    H.total_iters = H.num_epochs * ((effective_len + H.global_batch_size - 1) // H.global_batch_size)
+
+    if H.subset_len != -1:
+        g = torch.Generator()
+        g.manual_seed(H.seed)
+        subset_indices = torch.randperm(train_len, generator=g)[:H.subset_len].tolist()
+        train_data = Subset(train_data, subset_indices)
 
 
     def preprocess_func(x):
@@ -201,17 +219,20 @@ def set_up_data(H):
         nonlocal untranspose
         'takes in a data example and returns the preprocessed input'
         'as well as the input processed for the loss'
+        if isinstance(x, (list, tuple)):
+            x = x[0]
         if untranspose:
             x = x.permute(0, 2, 3, 1)
         inp = x.to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
-        # out = inp.clone()
-        # inp.add_(shift).mul_(scale)
-        # if do_low_bit:
-        #     5 bits of precision
-        #     out.mul_(1. / 8.).floor_().mul_(8.)
-        # out.add_(shift_loss).mul_(scale_loss)
-        return inp
+        target = inp.permute(0, 3, 1, 2)
+        target = encode_images_to_latents(
+            autoencoder,
+            target,
+            target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
+        )
+        target = target.permute(0, 2, 3, 1).contiguous()
+        return inp, target
 
     return H, train_data, valid_data, preprocess_func
 
