@@ -101,15 +101,45 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     metrics = {
         'mean_loss': mean_loss
     }
+
+    # Keep a single mutable latent table for the lifetime of DataLoader workers.
+    # Workers read this CPU shared-memory tensor, and we update it in-place after resampling.
+    latent_table = torch.empty((len(data_train), H.latent_dim), dtype=torch.float32)
+    latent_table.share_memory_()
+    latent_table.copy_(sampler.selected_latents)
+
+    comb_dataset = ZippedDataset(data_train, TensorDataset(latent_table))
+    train_sampler = DistributedSampler(
+        comb_dataset,
+        shuffle=True,
+        num_replicas=H.world_size,
+        rank=H.local_rank,
+        seed=H.seed,
+    )
+
+    data_loader = DataLoader(
+        comb_dataset,
+        batch_size=H.n_batch,
+        sampler=train_sampler,
+        pin_memory=True,
+        num_workers=4,
+        persistent_workers=True,
+        multiprocessing_context="spawn",
+        shuffle=False,
+    )
+
+    force_initial_resample = True  # Track the last epoch when resampling was done.
         
     while (epoch < H.num_epochs):
 
         safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
-        if epoch % H.imle_force_resample == 0:
+        if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
             torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
+            latent_table.copy_(sampler.selected_latents)
             torch.cuda.empty_cache()
+            force_initial_resample = False
 
         safe_barrier()        
 
@@ -122,24 +152,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
-
-        # Create a dataset that pairs images with their current latents.
-        safe_barrier()        
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
-
-        # Use a DistributedSampler if in distributed training.
-        train_sampler = DistributedSampler(comb_dataset, 
-                                           shuffle=True, 
-                                           num_replicas=H.world_size,
-                                           rank=H.local_rank,
-                                           seed=H.seed)
-        
-        data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                    pin_memory=True, num_workers=4, 
-                                    persistent_workers=True, 
-                                    multiprocessing_context="spawn",
-                                    shuffle=False)
-
         # If using distributed sampler, set the epoch for shuffling
         train_sampler.set_epoch(epoch)
 
@@ -158,8 +170,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             x = cur[0]
             latents = cur[1][0]
             _, target = preprocess_fn(x)
-            target = target.to(device)
-            latents = latents.to(device)
+            target = target.to(device, non_blocking=True)
+            latents = latents.to(device, non_blocking=True)
 
             loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
                                optimizer, sampler.calc_loss, scaler)
@@ -195,11 +207,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             
 
             
-            if iterate % H.iters_per_ckpt == 0 and is_main_process():
-                fp = os.path.join(H.save_dir, f'iter-{iterate}')
-                logprint(f'Saving model@ {iterate} to {fp}')
-                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-            safe_barrier()
+            if iterate % H.iters_per_ckpt == 0:
+                safe_barrier()
+                if is_main_process():
+                    fp = os.path.join(H.save_dir, f'iter-{iterate}')
+                    logprint(f'Saving model@ {iterate} to {fp}')
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
             scaler.unscale_(optimizer)  # Unscale gradients before clipping
@@ -270,11 +284,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
         
-        if epoch % H.epoch_per_save == 0 and is_main_process() and isValid(mean_loss):
-            fp = os.path.join(H.save_dir, 'latest')
-            logprint(f'Saving latest model@ {iterate} to {fp}')
-            save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-        safe_barrier()
+        if epoch % H.epoch_per_save == 0 and isValid(mean_loss):
+            safe_barrier()
+            if is_main_process():
+                fp = os.path.join(H.save_dir, 'latest')
+                logprint(f'Saving latest model@ {iterate} to {fp}')
+                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+            safe_barrier()
         epoch += 1
     
     if is_main_process():
