@@ -202,9 +202,10 @@ class Sampler:
 
         local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
 
-        # Process local chunk in batches
-        for j in range(local_pool_size // self.H.imle_batch):
-            batch_slice = slice(j * self.H.imle_batch, (j + 1) * self.H.imle_batch)
+        # Process local chunk in batches, including the tail batch.
+        for start in range(0, local_pool_size, self.H.imle_batch):
+            end = min(start + self.H.imle_batch, local_pool_size)
+            batch_slice = slice(start, end)
             cur_latents = local_pool_latents[batch_slice]
             with torch.no_grad():
                 with autocast(device_type='cuda'):
@@ -215,17 +216,17 @@ class Sampler:
                         exit()
                     local_pool_proj[batch_slice] = proj
 
-        gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
-        gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
-
-        torch.distributed.all_gather(gathered_latents, local_pool_latents)
-        torch.distributed.all_gather(gathered_proj, local_pool_proj)
+        # One collective for both latents and projections to reduce comm overhead.
+        local_pool_combined = torch.cat((local_pool_latents, local_pool_proj), dim=1)
+        gathered_combined = [torch.empty_like(local_pool_combined) for _ in range(self.world_size)]
+        torch.distributed.all_gather(gathered_combined, local_pool_combined)
 
         gen.train()
 
         # Aggregate the full pool latents and projected features
-        self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
-        self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
+        full_combined = torch.cat(gathered_combined, dim=0)
+        self.pool_latents = full_combined[:, :self.H.latent_dim].cpu()
+        self.pool_samples_proj = full_combined[:, self.H.latent_dim:].cpu()
     
 
     def nn_search_batched(self, queries, dataset):
@@ -389,18 +390,18 @@ class Sampler:
 
             if(is_main_process()):
 
-                local_ds_feats = np.ascontiguousarray(self.dataset_proj, dtype=np.float32)
+                local_ds_feats = self.dataset_proj
 
                 # Pool features (as computed from resample_pool).
-                pool_feats = np.ascontiguousarray(self.pool_samples_proj.cpu().numpy().astype(np.float32), dtype=np.float32)
+                pool_feats = self.pool_samples_proj.numpy()
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
                 local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
                 # get count of unique indices for logging
-                self.unique_indices = np.unique(local_indices).size / self.sz
+                self.unique_indices = torch.unique(local_indices).numel() / self.sz
 
-                new_latents = self.pool_latents[local_indices].clone()
+                new_latents = self.pool_latents[local_indices]
 
             if is_main_process():
                 full_updated_latents = new_latents.to(self.device)
@@ -418,8 +419,8 @@ class Sampler:
             self.selected_latents_tmp = full_updated_latents.cpu()
 
             # Update last and current selected latents on all processes.
-            self.last_selected_latents = self.selected_latents.clone()
-            self.selected_latents = self.selected_latents_tmp.clone()
+            self.last_selected_latents.copy_(self.selected_latents)
+            self.selected_latents.copy_(self.selected_latents_tmp)
 
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
