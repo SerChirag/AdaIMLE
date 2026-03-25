@@ -215,7 +215,6 @@ class Sampler:
                         exit()
                     local_pool_proj[batch_slice] = proj
 
-        safe_barrier()
         gathered_latents = [torch.empty_like(local_pool_latents) for _ in range(self.world_size)]
         gathered_proj = [torch.empty_like(local_pool_proj) for _ in range(self.world_size)]
 
@@ -224,7 +223,6 @@ class Sampler:
 
         gen.train()
 
-        safe_barrier()
         # Aggregate the full pool latents and projected features
         self.pool_latents = torch.cat(gathered_latents, dim=0).to('cpu')
         self.pool_samples_proj = torch.cat(gathered_proj, dim=0).to('cpu')
@@ -379,7 +377,6 @@ class Sampler:
         # Resample pool first (each process contributes its part);
         # this updates self.pool_samples_proj and self.pool_latents.
         self.resample_pool(gen)
-        safe_barrier()  # Ensure all processes complete the pool resample
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
@@ -404,8 +401,6 @@ class Sampler:
                 self.unique_indices = np.unique(local_indices).size / self.sz
 
                 new_latents = self.pool_latents[local_indices].clone()
-            
-            safe_barrier()  # Ensure all processes complete the gather
 
             if is_main_process():
                 full_updated_latents = new_latents.to(self.device)
@@ -417,11 +412,7 @@ class Sampler:
             else:
                 full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
 
-            safe_barrier()
-
             torch.distributed.broadcast(full_updated_latents, src=0)
-
-            safe_barrier()
 
             # Move the broadcasted results to CPU if desired.
             self.selected_latents_tmp = full_updated_latents.cpu()
@@ -433,6 +424,5 @@ class Sampler:
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
-        safe_barrier()  # Ensure synchronization before leaving the function
         self.faiss_index_flat.reset()
 

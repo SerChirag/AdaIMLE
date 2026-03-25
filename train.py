@@ -131,8 +131,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     force_initial_resample = True  # Track the last epoch when resampling was done.
         
     while (epoch < H.num_epochs):
-
-        safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
             torch.cuda.empty_cache()
@@ -140,8 +138,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latent_table.copy_(sampler.selected_latents)
             torch.cuda.empty_cache()
             force_initial_resample = False
-
-        safe_barrier()        
 
 
         if (epoch % 20 == 0 and is_main_process()):
@@ -157,8 +153,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if(is_main_process()):
             start_time = time.time()
-
-        safe_barrier()        # Main training loop.
 
         epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
         epoch_iter_count = 0
@@ -246,10 +240,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
-            torch.cuda.empty_cache()
             generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
             safe_barrier()            
-            torch.cuda.empty_cache()
             if(is_main_process()):
                 if not H.autoencoder_decode_for_metrics:
                     metrics.update({'fid': float('nan'), 'best_fid': best_fid, 'precision': float('nan'), 'recall': float('nan')})
