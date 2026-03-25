@@ -4,7 +4,33 @@ import numpy as np
 import imageio
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from helpers.utils import is_main_process, get_rank, get_world_size
+
+
+def _get_image_write_workers(H):
+    workers = int(getattr(H, 'image_write_workers', 0) or 0)
+    if workers > 0:
+        return workers
+    cpu_count = os.cpu_count() or 4
+    return max(4, min(16, cpu_count))
+
+
+def _write_png(path_and_img):
+    path, img = path_and_img
+    imageio.imwrite(path, img)
+
+
+def _parallel_write_pngs(path_and_imgs, max_workers):
+    if not path_and_imgs:
+        return
+    if max_workers <= 1:
+        for item in path_and_imgs:
+            _write_png(item)
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Materialize to propagate worker exceptions before proceeding.
+        list(executor.map(_write_png, path_and_imgs, chunksize=16))
 
 def delete_content_of_dir(folder):
     for filename in os.listdir(folder):
@@ -44,10 +70,14 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
-    batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
+    latent_rows = [initial, last_latents] + [latent_for_visualization[t] for t in range(H.num_rows_visualize)]
+    sampled_rows = sampler.sample(torch.cat(latent_rows, dim=0), imle, None)
 
-    for t in range(H.num_rows_visualize):
-        batches.append(sampler.sample(latent_for_visualization[t], imle, None))
+    batches = [orig[:mb]]
+    for row_idx in range(len(latent_rows)):
+        start = row_idx * mb
+        end = start + mb
+        batches.append(sampled_rows[start:end])
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -64,13 +94,16 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     rank = get_rank()
     world_size = get_world_size()
 
+    save_dir = os.path.join(H.save_dir, subdir)
+
     if is_main_process():
-        delete_content_of_dir(f'{H.save_dir}/{subdir}')
+        delete_content_of_dir(save_dir)
     
     torch.distributed.barrier()
 
     indices = list(range(rank, n_samp, world_size))
     n_local = len(indices)
+    write_workers = _get_image_write_workers(H)
 
     imle.eval()
 
@@ -85,10 +118,11 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
             samp = sampler.sample(latent_batch, imle, None)
-            # Save each sample with its corresponding global index
+            path_and_imgs = []
             for j in range(current_batch_size):
                 global_index = indices[i + j]
-                imageio.imwrite(f'{H.save_dir}/{subdir}/{global_index}.png', samp[j])
+                path_and_imgs.append((os.path.join(save_dir, f'{global_index}.png'), samp[j]))
+            _parallel_write_pngs(path_and_imgs, write_workers)
     
     imle.train()
 
@@ -98,13 +132,16 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
     rank = get_rank()
     world_size = get_world_size()
 
+    save_dir = os.path.join(H.save_dir, subdir)
+
     if is_main_process():
-        delete_content_of_dir(f'{H.save_dir}/{subdir}')
+        delete_content_of_dir(save_dir)
     
     torch.distributed.barrier()
 
     indices = list(range(rank, n_samp, world_size))
     n_local = len(indices)
+    write_workers = _get_image_write_workers(H)
 
     imle.eval()
 
@@ -119,10 +156,11 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
             samp = sampler.sample_multi(latent_batch, imle, None)
-            # Save each sample with its corresponding global index
+            path_and_imgs = []
             for j in range(current_batch_size):
                 global_index = indices[i + j]
-                for k in range(2,len(samp)):
-                    imageio.imwrite(f'{H.save_dir}/{subdir}/{global_index}_{pow(2,k)}.png', samp[k][j])
+                for k in range(2, len(samp)):
+                    path_and_imgs.append((os.path.join(save_dir, f'{global_index}_{1 << k}.png'), samp[k][j]))
+            _parallel_write_pngs(path_and_imgs, write_workers)
     
     imle.train()

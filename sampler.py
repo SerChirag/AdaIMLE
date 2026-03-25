@@ -135,12 +135,14 @@ class Sampler:
         if(is_main_process()):
             print("Starting Initialization")
 
-        for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
-            batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
-            if(self.H.search_type == 'l2'):
-                self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
-            else:
-                exit()
+        with torch.inference_mode():
+
+            for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
+                batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
+                if(self.H.search_type == 'l2'):
+                    self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                else:
+                    exit()
 
         # Keep a torch tensor for fast indexed target lookup in training,
         # and a NumPy view for FAISS nearest-neighbor search.
