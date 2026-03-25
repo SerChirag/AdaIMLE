@@ -77,24 +77,17 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
-    subset_len = len(data_train)
-    if H.subset_len != -1:
-        subset_len = H.subset_len
-
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    subset_len = H.subset_len if H.subset_len != -1 else len(data_train)
-
-
-    sampler = Sampler(H, subset_len, preprocess_fn)
-    safe_barrier()    
+    sampler = Sampler(H, len(data_train), preprocess_fn)
+    safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
-    epoch = starting_epoch 
+    epoch = starting_epoch
     sampler.init_projection(data_train)
-    
+
     safe_barrier()
     viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
@@ -223,39 +216,6 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-
-        ############ Can be removed ###############
-        # if(is_main_process() and epoch % 5 == 0):
-            
-        #     cur_dists = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_lpips = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-        #     cur_dists_l2 = torch.empty([subset_len], dtype=torch.float32, device='cuda')
-
-
-        #     cur_dists[:], cur_dists_lpips[:], cur_dists_l2[:] = sampler.calc_dists_existing(data_train_tensor, imle, 
-        #                                                                                     dists=cur_dists,  
-        #                                                                                     dists_lpips=cur_dists_lpips,
-        #                                                                                     dists_l2=cur_dists_l2, 
-        #                                                                                     logging=True)
-
-        #     # torch.save(cur_dists, f'{H.save_dir}/latent/dists-{epoch}.npy')
-                    
-        #     metrics = {
-        #         'mean_loss': torch.mean(cur_dists).item(),
-        #         'std_loss': torch.std(cur_dists).item(),
-        #         'max_loss': torch.max(cur_dists).item(),
-        #         'min_loss': torch.min(cur_dists).item(),
-        #         'mean_loss_lpips': torch.mean(cur_dists_lpips).item(),
-        #         'std_loss_lpips': torch.std(cur_dists_lpips).item(),
-        #         'max_loss_lpips': torch.max(cur_dists_lpips).item(),
-        #         'min_loss_lpips': torch.min(cur_dists_lpips).item(),
-        #         'mean_loss_l2': torch.mean(cur_dists_l2).item(),
-        #         'std_loss_l2': torch.std(cur_dists_l2).item(),
-        #         'max_loss_l2': torch.max(cur_dists_l2).item(),
-        #         'min_loss_l2': torch.min(cur_dists_l2).item(),
-        #     }
-
-        # ############ Can be removed ###############
         
         metrics = {
             'mean_loss': mean_loss,
@@ -267,7 +227,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             torch.cuda.empty_cache()
-            generate_and_save(H, imle, sampler, min(5000, subset_len * H.fid_factor))
+            generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
             safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
@@ -382,9 +342,6 @@ def main():
         train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
         sampler = Sampler(H, len(data_train), preprocess_fn)
         # generate_and_save(H, imle, sampler, 5000)
         safe_barrier()        
@@ -403,13 +360,9 @@ def main():
             print("Generating interpolations")
             os.makedirs(f'{H.save_dir}/interp', exist_ok=True)
 
-        subset_len = H.subset_len
-        if subset_len == -1:
-            subset_len = len(data_train)
-        
         imle.eval()
         with torch.no_grad():
-            sampler = Sampler(H, subset_len, preprocess_fn)
+            sampler = Sampler(H, len(data_train), preprocess_fn)
             safe_barrier()
             rank = get_rank()
             world_size = get_world_size()
