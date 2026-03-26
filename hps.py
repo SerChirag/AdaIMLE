@@ -204,6 +204,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
     parser.add_argument('--zero_init', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
 
+    parser.add_argument('--viz_freq', type=int, default=20)
+
     parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
 
     parser.add_argument('--rs_radius', type=float, default=100.0)
