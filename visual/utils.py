@@ -96,8 +96,8 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)
     if(experiment):
-        # experiment.log_image(fname, overwrite=True)
-        experiment.log_image(image_data=im, name="latest.png")
+        experiment.log_image(fname, overwrite=True)
+        # experiment.log_image(image_data=im, name="latest.png")
 
 
 def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):

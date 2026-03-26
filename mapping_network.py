@@ -24,9 +24,10 @@ class FullyConnectedLayer(torch.nn.Module):
         super().__init__()
         self.activation = activation
         self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]) / lr_multiplier)
-        self.bias = torch.nn.Parameter(torch.full([out_features], np.float32(bias_init))) if bias else None
-        self.weight_gain = lr_multiplier / np.sqrt(in_features)
-        self.bias_gain = lr_multiplier
+        self.bias = torch.nn.Parameter(torch.full([out_features], float(bias_init))) if bias else None
+        # Keep scalar gains as plain Python floats to avoid Dynamo creating from_numpy tensors.
+        self.weight_gain = float(lr_multiplier) / float(sqrt(in_features))
+        self.bias_gain = float(lr_multiplier)
 
     def forward(self, x):
         w = self.weight.to(x.dtype) * self.weight_gain
