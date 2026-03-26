@@ -104,6 +104,12 @@ class Sampler:
         self.generator_seed = torch.Generator(device=self.device)         
         self.generator_seed.manual_seed(H.seed + self.rank)
 
+        self.compress_comm = bool(getattr(H, 'compress_comm', True))
+        if self.compress_comm:
+            self._comm_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            self._comm_dtype = torch.float32
+
         self.faiss_res = None
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
@@ -215,7 +221,11 @@ class Sampler:
         if self._local_pool_latents is None or self._local_pool_latents.shape[0] != local_pool_size:
             self._local_pool_latents = torch.empty((local_pool_size, self.H.latent_dim), device=self.device)
             self._local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
-            self._local_pool_combined = torch.empty((local_pool_size, self.H.latent_dim + self.dci_dim), device=self.device)
+            self._local_pool_combined = torch.empty(
+                (local_pool_size, self.H.latent_dim + self.dci_dim),
+                device=self.device,
+                dtype=self._comm_dtype,
+            )
             if self.rank == 0:
                 self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
 
@@ -237,8 +247,8 @@ class Sampler:
                     self._local_pool_proj[batch_slice] = proj
 
         # One collective for both latents and projections to reduce comm overhead.
-        self._local_pool_combined[:, :self.H.latent_dim].copy_(self._local_pool_latents)
-        self._local_pool_combined[:, self.H.latent_dim:].copy_(self._local_pool_proj)
+        self._local_pool_combined[:, :self.H.latent_dim].copy_(self._local_pool_latents.to(self._comm_dtype))
+        self._local_pool_combined[:, self.H.latent_dim:].copy_(self._local_pool_proj.to(self._comm_dtype))
         if self.rank == 0:
             if self._gathered_combined_main is None or len(self._gathered_combined_main) != self.world_size:
                 self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
@@ -252,8 +262,8 @@ class Sampler:
         if self.rank == 0:
             full_combined = torch.cat(self._gathered_combined_main, dim=0)
             # Keep both latents and projections on GPU on rank 0.
-            self.pool_latents = full_combined[:, :self.H.latent_dim]
-            self.pool_samples_proj = full_combined[:, self.H.latent_dim:]
+            self.pool_latents = full_combined[:, :self.H.latent_dim].to(torch.float32)
+            self.pool_samples_proj = full_combined[:, self.H.latent_dim:].to(torch.float32)
     
 
     def nn_search_batched(self, queries, dataset):
@@ -508,10 +518,12 @@ class Sampler:
                     device=self.device,
                     generator=self.generator_seed)
                 full_updated_latents += perturbation
+                comm_latents = full_updated_latents.to(self._comm_dtype)
             else:
-                full_updated_latents = torch.empty(self.sz, self.H.latent_dim, dtype=torch.float32, device=self.device)
+                comm_latents = torch.empty(self.sz, self.H.latent_dim, dtype=self._comm_dtype, device=self.device)
 
-            torch.distributed.broadcast(full_updated_latents, src=0)
+            torch.distributed.broadcast(comm_latents, src=0)
+            full_updated_latents = comm_latents.to(torch.float32)
 
             # Move the broadcasted results to CPU if desired.
             self.selected_latents_tmp = full_updated_latents.cpu()
