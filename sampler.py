@@ -53,6 +53,10 @@ class Sampler:
 
         self.decode_for_metrics = bool(getattr(H, 'autoencoder_decode_for_metrics', True))
         self.autoencoder = load_autoencoder(H, self.device)
+        if is_main_process():
+            ae_name = type(self.autoencoder).__name__
+            ae_source = getattr(getattr(self.autoencoder, 'config', None), '_name_or_path', 'unknown')
+            print(f'\n[autoencoder] Loaded {ae_name} from {ae_source}\n')
         if(H.compile):
             self.autoencoder = torch.compile(self.autoencoder) 
 

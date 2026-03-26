@@ -5,13 +5,17 @@ from diffusers import AutoencoderKL, AutoencoderTiny
 
 
 def load_autoencoder(H, device):
-    model_type = getattr(H, 'autoencoder_type', 'tiny')
-    model_path = getattr(H, 'autoencoder_name_or_path', 'madebyollin/taesd')
+    model_type = getattr(H, 'autoencoder_type', 'kl')
+    model_path = getattr(H, 'autoencoder_name_or_path', '')
     subfolder = getattr(H, 'autoencoder_subfolder', '')
+
+    # Keep tiny AE behavior intact while making EQ-VAE the default for KL mode.
+    if not model_path:
+        model_path = 'madebyollin/taesd' if model_type == 'tiny' else 'zelaki/eq-vae'
 
     if model_type == 'tiny':
         ae = AutoencoderTiny.from_pretrained(model_path)
-    elif model_type == 'kl':
+    elif model_type in ('kl', 'eqvae', 'eq-vae'):
         kwargs = {}
         if subfolder:
             kwargs['subfolder'] = subfolder
