@@ -220,7 +220,6 @@ class Sampler:
         # Reuse local buffers across resamples to avoid repeated allocations.
         if self._local_pool_latents is None or self._local_pool_latents.shape[0] != local_pool_size:
             self._local_pool_latents = torch.empty((local_pool_size, self.H.latent_dim), device=self.device)
-            self._local_pool_proj = torch.empty((local_pool_size, self.dci_dim), device=self.device)
             self._local_pool_combined = torch.empty(
                 (local_pool_size, self.H.latent_dim + self.dci_dim),
                 device=self.device,
@@ -238,17 +237,16 @@ class Sampler:
                 end = min(start + self.H.imle_batch, local_pool_size)
                 batch_slice = slice(start, end)
                 cur_latents = self._local_pool_latents[batch_slice]
+                self._local_pool_combined[batch_slice, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
                 with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
                         exit()
-                    self._local_pool_proj[batch_slice] = proj
+                    self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
 
         # One collective for both latents and projections to reduce comm overhead.
-        self._local_pool_combined[:, :self.H.latent_dim].copy_(self._local_pool_latents.to(self._comm_dtype))
-        self._local_pool_combined[:, self.H.latent_dim:].copy_(self._local_pool_proj.to(self._comm_dtype))
         if self.rank == 0:
             if self._gathered_combined_main is None or len(self._gathered_combined_main) != self.world_size:
                 self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
