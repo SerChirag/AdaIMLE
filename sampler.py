@@ -69,6 +69,13 @@ class Sampler:
         self.l2_projection = None
         self.total_excluded = 0
         self.total_excluded_percentage = 0.0
+        self.rs_current_radius = float(getattr(H, 'rs_radius', 100.0))
+        self.rs_reject_ema_beta = float(getattr(H, 'rs_reject_ema_beta', 0.9))
+        self.rs_reject_ema = 0.0
+        self.rs_reject_ema_steps = 0
+        self.rs_reject_ema_corrected = 0.0
+        self.rs_radius_anneal_cooldown_rounds = int(getattr(H, 'rs_radius_anneal_cooldown_rounds', 20))
+        self.rs_radius_anneal_cooldown_left = 0
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
@@ -116,6 +123,20 @@ class Sampler:
         index_flat = faiss.IndexFlatL2(self.dci_dim)
         dev_id = torch.cuda.current_device()
         self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
+
+    def _update_rs_rejection_ema(self, rejection_pct):
+        # Bias-corrected EMA:
+        # m_t = beta * m_{t-1} + (1-beta) * x_t
+        # m_hat_t = m_t / (1 - beta^t)
+        beta = min(max(self.rs_reject_ema_beta, 0.0), 0.999999)
+        self.rs_reject_ema = beta * self.rs_reject_ema + (1.0 - beta) * float(rejection_pct)
+        self.rs_reject_ema_steps += 1
+        bias_correction = 1.0 - (beta ** self.rs_reject_ema_steps)
+        if bias_correction <= 0.0:
+            self.rs_reject_ema_corrected = self.rs_reject_ema
+            return self.rs_reject_ema
+        self.rs_reject_ema_corrected = self.rs_reject_ema / bias_correction
+        return self.rs_reject_ema_corrected
 
     
     def get_l2_feature(self, inp, permute=True):
@@ -266,203 +287,119 @@ class Sampler:
 
     def nn_search_batched(self, queries, dataset):
         """
-        Hard-first greedy Top-K matching (unique when possible) using self.faiss_index_flat.
+        RS-IMLE search (when enabled):
+        1) Query top-k (k = rs_knn_ignore).
+        2) Remove samples inside rs_radius of any query.
+        3) Query k=1 on the remaining samples.
 
-        RS-IMLE Logic:
-        Prior to matching, if self.ignore_radius > 0, we identify dataset samples (pool latents)
-        that are too close to queries (dataset latents). We drop these from consideration so they
-        are not selected. To ensure we can assign one latent per query, we guarantee that the dataset
-        retains at least Nq samples (dropping the closest ones first).
-
-        Returns:
-            distances: (Nq,) torch.float32   # squared L2 from FAISS
-            indices:   (Nq,) torch.long
+        Non-RS path (use_rs_imle=False):
+        Direct k=1 search on the full sample set.
         """
-        topk = self.H.imle_db_topk
-        tie_shuffle = True  # avoid ordering bias for equal/near-equal margins
+        if isinstance(queries, np.ndarray):
+            queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
+        else:
+            queries_t = queries.to(self.device)
 
-        Nq = queries.shape[0]
-        Nd = dataset.shape[0]
-        if Nq == 0:
+        if isinstance(dataset, np.ndarray):
+            dataset_t = torch.from_numpy(np.ascontiguousarray(dataset, dtype=np.float32)).to(self.device)
+        else:
+            dataset_t = dataset.to(self.device)
+
+        queries_t = queries_t.contiguous()
+        dataset_t = dataset_t.contiguous()
+
+        Nq = int(queries_t.shape[0])
+        Nd = int(dataset_t.shape[0])
+        if Nq == 0 or Nd == 0:
             return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
-        if isinstance(dataset, torch.Tensor) and isinstance(queries, torch.Tensor):
-            dataset_t = dataset.contiguous()
-            queries_t = queries.contiguous()
+        use_rs = bool(getattr(self.H, 'use_rs_imle', False))
 
+        # Fast fallback path when RS-IMLE filtering is disabled.
+        if not use_rs:
+            self.total_excluded = 0
+            self.total_excluded_percentage = 0.0
+            self.rs_reject_ema = 0.0
+            self.rs_reject_ema_steps = 0
+            self.rs_reject_ema_corrected = 0.0
             self.faiss_index_flat.reset()
             self.faiss_index_flat.add(dataset_t)
-
-            original_indices_map = None
-            if getattr(self.H, 'use_rs_imle', False):
-                k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
-                rs_radius = getattr(self.H, 'rs_radius', 10.0)
-                distances, indices = self.faiss_index_flat.search(queries_t, k_ignore)
-                easy_mask = distances < rs_radius
-
-                flat_indices = indices[easy_mask].long()
-                flat_distances = distances[easy_mask].float()
-
-                if flat_indices.numel() > 0:
-                    min_dist = torch.full((Nd,), float('inf'), dtype=torch.float32, device=dataset_t.device)
-                    min_dist.scatter_reduce_(0, flat_indices, flat_distances, reduce='amin', include_self=True)
-
-                    too_close_indices = torch.nonzero(torch.isfinite(min_dist), as_tuple=False).squeeze(1)
-                    max_drops = max(0, Nd - Nq)
-
-                    if too_close_indices.numel() > max_drops:
-                        sorted_by_dist = too_close_indices[torch.argsort(min_dist[too_close_indices])]
-                        drop_indices = sorted_by_dist[:max_drops]
-                    else:
-                        drop_indices = too_close_indices
-
-                    if drop_indices.numel() > 0:
-                        self.total_excluded = int(drop_indices.numel())
-                        self.total_excluded_percentage = self.total_excluded / Nd
-
-                        keep_mask = torch.ones(Nd, dtype=torch.bool, device=dataset_t.device)
-                        keep_mask[drop_indices] = False
-
-                        dataset_t = dataset_t[keep_mask]
-                        original_indices_map = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
-                        Nd = int(dataset_t.shape[0])
-
-                        self.faiss_index_flat.reset()
-                        self.faiss_index_flat.add(dataset_t)
-
-            topk = int(min(max(1, topk), Nd))
-
-            if Nd >= 2:
-                D2, _ = self.faiss_index_flat.search(queries_t, 2)
-                margin = D2[:, 0]
-            else:
-                margin = torch.zeros(Nq, dtype=torch.float32, device=queries_t.device)
-
-            if tie_shuffle:
-                perm = torch.randperm(Nq, device=queries_t.device)
-                order = perm[torch.argsort(margin[perm], stable=True)]
-            else:
-                order = torch.argsort(margin, stable=True)
-
-            D, I = self.faiss_index_flat.search(queries_t, topk)
-
-            used = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
-            out_idx = torch.full((Nq,), -1, dtype=torch.long, device=queries_t.device)
-            out_dst = torch.full((Nq,), float('inf'), dtype=torch.float32, device=queries_t.device)
-
-            for qi in order.tolist():
-                cand = I[qi]
-                cd = D[qi]
-
-                chosen = None
-                for k in range(topk):
-                    j = int(cand[k].item())
-                    if not bool(used[j].item()):
-                        chosen = j
-                        out_dst[qi] = cd[k]
-                        used[j] = True
-                        break
-
-                if chosen is None:
-                    chosen = int(cand[0].item())
-                    out_dst[qi] = cd[0]
-
-                if original_indices_map is not None:
-                    chosen = int(original_indices_map[chosen].item())
-
-                out_idx[qi] = chosen
-
+            D1, I1 = self.faiss_index_flat.search(queries_t, 1)
             self.faiss_index_flat.reset()
-            return out_dst, out_idx
+            return D1.squeeze(1).to(torch.float32), I1.squeeze(1).to(torch.long)
 
-        dataset_np = np.ascontiguousarray(dataset, dtype=np.float32)
-        queries_np = np.ascontiguousarray(queries, dtype=np.float32)
+        topk = int(min(max(1, int(getattr(self.H, 'rs_knn_ignore', 10))), Nd))
+        epsilon = float(self.rs_current_radius)
 
+        # Step 1: top-k search on the full sample set.
         self.faiss_index_flat.reset()
-        self.faiss_index_flat.add(dataset_np)
+        self.faiss_index_flat.add(dataset_t)
+        Dk, Ik = self.faiss_index_flat.search(queries_t, topk)
 
+        # Step 2: reject any sample that appears within epsilon of any query.
+        keep_mask = torch.ones(Nd, dtype=torch.bool, device=dataset_t.device)
+        close_indices = None
+        close_distances = None
+        if epsilon > 0.0:
+            reject_mask = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
+            close_indices = Ik[Dk < epsilon]
+            close_distances = Dk[Dk < epsilon]
+            if close_indices.numel() > 0:
+                reject_mask[close_indices.long()] = True
+                keep_mask = ~reject_mask
+
+        kept_count = int(keep_mask.sum().item())
         original_indices_map = None
-        if getattr(self.H, 'use_rs_imle', False):
-            k_ignore = int(min(max(1, getattr(self.H, 'rs_knn_ignore', 10)), Nd))
-            rs_radius = getattr(self.H, 'rs_radius', 10.0)
-            distances, indices = self.faiss_index_flat.search(queries_np, k_ignore)
-            easy_mask = distances < rs_radius
 
-            flat_indices = indices[easy_mask]
-            flat_distances = distances[easy_mask]
+        # If everything was rejected, keep one least-close sample so FAISS index is valid.
+        if kept_count == 0 and close_indices is not None and close_indices.numel() > 0:
+            min_dist = torch.full((Nd,), float('inf'), dtype=torch.float32, device=dataset_t.device)
+            min_dist.scatter_reduce_(0, close_indices.long(), close_distances.float(), reduce='amin', include_self=True)
+            recover_idx = torch.argmax(min_dist).item()
+            keep_mask[recover_idx] = True
+            kept_count = 1
 
-            if len(flat_indices) > 0:
-                min_dist = np.full(Nd, np.inf, dtype=np.float32)
-                np.minimum.at(min_dist, flat_indices, flat_distances)
-
-                too_close_indices = np.where(min_dist < np.inf)[0]
-                max_drops = max(0, Nd - Nq)
-
-                if len(too_close_indices) > max_drops:
-                    sorted_by_dist = too_close_indices[np.argsort(min_dist[too_close_indices])]
-                    drop_indices = sorted_by_dist[:max_drops]
-                else:
-                    drop_indices = too_close_indices
-
-                if len(drop_indices) > 0:
-                    self.total_excluded = len(drop_indices)
-                    self.total_excluded_percentage = self.total_excluded / Nd
-
-                    keep_mask = np.ones(Nd, dtype=bool)
-                    keep_mask[drop_indices] = False
-
-                    dataset_np = dataset_np[keep_mask]
-                    original_indices_map = np.where(keep_mask)[0]
-                    Nd = dataset_np.shape[0]
-
-                    self.faiss_index_flat.reset()
-                    self.faiss_index_flat.add(dataset_np)
-
-        topk = int(min(max(1, topk), Nd))
-
-        if Nd >= 2:
-            D2, _ = self.faiss_index_flat.search(queries_np, 2)
-            margin = D2[:, 0]
+        # Keep at least one candidate to avoid an empty FAISS index.
+        if kept_count > 0 and kept_count < Nd:
+            self.total_excluded = Nd - kept_count
+            self.total_excluded_percentage = (self.total_excluded * 100.0) / Nd
+            dataset_kept = dataset_t[keep_mask]
+            original_indices_map = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
         else:
-            margin = np.zeros(Nq, dtype=np.float32)
+            self.total_excluded = 0
+            self.total_excluded_percentage = 0.0
+            dataset_kept = dataset_t
 
-        if tie_shuffle:
-            perm = np.random.permutation(Nq)
-            order = perm[np.argsort(margin[perm], kind="stable")]
-        else:
-            order = np.argsort(margin, kind="stable")
+        # Update rejection EMA and anneal epsilon if the EMA crosses threshold.
+        reject_ema = self._update_rs_rejection_ema(self.total_excluded_percentage)
+        anneal_threshold = float(getattr(self.H, 'rs_reject_ema_threshold', 50.0))
+        anneal_factor = float(getattr(self.H, 'rs_radius_anneal_factor', 0.9))
+        min_radius = float(getattr(self.H, 'rs_radius_min', 0.0))
+        if self.rs_radius_anneal_cooldown_left > 0:
+            self.rs_radius_anneal_cooldown_left -= 1
+        elif reject_ema >= anneal_threshold:
+            new_radius = max(min_radius, self.rs_current_radius * anneal_factor)
+            if new_radius < self.rs_current_radius:
+                self.rs_current_radius = new_radius
+                # Reset EMA after anneal to avoid immediate repeated annealing.
+                self.rs_reject_ema = 0.0
+                self.rs_reject_ema_steps = 0
+                self.rs_reject_ema_corrected = 0.0
+                self.rs_radius_anneal_cooldown_left = self.rs_radius_anneal_cooldown_rounds
 
-        D, I = self.faiss_index_flat.search(queries_np, topk)
+        # Step 3: final k=1 search on the remaining sample set.
+        self.faiss_index_flat.reset()
+        self.faiss_index_flat.add(dataset_kept)
+        D1, I1 = self.faiss_index_flat.search(queries_t, 1)
 
-        used = np.zeros(Nd, dtype=bool)
+        out_dst = D1.squeeze(1).to(torch.float32)
+        out_idx = I1.squeeze(1).to(torch.long)
 
-        out_idx = np.full(Nq, -1, dtype=np.int64)
-        out_dst = np.full(Nq, np.inf, dtype=np.float32)
-
-        for qi in order:
-            cand = I[qi]
-            cd = D[qi]
-
-            chosen = -1
-            for k in range(topk):
-                j = int(cand[k])
-                if not used[j]:
-                    chosen = j
-                    out_dst[qi] = float(cd[k])
-                    used[j] = True
-                    break
-
-            if chosen == -1:
-                chosen = int(cand[0])
-                out_dst[qi] = float(cd[0])
-
-            if original_indices_map is not None:
-                chosen = int(original_indices_map[chosen])
-
-            out_idx[qi] = chosen
+        if original_indices_map is not None:
+            out_idx = original_indices_map.index_select(0, out_idx)
 
         self.faiss_index_flat.reset()
-        return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
+        return out_dst, out_idx
 
 
     def imle_sample_force(self, gen, to_update=None):
