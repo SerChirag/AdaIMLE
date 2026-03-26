@@ -133,10 +133,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     while (epoch < H.num_epochs):
         # Update the IMLE force resampling every imle_force_resample epochs.
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
-            torch.cuda.empty_cache()
             sampler.imle_sample_force(imle)
             latent_table.copy_(sampler.selected_latents)
-            torch.cuda.empty_cache()
             force_initial_resample = False
 
 

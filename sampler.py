@@ -86,6 +86,7 @@ class Sampler:
         self.dataset_proj_torch = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
         self.dataset_proj = None
         self.pool_samples_proj = None
+        self._dataset_proj_gpu = None
         self._local_pool_latents = None
         self._local_pool_proj = None
         self._local_pool_combined = None
@@ -153,6 +154,11 @@ class Sampler:
         # Keep a torch tensor for fast indexed target lookup in training,
         # and a NumPy view for FAISS nearest-neighbor search.
         self.dataset_proj = self.dataset_proj_torch.numpy()
+
+        # Build a persistent GPU cache of query features on rank 0 to avoid
+        # re-uploading the full table every resample.
+        if is_main_process():
+            self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
     def sample(self, latents, gen, snoise=None):
         with torch.inference_mode():
@@ -469,15 +475,19 @@ class Sampler:
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
         
-        torch.cuda.empty_cache()
-
         self.selected_dists_tmp[:] = np.inf
 
         with torch.inference_mode():
 
             if(is_main_process()):
+                if (
+                    self._dataset_proj_gpu is None
+                    or self._dataset_proj_gpu.shape != self.dataset_proj_torch.shape
+                    or self._dataset_proj_gpu.device != self.device
+                ):
+                    self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
-                local_ds_feats = self.dataset_proj_torch.to(self.device, non_blocking=True)
+                local_ds_feats = self._dataset_proj_gpu
 
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj
