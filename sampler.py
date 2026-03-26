@@ -124,6 +124,32 @@ class Sampler:
         dev_id = torch.cuda.current_device()
         self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
+    def state_dict(self):
+        return {
+            'total_excluded': int(self.total_excluded),
+            'total_excluded_percentage': float(self.total_excluded_percentage),
+            'rs_current_radius': float(self.rs_current_radius),
+            'rs_reject_ema_beta': float(self.rs_reject_ema_beta),
+            'rs_reject_ema': float(self.rs_reject_ema),
+            'rs_reject_ema_steps': int(self.rs_reject_ema_steps),
+            'rs_reject_ema_corrected': float(self.rs_reject_ema_corrected),
+            'rs_radius_anneal_cooldown_rounds': int(self.rs_radius_anneal_cooldown_rounds),
+            'rs_radius_anneal_cooldown_left': int(self.rs_radius_anneal_cooldown_left),
+        }
+
+    def load_state_dict(self, state):
+        if not isinstance(state, dict):
+            return
+        self.total_excluded = int(state.get('total_excluded', self.total_excluded))
+        self.total_excluded_percentage = float(state.get('total_excluded_percentage', self.total_excluded_percentage))
+        self.rs_current_radius = float(state.get('rs_current_radius', self.rs_current_radius))
+        self.rs_reject_ema_beta = float(state.get('rs_reject_ema_beta', self.rs_reject_ema_beta))
+        self.rs_reject_ema = float(state.get('rs_reject_ema', self.rs_reject_ema))
+        self.rs_reject_ema_steps = int(state.get('rs_reject_ema_steps', self.rs_reject_ema_steps))
+        self.rs_reject_ema_corrected = float(state.get('rs_reject_ema_corrected', self.rs_reject_ema_corrected))
+        self.rs_radius_anneal_cooldown_rounds = int(state.get('rs_radius_anneal_cooldown_rounds', self.rs_radius_anneal_cooldown_rounds))
+        self.rs_radius_anneal_cooldown_left = int(state.get('rs_radius_anneal_cooldown_left', self.rs_radius_anneal_cooldown_left))
+
     def _update_rs_rejection_ema(self, rejection_pct):
         # Bias-corrected EMA:
         # m_t = beta * m_{t-1} + (1-beta) * x_t

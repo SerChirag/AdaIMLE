@@ -47,7 +47,7 @@ def map_saved_by_type(x):
     else:
         return x
 
-def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
+def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=None):
 
     model_state   = map_saved_by_type(imle)
     ema_state     = map_saved_by_type(ema_imle)
@@ -60,6 +60,8 @@ def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
     torch.save(optim_state,  f"{path}-opt.th")
     torch.save(sched_state,  f"{path}-sched.th")
     torch.save(scaler_state, f"{path}-scaler.th")
+    if sampler is not None and hasattr(sampler, 'state_dict'):
+        torch.save(sampler.state_dict(), f"{path}-sampler.th")
 
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
@@ -250,6 +252,57 @@ def load_opt(H, imle, logprint):
 
     logprint('starting at epoch', starting_epoch, 'iterate', iterate, 'eval loss', cur_eval_loss)
     return optimizer, scheduler, scaler, cur_eval_loss, iterate, starting_epoch
+
+
+def _resolve_sampler_restore_path(H):
+    explicit = getattr(H, 'restore_sampler_path', None)
+    if explicit:
+        return explicit
+
+    candidates = [
+        getattr(H, 'restore_path', None),
+        getattr(H, 'restore_ema_path', None),
+        getattr(H, 'restore_optimizer_path', None),
+        getattr(H, 'restore_scheduler_path', None),
+        getattr(H, 'restore_scaler_path', None),
+    ]
+
+    for p in candidates:
+        if not p:
+            continue
+        if p.endswith('-model.th'):
+            return p[:-len('-model.th')] + '-sampler.th'
+        if p.endswith('-model-ema.th'):
+            return p[:-len('-model-ema.th')] + '-sampler.th'
+        if p.endswith('-opt.th'):
+            return p[:-len('-opt.th')] + '-sampler.th'
+        if p.endswith('-sched.th'):
+            return p[:-len('-sched.th')] + '-sampler.th'
+        if p.endswith('-scaler.th'):
+            return p[:-len('-scaler.th')] + '-sampler.th'
+
+    return None
+
+
+def load_sampler_state(H, sampler, logprint):
+    if not bool(getattr(H, 'use_rs_imle', False)):
+        return
+
+    sampler_path = _resolve_sampler_restore_path(H)
+    if not sampler_path:
+        return
+
+    try:
+        state = torch.load(distributed_maybe_download(sampler_path, H.local_rank, H.mpi_size), map_location='cpu')
+    except Exception as e:
+        if is_main_process():
+            logprint(f'Could not restore sampler state from {sampler_path} ({e})')
+        return
+
+    if hasattr(sampler, 'load_state_dict'):
+        sampler.load_state_dict(state)
+        if is_main_process():
+            logprint(f"Restored sampler RS state from {sampler_path}")
 
 
 def save_latents(H, outer, split_ind, latents, name='latents'):

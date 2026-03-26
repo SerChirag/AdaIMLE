@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.train_helpers import (load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
@@ -85,6 +85,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
+    load_sampler_state(H, sampler, logprint)
+
     epoch = starting_epoch
     sampler.init_projection(data_train)
 
@@ -138,7 +140,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             force_initial_resample = False
 
 
-        if (epoch % 20 == 0 and is_main_process()):
+        if (epoch % H.viz_freq == 0 and is_main_process()):
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.inference_mode():
                 imle.eval()
@@ -210,7 +212,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 if is_main_process():
                     fp = os.path.join(H.save_dir, f'iter-{iterate}')
                     logprint(f'Saving model@ {iterate} to {fp}')
-                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                    save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
                 safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
@@ -258,7 +260,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                         fp = os.path.join(H.save_dir, 'best_fid')
                         logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
                         logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
-                        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
 
             safe_barrier()
 
@@ -269,7 +271,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
 
 
-        if (epoch % 5 == 0 and is_main_process()):
+        if (epoch % H.viz_freq == 0 and is_main_process()):
             imle.eval()
             with torch.inference_mode():
                 generate_visualization(H, sampler, viz_batch_original,
@@ -288,7 +290,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             if is_main_process():
                 fp = os.path.join(H.save_dir, 'latest')
                 logprint(f'Saving latest model@ {iterate} to {fp}')
-                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
             safe_barrier()
         epoch += 1
     
@@ -296,7 +298,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         print("Training complete. Saving final model.")
         fp = os.path.join(H.save_dir, 'final')
         logprint(f'Saving final model@ {iterate} to {fp}')
-        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
     safe_barrier()
 
 def main():

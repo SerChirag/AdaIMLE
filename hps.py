@@ -134,6 +134,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_optimizer_path', type=str, default=None)  # restore optimizer from checkpoint
     parser.add_argument('--restore_scheduler_path', type=str, default=None)  # restore optimizer from scheduler
     parser.add_argument('--restore_scaler_path', type=str, default=None)  # restore optimizer from scheduler
+    parser.add_argument('--restore_sampler_path', type=str, default=None)  # restore RS-IMLE sampler state from matching checkpoint
 
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
