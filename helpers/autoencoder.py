@@ -9,13 +9,18 @@ def load_autoencoder(H, device):
     model_path = getattr(H, 'autoencoder_name_or_path', '')
     subfolder = getattr(H, 'autoencoder_subfolder', '')
 
-    # Keep tiny AE behavior intact while making EQ-VAE the default for KL mode.
+    # Default model paths: tiny AE, standard EQ-VAE, or improved EQ-VAE-EMA.
     if not model_path:
-        model_path = 'madebyollin/taesd' if model_type == 'tiny' else 'zelaki/eq-vae'
+        if model_type == 'tiny':
+            model_path = 'madebyollin/taesd'
+        elif model_type == 'eq-vae-ema':
+            model_path = 'zelaki/eq-vae-ema'
+        else:  # kl, eqvae, eq-vae
+            model_path = 'zelaki/eq-vae'
 
     if model_type == 'tiny':
         ae = AutoencoderTiny.from_pretrained(model_path)
-    elif model_type in ('kl', 'eqvae', 'eq-vae'):
+    elif model_type in ('kl', 'eqvae', 'eq-vae', 'eq-vae-ema'):
         kwargs = {}
         if subfolder:
             kwargs['subfolder'] = subfolder
