@@ -80,14 +80,9 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
         if not torch.is_tensor(row):
             row = torch.as_tensor(row)
         normalized_rows.append(row[:mb].detach().to(cat_device))
-
-    sampled_rows = sampler.sample(torch.cat(normalized_rows, dim=0), imle, None)
-
     batches = [orig[:mb]]
-    for row_idx in range(len(normalized_rows)):
-        start = row_idx * mb
-        end = start + mb
-        batches.append(sampled_rows[start:end])
+    for row in normalized_rows:
+        batches.append(sampler.sample(row, imle, None))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(

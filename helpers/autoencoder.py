@@ -1,7 +1,15 @@
 import torch
 import torch.nn.functional as F
+from contextlib import nullcontext
 
 from diffusers import AutoencoderKL, AutoencoderTiny
+from huggingface_hub import hf_hub_download
+
+
+def _fp32_vae_context(tensor):
+    if torch.is_tensor(tensor) and tensor.is_cuda:
+        return torch.autocast(device_type='cuda', enabled=False)
+    return nullcontext()
 
 
 def load_autoencoder(H, device):
@@ -9,17 +17,28 @@ def load_autoencoder(H, device):
     model_path = getattr(H, 'autoencoder_name_or_path', '')
     subfolder = getattr(H, 'autoencoder_subfolder', '')
 
-    # Default model paths: tiny AE, standard EQ-VAE, or improved EQ-VAE-EMA.
+    # Default model paths: tiny AE, standard EQ-VAE, EQ-VAE-EMA, or VR-EQ.
     if not model_path:
         if model_type == 'tiny':
             model_path = 'madebyollin/taesd'
         elif model_type == 'eq-vae-ema':
             model_path = 'zelaki/eq-vae-ema'
+        elif model_type == 'vr-eq':
+            model_path = 'Anzhc/MS-LC-EQ-D-VR_VAE'
         else:  # kl, eqvae, eq-vae
             model_path = 'zelaki/eq-vae'
 
     if model_type == 'tiny':
         ae = AutoencoderTiny.from_pretrained(model_path)
+    elif model_type == 'vr-eq':
+        # This repo ships standalone safetensors weights (no root config.json),
+        # so we must load it as a single-file VAE.
+        if model_path.endswith('.safetensors'):
+            single_file_path = model_path
+        else:
+            single_file_name = 'MS-LC-EQ-D-VR VAE.safetensors'
+            single_file_path = hf_hub_download(model_path, single_file_name)
+        ae = AutoencoderKL.from_single_file(single_file_path)
     elif model_type in ('kl', 'eqvae', 'eq-vae', 'eq-vae-ema'):
         kwargs = {}
         if subfolder:
@@ -57,10 +76,11 @@ def encode_images_to_latents(autoencoder, images_chw, target_spatial=None):
         return images_chw
 
     with torch.inference_mode():
-        encoded = autoencoder.encode(images_chw)
+        with _fp32_vae_context(images_chw):
+            encoded = autoencoder.encode(images_chw.float())
         latents = _extract_latents(encoded)
-
-    scaling_factor = getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0)
+    latents = torch.nan_to_num(latents, nan=0.0, posinf=1e4, neginf=-1e4)
+    scaling_factor = float(getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0))
     latents = latents * scaling_factor
 
     if target_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(target_spatial):
@@ -77,9 +97,11 @@ def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
     if latent_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(latent_spatial):
         latents = F.interpolate(latents, size=latent_spatial, mode='bicubic', align_corners=False)
 
-    scaling_factor = getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0)
+    scaling_factor = float(getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0))
     with torch.inference_mode():
-        decoded = autoencoder.decode(latents / scaling_factor)
+        with _fp32_vae_context(latents):
+            decoded = autoencoder.decode((latents / scaling_factor).float())
         images = _extract_sample(decoded)
+    images = torch.nan_to_num(images, nan=0.0, posinf=1.0, neginf=-1.0)
 
     return torch.clamp(images, -1.0, 1.0)
