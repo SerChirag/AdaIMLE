@@ -240,7 +240,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
     parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'vr-eq'])
-    parser.add_argument('--autoencoder_name_or_path', type=str, default='stabilityai/sd-vae-ft-mse')
+    parser.add_argument('--autoencoder_name_or_path', type=str, default='')
     parser.add_argument('--autoencoder_subfolder', type=str, default='')
     parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
 
