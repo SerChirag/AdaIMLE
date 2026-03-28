@@ -30,15 +30,13 @@ class FullyConnectedLayer(torch.nn.Module):
         self.bias_gain = float(lr_multiplier)
 
     def forward(self, x):
-        w = self.weight.to(x.dtype) * self.weight_gain
+        w = self.weight * self.weight_gain
         b = self.bias
         if b is not None:
-            b = b.to(x.dtype)
             if self.bias_gain != 1:
                 b = b * self.bias_gain
 
-        x = torch.addmm(b.unsqueeze(0), x, w.t())
-        return x
+        return F.linear(x, w, b)
 
 class EqualLinear(nn.Module):
     def __init__(self, in_dim, out_dim):

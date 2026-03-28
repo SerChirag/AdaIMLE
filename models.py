@@ -51,7 +51,7 @@ class SEBlock(nn.Module):
         b, c, _, _ = x.size()
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
+        return x * y
 
 
 class ConvNeXtBlock(nn.Module):
@@ -134,12 +134,13 @@ class DecBlock(nn.Module):
         residual = x
         x = self.adaIN(x, w)
         x = self.resnet(x)
+        residual_ratio = self.sigmoid(self.residual_ratio)
 
         if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
+            return x * residual_ratio + residual
         
         elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+            return x * residual_ratio + residual * (1 - residual_ratio)
 
 def stopgrad_keep_graph(x):
     return x.detach() + 0.0 * x

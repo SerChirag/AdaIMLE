@@ -290,7 +290,7 @@ class Sampler:
                 cur_latents = self._local_pool_latents[batch_slice]
                 self._local_pool_combined[batch_slice, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
                 with autocast(device_type='cuda'):
-                    outputs = gen(cur_latents, None)
+                    outputs = gen(cur_latents)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
@@ -490,8 +490,8 @@ class Sampler:
             torch.distributed.broadcast(comm_latents, src=0)
             full_updated_latents = comm_latents.to(torch.float32)
 
-            # Move the broadcasted results to CPU if desired.
-            self.selected_latents_tmp = full_updated_latents.cpu()
+            # Reuse the preallocated CPU buffer instead of allocating a new tensor every resample.
+            self.selected_latents_tmp.copy_(full_updated_latents)
 
             # Update last and current selected latents on all processes.
             self.last_selected_latents.copy_(self.selected_latents)
@@ -501,4 +501,3 @@ class Sampler:
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
 
         self.faiss_index_flat.reset()
-
