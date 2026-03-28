@@ -50,6 +50,8 @@ def load_autoencoder(H, device):
         raise ValueError(f'Unsupported autoencoder_type: {model_type}')
 
     ae = ae.to(device)
+    if bool(getattr(H, 'use_channels_last', True)) and torch.cuda.is_available():
+        ae = ae.to(memory_format=torch.channels_last)
     ae.eval()
     ae.requires_grad_(False)
     return ae
@@ -76,6 +78,8 @@ def _extract_sample(decoded):
 def encode_images_to_latents(autoencoder, images_chw, target_spatial=None):
     if autoencoder is None:
         return images_chw
+    if images_chw.is_cuda and images_chw.ndim == 4:
+        images_chw = images_chw.contiguous(memory_format=torch.channels_last)
 
     with torch.inference_mode():
         with _fp32_vae_context(images_chw):
@@ -98,6 +102,8 @@ def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
     latents = latents_chw
     if latent_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(latent_spatial):
         latents = F.interpolate(latents, size=latent_spatial, mode='bicubic', align_corners=False)
+    if latents.is_cuda and latents.ndim == 4:
+        latents = latents.contiguous(memory_format=torch.channels_last)
 
     scaling_factor = float(getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0))
     with torch.inference_mode():

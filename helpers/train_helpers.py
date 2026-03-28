@@ -56,8 +56,15 @@ def configure_runtime_performance(H, logprint=None):
             f"runtime config: amp_dtype={H.amp_dtype} "
             f"cudnn_benchmark={torch.backends.cudnn.benchmark} "
             f"allow_tf32={allow_tf32} "
-            f"float32_matmul_precision={matmul_precision}"
+            f"float32_matmul_precision={matmul_precision} "
+            f"channels_last={bool(getattr(H, 'use_channels_last', True))}"
         )
+
+
+def maybe_to_channels_last(module, enabled):
+    if enabled and torch.cuda.is_available():
+        module.to(memory_format=torch.channels_last)
+    return module
 
 def update_ema(imle, ema_imle, ema_rate):
     ema_rate = float(ema_rate)
@@ -224,19 +231,23 @@ def load_imle(H, logprint):
 
     imle = IMLE(H)
     imle.to(device)
+    maybe_to_channels_last(imle, getattr(H, 'use_channels_last', True))
     
     if H.restore_path:
         if(is_main_process()):
             logprint(f'Restoring imle from {H.restore_path}')
         restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+        maybe_to_channels_last(imle, getattr(H, 'use_channels_last', True))
 
     ema_imle = IMLE(H)
     ema_imle = ema_imle.to(device)  # Move to the correct device.
+    maybe_to_channels_last(ema_imle, getattr(H, 'use_channels_last', True))
 
     if H.restore_ema_path:
         if(is_main_process()):
             logprint(f'Restoring ema imle from {H.restore_ema_path}')
         restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+        maybe_to_channels_last(ema_imle, getattr(H, 'use_channels_last', True))
     else:
         ema_imle.load_state_dict(imle.state_dict())
 
