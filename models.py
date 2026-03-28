@@ -180,7 +180,7 @@ class Decoder(nn.Module):
     def forward(self, latent_code, train=False):
         w = self.mapping_network(latent_code)       
         targets = []
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        x = self.constant.expand(latent_code.shape[0], -1, -1, -1)
 
         for idx, block in enumerate(self.dec_blocks):
             if(block.mixin is not None):

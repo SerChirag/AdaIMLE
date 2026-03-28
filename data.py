@@ -74,10 +74,11 @@ def set_up_data(H):
     train_len = None
     if H.dataset == 'stl10':
         train_data = trX
-        for data_train in DataLoader(train_data, batch_size=len(train_data)):
-            ds = torch.tensor((data_train[0] + 1)/2 * 255, dtype=torch.uint8)
-            train_data = TensorDataset(ds.permute(0, 2, 3, 1))
-            break
+        chunks = []
+        for batch in DataLoader(train_data, batch_size=2048):
+            chunks.append(((batch[0] + 1) * 127.5).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
+        train_data = TensorDataset(torch.cat(chunks, dim=0))
+        del chunks
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
@@ -102,10 +103,11 @@ def set_up_data(H):
 
     else:
         train_data = trX
-        for data_train in DataLoader(train_data, batch_size=len(train_data)):
-            ds = torch.tensor(data_train[0] * 255, dtype=torch.uint8)
-            train_data = TensorDataset(ds.permute(0, 2, 3, 1))
-            break
+        chunks = []
+        for batch in DataLoader(train_data, batch_size=2048):
+            chunks.append((batch[0] * 255).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
+        train_data = TensorDataset(torch.cat(chunks, dim=0))
+        del chunks
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
@@ -139,7 +141,7 @@ def set_up_data(H):
         target = target.permute(0, 2, 3, 1).contiguous()
         return inp, target
 
-    return H, train_data, valid_data, preprocess_func
+    return H, train_data, valid_data, preprocess_func, autoencoder
 
 
 def mkdir_p(path):

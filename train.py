@@ -76,12 +76,12 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
     scaler.scale(loss).backward()
     return loss_measure.detach()
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
+def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    sampler = Sampler(H, len(data_train), preprocess_fn)
+    sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
     safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
@@ -310,7 +310,7 @@ def main():
     H.dino_coef = 0.0
     if H.l2_coef == 0.0:
         H.l2_coef = 1.0
-    H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)
+    H, data_train, data_valid_or_test, preprocess_fn, autoencoder = set_up_data(H)
 
     H.world_size = get_world_size()
     H.local_rank = get_rank()
@@ -356,10 +356,10 @@ def main():
             experiment.log_parameter("num_params", num_params)
 
     if(H.mode == 'train'):
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment, autoencoder=autoencoder)
 
     elif H.mode == 'eval_fid':
-        sampler = Sampler(H, len(data_train), preprocess_fn)
+        sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
         # generate_and_save(H, imle, sampler, 5000)
         safe_barrier()        
         if(is_main_process()):
