@@ -208,8 +208,14 @@ class Sampler:
                 if is_main_process():
                     print(f"Warning: could not pin dataset_proj_torch ({e}); continuing without pinned cache.")
 
-        # NumPy view for any CPU-side FAISS operations.
+        # Keep a torch tensor for fast indexed target lookup in training,
+        # and a NumPy view for FAISS nearest-neighbor search.
         self.dataset_proj = self.dataset_proj_torch.numpy()
+
+        # Build a persistent GPU cache of query features on rank 0 to avoid
+        # re-uploading the full table every resample.
+        if is_main_process():
+            self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
     def sample(self, latents, gen, snoise=None):
         with torch.inference_mode():
@@ -265,31 +271,48 @@ class Sampler:
         # Reuse local buffers across resamples to avoid repeated allocations.
         if self._local_pool_latents is None or self._local_pool_latents.shape[0] != local_pool_size:
             self._local_pool_latents = torch.empty((local_pool_size, self.H.latent_dim), device=self.device)
-            # Projections stored in reduced precision to save VRAM.
-            self._local_pool_proj = torch.empty(
-                (local_pool_size, self.dci_dim),
+            self._local_pool_combined = torch.empty(
+                (local_pool_size, self.H.latent_dim + self.dci_dim),
                 device=self.device,
                 dtype=self._comm_dtype,
             )
+            if self.rank == 0:
+                self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
 
-        # Regenerate the entire local pool each resample.
+        # Preserve existing behavior: regenerate the entire local pool each resample.
         self._local_pool_latents.normal_(mean=0.0, std=1.0, generator=self.generator_seed)
 
-        # Process local chunk in batches.
+        # Process local chunk in batches, including the tail batch.
         with torch.inference_mode():
             for start in range(0, local_pool_size, self.H.imle_batch):
                 end = min(start + self.H.imle_batch, local_pool_size)
                 batch_slice = slice(start, end)
                 cur_latents = self._local_pool_latents[batch_slice]
+                self._local_pool_combined[batch_slice, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
                 with autocast(device_type='cuda'):
                     outputs = gen(cur_latents, None)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
                         exit()
-                    self._local_pool_proj[batch_slice].copy_(proj.to(self._comm_dtype))
+                    self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
+
+        # One collective for both latents and projections to reduce comm overhead.
+        if self.rank == 0:
+            if self._gathered_combined_main is None or len(self._gathered_combined_main) != self.world_size:
+                self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
+            torch.distributed.gather(self._local_pool_combined, gather_list=self._gathered_combined_main, dst=0)
+        else:
+            torch.distributed.gather(self._local_pool_combined, gather_list=None, dst=0)
 
         gen.train()
+
+        # Aggregate the full pool latents and projected features
+        if self.rank == 0:
+            full_combined = torch.cat(self._gathered_combined_main, dim=0)
+            # Keep both latents and projections on GPU on rank 0.
+            self.pool_latents = full_combined[:, :self.H.latent_dim].to(torch.float32)
+            self.pool_samples_proj = full_combined[:, self.H.latent_dim:].to(torch.float32)
     
 
     def nn_search_batched(self, queries, dataset):
@@ -411,76 +434,67 @@ class Sampler:
 
     def imle_sample_force(self, gen, to_update=None):
         """
-        Distributed force resampling: each rank generates and searches its own local
-        pool against the full dataset. An all-gather of distances/indices finds the
-        globally nearest pool sample per dataset point, eliminating the O(N*dci_dim)
-        gather that previously centralised everything on rank 0.
+        Optimized force resampling routine using FAISS for batched nearest-neighbor search.
+        In a DDP setting, each process handles a different subset of the dataset features,
+        performs NN search locally, and then the results are merged and broadcast so that
+        all processes end up with the complete global results.
         """
         if is_main_process():
             t1 = time.time()
             print("Starting pool resampling...")
 
+        # Resample pool first (each process contributes its part);
+        # this updates self.pool_samples_proj and self.pool_latents.
         self.resample_pool(gen)
 
-        if is_main_process():
+        if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
 
         self.selected_dists_tmp[:] = np.inf
 
-        N = self.sz
-        local_pool_size = self._local_pool_latents.shape[0]
-
         with torch.inference_mode():
-            # Upload dataset features to GPU transiently (each rank does its own search).
-            dataset_gpu = self.dataset_proj_torch.to(self.device)
 
-            # Each rank: find nearest pool sample for every dataset point.
-            local_distances, local_pool_indices = self.nn_search_batched(
-                dataset_gpu, self._local_pool_proj.float()
-            )
-            del dataset_gpu
+            if(is_main_process()):
+                if (
+                    self._dataset_proj_gpu is None
+                    or self._dataset_proj_gpu.shape != self.dataset_proj_torch.shape
+                    or self._dataset_proj_gpu.device != self.device
+                ):
+                    self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
-            # All-gather: every rank gets (distances, indices) from all other ranks.
-            all_distances = [torch.empty(N, dtype=torch.float32, device=self.device)
-                             for _ in range(self.world_size)]
-            all_pool_indices = [torch.empty(N, dtype=torch.long, device=self.device)
-                                for _ in range(self.world_size)]
-            torch.distributed.all_gather(all_distances, local_distances.float())
-            torch.distributed.all_gather(all_pool_indices, local_pool_indices.long())
+                local_ds_feats = self._dataset_proj_gpu
 
-            stacked_distances = torch.stack(all_distances, dim=0)   # (world_size, N)
-            stacked_indices   = torch.stack(all_pool_indices, dim=0) # (world_size, N)
+                # Pool features (as computed from resample_pool).
+                pool_feats = self.pool_samples_proj
 
-            # Global nearest: which rank and which local-pool index wins per dataset point.
-            best_rank      = stacked_distances.argmin(dim=0)                             # (N,)
-            arange_N       = torch.arange(N, device=self.device)
-            best_local_idx = stacked_indices[best_rank, arange_N]                        # (N,)
+                # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
+                local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
-            # Unique-usage fraction for logging (global pool indices are rank*size + local).
-            global_pool_indices = best_rank.long() * local_pool_size + best_local_idx
-            self.unique_indices = torch.unique(global_pool_indices).numel() / N
+                # get count of unique indices for logging
+                self.unique_indices = torch.unique(local_indices).numel() / self.sz
 
-            # Each rank fills in the latents it owns; all_reduce SUM consolidates.
-            selected = torch.zeros(N, self.H.latent_dim, dtype=torch.float32, device=self.device)
-            my_mask = (best_rank == self.rank)
-            my_ds_indices   = my_mask.nonzero(as_tuple=True)[0]
-            if my_ds_indices.numel() > 0:
-                my_pool_indices = best_local_idx[my_ds_indices]
-                selected[my_ds_indices] = self._local_pool_latents[my_pool_indices].float()
+                local_indices = local_indices.to(device=self.pool_latents.device, non_blocking=True)
+                new_latents = self.pool_latents.index_select(0, local_indices)
 
-            torch.distributed.all_reduce(selected, op=torch.distributed.ReduceOp.SUM)
+            if is_main_process():
+                full_updated_latents = new_latents
+                perturbation = self.H.imle_perturb_coef * torch.randn(
+                    (self.sz, self.H.latent_dim),
+                    device=self.device,
+                    generator=self.generator_seed)
+                full_updated_latents += perturbation
+                comm_latents = full_updated_latents.to(self._comm_dtype)
+            else:
+                comm_latents = torch.empty(self.sz, self.H.latent_dim, dtype=self._comm_dtype, device=self.device)
 
-            # Add perturbation (same generator state on all ranks → same noise).
-            perturbation = self.H.imle_perturb_coef * torch.randn(
-                N, self.H.latent_dim,
-                device=self.device,
-                generator=self.generator_seed,
-            )
-            selected.add_(perturbation)
+            torch.distributed.broadcast(comm_latents, src=0)
+            full_updated_latents = comm_latents.to(torch.float32)
 
-            # Update CPU latent tables, reusing pre-allocated buffers.
+            # Move the broadcasted results to CPU if desired.
+            self.selected_latents_tmp = full_updated_latents.cpu()
+
+            # Update last and current selected latents on all processes.
             self.last_selected_latents.copy_(self.selected_latents)
-            self.selected_latents_tmp.copy_(selected)
             self.selected_latents.copy_(self.selected_latents_tmp)
 
             if is_main_process():
