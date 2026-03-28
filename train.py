@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import nullcontext
 
 from comet_ml import Experiment, ExistingExperiment
 import imageio
@@ -41,14 +42,12 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
+def training_step_imle(H, targets_bchw, latents, imle, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    targets_permuted = targets.permute(0, 3, 1, 2)
     with autocast(device_type='cuda'):
-
         px_z = imle(latents, train=True)
-        loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
+        loss = loss_fn(px_z[-1], targets_bchw)
         loss_measure = loss.clone()
         num_resolutions = 1
 
@@ -58,10 +57,10 @@ def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_f
                 px_z_scale = px_z[i]
 
                 if(H.use_resize_right):
-                    targets_scale = resize_right.resize(targets_permuted, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
                                                         interp_method=interp_methods.cubic, antialiasing =True)
                 else:
-                    targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
                                                   antialias=True, mode='bicubic', align_corners=H.align_corners)
                 
 
@@ -119,14 +118,18 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         seed=H.seed,
     )
 
+    train_num_workers = getattr(H, 'num_workers', None)
+    if train_num_workers is None:
+        train_num_workers = 4
     data_loader = DataLoader(
         comb_dataset,
         batch_size=H.n_batch,
         sampler=train_sampler,
         pin_memory=True,
-        num_workers=4,
-        persistent_workers=True,
-        multiprocessing_context="spawn",
+        num_workers=train_num_workers,
+        persistent_workers=train_num_workers > 0,
+        multiprocessing_context="spawn" if train_num_workers > 0 else None,
+        prefetch_factor=getattr(H, 'prefetch_factor', 2) if train_num_workers > 0 else None,
         shuffle=False,
     )
 
@@ -169,11 +172,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 H.latent_spatial_size,
                 H.latent_spatial_size,
             )
-            target = target_bchw.to(device, non_blocking=True).permute(0, 2, 3, 1)
+            target_bchw = target_bchw.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
             latents = latents.to(device, non_blocking=True)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, scaler)
+            should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
+            grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
+            with grad_sync_context:
+                loss = training_step_imle(H, target_bchw, latents, imle, sampler.calc_loss, scaler)
             
             epoch_loss_sum += loss.item()
             epoch_iter_count += 1

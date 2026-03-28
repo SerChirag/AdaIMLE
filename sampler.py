@@ -185,10 +185,7 @@ class Sampler:
 
         dataloader = DataLoader(
             dataset,
-            batch_size=self.H.imle_batch,
-            num_workers=4,
-            pin_memory=True,
-            persistent_workers=True,
+            batch_size=self.H.imle_batch
         )
 
         if(is_main_process()):
