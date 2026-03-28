@@ -157,7 +157,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if(is_main_process()):
             start_time = time.time()
 
-        epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
+        epoch_loss_sum = torch.zeros((), device=device)  # Accumulate on device to avoid per-step host syncs.
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
@@ -180,7 +180,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             with grad_sync_context:
                 loss = training_step_imle(H, target_bchw, latents, imle, sampler.calc_loss, scaler)
             
-            epoch_loss_sum += loss.item()
+            epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
 
             accum_counter += 1
@@ -228,7 +228,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             imle.zero_grad(set_to_none=True)
             update_ema(imle.module, ema_imle, H.ema_rate)
         
-        epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
+        epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)

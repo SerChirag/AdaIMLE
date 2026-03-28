@@ -23,9 +23,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 
 def update_ema(imle, ema_imle, ema_rate):
-    for p1, p2 in zip(imle.parameters(), ema_imle.parameters()):
-        p2.data.mul_(ema_rate)
-        p2.data.add_(p1.data * (1 - ema_rate))
+    ema_rate = float(ema_rate)
+    src_params = [p.detach() for p in imle.parameters()]
+    ema_params = [p.detach() for p in ema_imle.parameters()]
+    one_minus_ema = 1 - ema_rate
+    torch._foreach_mul_(ema_params, ema_rate)
+    torch._foreach_add_(ema_params, src_params, alpha=one_minus_ema)
 
 
 def as_plain_nn(model):
