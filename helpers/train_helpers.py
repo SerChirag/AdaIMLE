@@ -64,6 +64,9 @@ def configure_runtime_performance(H, logprint=None):
 def maybe_to_channels_last(module, enabled):
     if enabled and torch.cuda.is_available():
         module.to(memory_format=torch.channels_last)
+        for param in module.parameters():
+            if param.ndim == 4 and param.shape[0] == 1 and param.shape[2] == 1 and param.shape[3] == 1:
+                param.data = param.data.contiguous()
     return module
 
 def update_ema(imle, ema_imle, ema_rate):
