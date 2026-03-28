@@ -169,8 +169,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 H.latent_spatial_size,
                 H.latent_spatial_size,
             )
-            target = target_bchw.permute(0, 2, 3, 1).contiguous()
-            target = target.to(device, non_blocking=True)
+            target = target_bchw.to(device, non_blocking=True).permute(0, 2, 3, 1)
             latents = latents.to(device, non_blocking=True)
 
             loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,

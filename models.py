@@ -178,9 +178,9 @@ class Decoder(nn.Module):
 
 
     def forward(self, latent_code, train=False):
-        w = self.mapping_network(latent_code)       
+        w = self.mapping_network(latent_code)
         targets = []
-        x = self.constant.expand(latent_code.shape[0], -1, -1, -1)
+        x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous(memory_format=torch.channels_last)
 
         for idx, block in enumerate(self.dec_blocks):
             if(block.mixin is not None):
