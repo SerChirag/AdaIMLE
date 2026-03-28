@@ -223,7 +223,30 @@ def load_imle(H, logprint):
 
 
 def load_opt(H, imle, logprint):
-    optimizer = AdamW(imle.parameters(), weight_decay=H.wd, lr=H.lr, betas=(H.adam_beta1, H.adam_beta2), eps=H.adam_eps)
+    optimizer_kwargs = dict(
+        weight_decay=H.wd,
+        lr=H.lr,
+        betas=(H.adam_beta1, H.adam_beta2),
+        eps=H.adam_eps,
+    )
+    use_fused_adamw = bool(getattr(H, 'use_fused_adamw', True))
+    fused_requested = use_fused_adamw and torch.cuda.is_available()
+    if fused_requested:
+        optimizer_kwargs['fused'] = True
+
+    try:
+        optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+        if is_main_process():
+            logprint(f'AdamW fused={bool(optimizer_kwargs.get("fused", False))}')
+    except (TypeError, RuntimeError) as exc:
+        if 'fused' in optimizer_kwargs:
+            optimizer_kwargs.pop('fused')
+            if is_main_process():
+                logprint(f'AdamW fused fallback: {exc}')
+            optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+        else:
+            raise
+
     scheduler1 = LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
     cosine_iters = H.total_iters - H.warmup_iters
     scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)

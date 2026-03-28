@@ -153,6 +153,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate
 
     parser.add_argument('--wd', type=float, default=0.00)  # weight decay
+    parser.add_argument('--use_fused_adamw', default=True, type=lambda x: bool(strtobool(x)))  # use fused AdamW when supported
     parser.add_argument('--num_epochs', type=int, default=10000)  # number of epochs
     parser.add_argument('--n_batch', type=int, default=4)  # batch size
     parser.add_argument('--adam_beta1', type=float, default=0.9)
