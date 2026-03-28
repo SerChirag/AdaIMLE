@@ -219,7 +219,7 @@ class Sampler:
 
     def sample(self, latents, gen, snoise=None):
         with torch.inference_mode():
-            with autocast(device_type='cuda'):
+            with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
                 latents = latents.to(self.device)
                 px_z = gen(latents, None)
                 if self.decode_for_metrics:
@@ -289,7 +289,7 @@ class Sampler:
                 batch_slice = slice(start, end)
                 cur_latents = self._local_pool_latents[batch_slice]
                 self._local_pool_combined[batch_slice, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
-                with autocast(device_type='cuda'):
+                with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
                     outputs = gen(cur_latents)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)

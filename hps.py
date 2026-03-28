@@ -148,6 +148,10 @@ def add_imle_arguments(parser):
 
 
     parser.add_argument('--compile', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--amp_dtype', type=str, default='auto', choices=['auto', 'fp16', 'bf16'])  # autocast dtype
+    parser.add_argument('--cudnn_benchmark', default=True, type=lambda x: bool(strtobool(x)))  # enable cuDNN autotuner
+    parser.add_argument('--allow_tf32', default=True, type=lambda x: bool(strtobool(x)))  # allow TF32 on supported CUDA GPUs
+    parser.add_argument('--float32_matmul_precision', type=str, default='high', choices=['highest', 'high', 'medium'])  # float32 matmul precision hint
 
     parser.add_argument('--lr', type=float, default=0.00015)  # learning rate
     parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate

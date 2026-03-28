@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
@@ -45,7 +45,7 @@ def print_seed(device):
 def training_step_imle(H, targets_bchw, latents, imle, loss_fn, scaler):
     
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    with autocast(device_type='cuda'):
+    with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, train=True)
         loss = loss_fn(px_z[-1], targets_bchw)
         loss_measure = loss.clone()
@@ -309,6 +309,7 @@ def main():
     init_distributed_mode()
     
     H, logprint = set_up_hyperparams()
+    configure_runtime_performance(H, logprint)
     H.search_type = 'l2'
     H.lpips_coef = 0.0
     H.dino_coef = 0.0

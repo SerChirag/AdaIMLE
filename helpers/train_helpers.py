@@ -22,6 +22,43 @@ from helpers.utils import is_main_process, get_world_size, get_rank
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 
+
+def resolve_amp_dtype(H):
+    requested = str(getattr(H, 'amp_dtype', 'auto')).lower()
+    if requested == 'auto':
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            requested = 'bf16'
+        else:
+            requested = 'fp16'
+    if requested == 'bf16':
+        return requested, torch.bfloat16
+    return 'fp16', torch.float16
+
+
+def configure_runtime_performance(H, logprint=None):
+    torch.backends.cudnn.benchmark = bool(getattr(H, 'cudnn_benchmark', True))
+
+    allow_tf32 = bool(getattr(H, 'allow_tf32', True))
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+
+    matmul_precision = getattr(H, 'float32_matmul_precision', 'high')
+    if hasattr(torch, 'set_float32_matmul_precision'):
+        torch.set_float32_matmul_precision(matmul_precision)
+
+    amp_name, amp_dtype = resolve_amp_dtype(H)
+    H.amp_dtype = amp_name
+    H.amp_dtype_torch = amp_dtype
+
+    if logprint is not None and is_main_process():
+        logprint(
+            f"runtime config: amp_dtype={H.amp_dtype} "
+            f"cudnn_benchmark={torch.backends.cudnn.benchmark} "
+            f"allow_tf32={allow_tf32} "
+            f"float32_matmul_precision={matmul_precision}"
+        )
+
 def update_ema(imle, ema_imle, ema_rate):
     ema_rate = float(ema_rate)
     src_params = [p.detach() for p in imle.parameters()]
@@ -251,7 +288,7 @@ def load_opt(H, imle, logprint):
     cosine_iters = H.total_iters - H.warmup_iters
     scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
-    scaler = torch.GradScaler(device="cuda")
+    scaler = torch.GradScaler(device="cuda", enabled=(getattr(H, 'amp_dtype', 'fp16') == 'fp16'))
     
     if H.restore_optimizer_path:
         if(is_main_process()):
