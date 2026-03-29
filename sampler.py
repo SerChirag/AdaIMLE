@@ -99,6 +99,7 @@ class Sampler:
         self._local_pool_proj = None
         self._local_pool_combined = None
         self._gathered_combined_main = None
+        self._full_combined_main = None
 
         self.knn_ignore = H.knn_ignore
         self.ignore_radius = H.ignore_radius
@@ -307,18 +308,16 @@ class Sampler:
         gen.train()
 
         # Aggregate the full pool latents and projected features.
-        # Avoid torch.cat (which allocates a full copy) by pre-allocating persistent
-        # output buffers and copying each rank's shard directly into them.
+        # cat into a pre-allocated combined buffer (one GPU kernel), then take contiguous
+        # slices — no extra allocation beyond the buffer itself.
         if self.rank == 0:
             full_pool_size = local_pool_size * self.world_size
-            if (self.pool_latents is None or self.pool_latents.shape[0] != full_pool_size):
-                self.pool_latents = torch.empty((full_pool_size, self.H.latent_dim), dtype=torch.float32, device=self.device)
-                self.pool_samples_proj = torch.empty((full_pool_size, self.dci_dim), dtype=torch.float32, device=self.device)
-            for r, chunk in enumerate(self._gathered_combined_main):
-                s = r * local_pool_size
-                e = s + local_pool_size
-                self.pool_latents[s:e].copy_(chunk[:, :self.H.latent_dim], non_blocking=True)
-                self.pool_samples_proj[s:e].copy_(chunk[:, self.H.latent_dim:], non_blocking=True)
+            combined_dim = self.H.latent_dim + self.dci_dim
+            if (self._full_combined_main is None or self._full_combined_main.shape[0] != full_pool_size):
+                self._full_combined_main = torch.empty((full_pool_size, combined_dim), dtype=torch.float32, device=self.device)
+            torch.cat([c.to(torch.float32) for c in self._gathered_combined_main], dim=0, out=self._full_combined_main)
+            self.pool_latents = self._full_combined_main[:, :self.H.latent_dim]
+            self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:]
     
 
     def nn_search_batched(self, queries, dataset):
