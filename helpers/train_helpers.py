@@ -97,25 +97,35 @@ def map_saved_by_type(x):
     else:
         return x
 
-def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=None):
-
-    model_state   = map_saved_by_type(imle)
-    ema_state     = map_saved_by_type(ema_imle)
-    optim_state   = map_saved_by_type(optimizer)
-    sched_state   = map_saved_by_type(scheduler)
-    scaler_state  = map_saved_by_type(scaler)
-
+def _save_model_worker(path, model_state, ema_state, optim_state, sched_state, scaler_state, sampler_state, from_log, to_log):
+    import shutil
     torch.save(model_state,  f"{path}-model.th")
     torch.save(ema_state,    f"{path}-model-ema.th")
     torch.save(optim_state,  f"{path}-opt.th")
     torch.save(sched_state,  f"{path}-sched.th")
     torch.save(scaler_state, f"{path}-scaler.th")
-    if sampler is not None and hasattr(sampler, 'state_dict'):
-        torch.save(sampler.state_dict(), f"{path}-sampler.th")
+    if sampler_state is not None:
+        torch.save(sampler_state, f"{path}-sampler.th")
+    if os.path.exists(from_log):
+        shutil.copy2(from_log, to_log)
 
+
+def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=None):
+    import threading
+    model_state  = map_saved_by_type(imle)
+    ema_state    = map_saved_by_type(ema_imle)
+    optim_state  = map_saved_by_type(optimizer)
+    sched_state  = map_saved_by_type(scheduler)
+    scaler_state = map_saved_by_type(scaler)
+    sampler_state = sampler.state_dict() if sampler is not None and hasattr(sampler, 'state_dict') else None
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
-    subprocess.check_output(['cp', from_log, to_log])
+    t = threading.Thread(
+        target=_save_model_worker,
+        args=(path, model_state, ema_state, optim_state, sched_state, scaler_state, sampler_state, from_log, to_log),
+        daemon=True,
+    )
+    t.start()
 
 
 def accumulate_stats(stats, frequency):
@@ -267,8 +277,8 @@ def load_imle(H, logprint):
                     )
     
     if(H.compile):
-        imle = torch.compile(imle) 
-        ema_imle = torch.compile(ema_imle)
+        imle = torch.compile(imle)
+        # ema_imle is frozen eval-only — compiling it doubles inductor overhead with no training benefit.
     
     return imle, ema_imle
 

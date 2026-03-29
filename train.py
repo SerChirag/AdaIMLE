@@ -129,7 +129,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         num_workers=train_num_workers,
         persistent_workers=train_num_workers > 0,
         multiprocessing_context="spawn" if train_num_workers > 0 else None,
-        prefetch_factor=getattr(H, 'prefetch_factor', 2) if train_num_workers > 0 else None,
+        prefetch_factor=getattr(H, 'prefetch_factor', 4) if train_num_workers > 0 else None,
         shuffle=False,
     )
 

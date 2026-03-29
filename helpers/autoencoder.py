@@ -54,6 +54,7 @@ def load_autoencoder(H, device):
         ae = ae.to(memory_format=torch.channels_last)
     ae.eval()
     ae.requires_grad_(False)
+    ae._cached_scaling_factor = float(getattr(getattr(ae, 'config', None), 'scaling_factor', 1.0))
     return ae
 
 
@@ -85,8 +86,7 @@ def encode_images_to_latents(autoencoder, images_chw, target_spatial=None):
         with _fp32_vae_context(images_chw):
             encoded = autoencoder.encode(images_chw.float())
         latents = _extract_latents(encoded)
-    latents = torch.nan_to_num(latents, nan=0.0, posinf=1e4, neginf=-1e4)
-    scaling_factor = float(getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0))
+    scaling_factor = getattr(autoencoder, '_cached_scaling_factor', 1.0)
     latents = latents * scaling_factor
 
     if target_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(target_spatial):
@@ -105,11 +105,10 @@ def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
     if latents.is_cuda and latents.ndim == 4:
         latents = latents.contiguous(memory_format=torch.channels_last)
 
-    scaling_factor = float(getattr(getattr(autoencoder, 'config', None), 'scaling_factor', 1.0))
+    scaling_factor = getattr(autoencoder, '_cached_scaling_factor', 1.0)
     with torch.inference_mode():
         with _fp32_vae_context(latents):
             decoded = autoencoder.decode((latents / scaling_factor).float())
         images = _extract_sample(decoded)
-    images = torch.nan_to_num(images, nan=0.0, posinf=1.0, neginf=-1.0)
 
     return torch.clamp(images, -1.0, 1.0)

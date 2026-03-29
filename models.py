@@ -65,7 +65,7 @@ class ConvNeXtBlock(nn.Module):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
-        self.gelu = nn.GELU()
+        self.gelu = nn.GELU(approximate='tanh')
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio

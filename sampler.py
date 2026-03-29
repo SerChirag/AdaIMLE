@@ -34,7 +34,6 @@ class Sampler:
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
-        self.selected_latents_tmp = torch.empty([sz, H.latent_dim], dtype=torch.float32)
 
         blocks = parse_layer_string(H.dec_blocks)
         self.block_res = [s[0] for s in blocks]
@@ -46,8 +45,6 @@ class Sampler:
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
-        self.temp_samples = torch.empty([self.H.imle_db_size, H.image_channels, self.latent_spatial_size, self.latent_spatial_size],
-                                        dtype=torch.float32)
 
         self.pool_latents = None
 
@@ -124,6 +121,8 @@ class Sampler:
         self.faiss_res = None
 
         self.faiss_res = faiss.StandardGpuResources()  # one per process
+        # FlatL2 needs no temp memory; cap it to avoid competing with PyTorch's allocator.
+        self.faiss_res.setTempMemory(64 * 1024 * 1024)  # 64 MB
         index_flat = faiss.IndexFlatL2(self.dci_dim)
         dev_id = torch.cuda.current_device()
         self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
@@ -307,12 +306,19 @@ class Sampler:
 
         gen.train()
 
-        # Aggregate the full pool latents and projected features
+        # Aggregate the full pool latents and projected features.
+        # Avoid torch.cat (which allocates a full copy) by pre-allocating persistent
+        # output buffers and copying each rank's shard directly into them.
         if self.rank == 0:
-            full_combined = torch.cat(self._gathered_combined_main, dim=0)
-            # Keep both latents and projections on GPU on rank 0.
-            self.pool_latents = full_combined[:, :self.H.latent_dim].to(torch.float32)
-            self.pool_samples_proj = full_combined[:, self.H.latent_dim:].to(torch.float32)
+            full_pool_size = local_pool_size * self.world_size
+            if (self.pool_latents is None or self.pool_latents.shape[0] != full_pool_size):
+                self.pool_latents = torch.empty((full_pool_size, self.H.latent_dim), dtype=torch.float32, device=self.device)
+                self.pool_samples_proj = torch.empty((full_pool_size, self.dci_dim), dtype=torch.float32, device=self.device)
+            for r, chunk in enumerate(self._gathered_combined_main):
+                s = r * local_pool_size
+                e = s + local_pool_size
+                self.pool_latents[s:e].copy_(chunk[:, :self.H.latent_dim], non_blocking=True)
+                self.pool_samples_proj[s:e].copy_(chunk[:, self.H.latent_dim:], non_blocking=True)
     
 
     def nn_search_batched(self, queries, dataset):
@@ -344,6 +350,9 @@ class Sampler:
             return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
         use_rs = bool(getattr(self.H, 'use_rs_imle', False))
+
+        # Free PyTorch cached memory so FAISS can allocate from the same pool.
+        torch.cuda.empty_cache()
 
         # Fast fallback path when RS-IMLE filtering is disabled.
         if not use_rs:
@@ -490,12 +499,9 @@ class Sampler:
             torch.distributed.broadcast(comm_latents, src=0)
             full_updated_latents = comm_latents.to(torch.float32)
 
-            # Reuse the preallocated CPU buffer instead of allocating a new tensor every resample.
-            self.selected_latents_tmp.copy_(full_updated_latents)
-
             # Update last and current selected latents on all processes.
             self.last_selected_latents.copy_(self.selected_latents)
-            self.selected_latents.copy_(self.selected_latents_tmp)
+            self.selected_latents.copy_(full_updated_latents)
 
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
