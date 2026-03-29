@@ -48,7 +48,7 @@ def training_step_imle(H, targets_bchw, latents, imle, loss_fn, scaler):
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, train=True)
         loss = loss_fn(px_z[-1], targets_bchw)
-        loss_measure = loss.clone()
+        loss_measure = loss.detach()
         num_resolutions = 1
 
         if(H.use_multi_res):

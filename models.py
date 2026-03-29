@@ -121,9 +121,8 @@ class DecBlock(nn.Module):
                                     reduction=H.se_reduction,
                                     dropout=H.dropout_p)
 
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
-        self.residual_type = H.residual_type  # 'normal' or 'convex' 
-        self.sigmoid = nn.Sigmoid()
+        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))
+        self.residual_type = H.residual_type  # 'normal' or 'convex'
 
 
     def forward(self, x, w):
@@ -134,7 +133,7 @@ class DecBlock(nn.Module):
         residual = x
         x = self.adaIN(x, w)
         x = self.resnet(x)
-        residual_ratio = self.sigmoid(self.residual_ratio)
+        residual_ratio = self.residual_ratio.sigmoid()
 
         if self.residual_type == 'normal':
             return x * residual_ratio + residual

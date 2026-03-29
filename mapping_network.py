@@ -10,7 +10,7 @@ class PixelNorm(nn.Module):
         super().__init__()
 
     def forward(self, input):
-        return input / torch.sqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-6)
+        return input * (input.square().mean(dim=1, keepdim=True) + 1e-6).rsqrt()
 
 class FullyConnectedLayer(torch.nn.Module):
     def __init__(self,
@@ -92,8 +92,8 @@ class LayerNorm(nn.Module):
             return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
         elif self.data_format == "channels_first":
             u = x.mean(1, keepdim=True)
-            s = (x - u).pow(2).mean(1, keepdim=True)
-            x = (x - u) / torch.sqrt(s + self.eps)
+            s = (x - u).square().mean(1, keepdim=True)
+            x = (x - u) * (s + self.eps).rsqrt()
             x = self.weight[:, None, None] * x + self.bias[:, None, None]
             return x
 
@@ -110,7 +110,7 @@ class AdaptiveInstanceNorm(nn.Module):
         nn.init.zeros_(self.style.linear.bias)
 
     def forward(self, input, style):
-        style = self.style(style).unsqueeze(2).unsqueeze(3)
+        style = self.style(style).view(style.shape[0], -1, 1, 1)
         gamma, beta = style.chunk(2, 1)
 
         if input.shape[-1] > 1:
