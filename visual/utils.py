@@ -114,13 +114,14 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 
     imle.eval()
 
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
     with torch.inference_mode():
         # Process images in batches
-        for i in range(0, n_local, H.imle_batch):
-            current_batch_size = min(H.imle_batch, n_local - i)
+        for i in range(0, n_local, ae_batch):
+            current_batch_size = min(ae_batch, n_local - i)
             # Generate random latent vectors for the current batch
-            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
-                                       device=imle.device, 
+            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32,
+                                       device=imle.device,
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler
@@ -152,13 +153,14 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
 
     imle.eval()
 
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
     with torch.inference_mode():
         # Process images in batches
-        for i in range(0, n_local, H.imle_batch):
-            current_batch_size = min(H.imle_batch, n_local - i)
+        for i in range(0, n_local, ae_batch):
+            current_batch_size = min(ae_batch, n_local - i)
             # Generate random latent vectors for the current batch
-            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32, 
-                                       device=imle.device, 
+            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32,
+                                       device=imle.device,
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
             # Generate samples using the provided sampler

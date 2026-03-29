@@ -173,9 +173,6 @@ class Sampler:
         if(permute):
             inp = inp.permute(0, 3, 1, 2)
 
-        if inp.shape[1] == 3:
-            inp = encode_images_to_latents(self.autoencoder, inp, target_spatial=(self.latent_spatial_size, self.latent_spatial_size))
-
         interpolated = inp.reshape(inp.shape[0],-1)
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated
@@ -183,9 +180,10 @@ class Sampler:
 
     def init_projection(self, dataset):
 
+        ae_batch = getattr(self.H, 'ae_batch', self.H.imle_batch)
         dataloader = DataLoader(
             dataset,
-            batch_size=self.H.imle_batch
+            batch_size=ae_batch,
         )
 
         if(is_main_process()):
@@ -194,7 +192,8 @@ class Sampler:
         with torch.inference_mode():
 
             for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
-                batch_slice = slice(ind * self.H.imle_batch, ind * self.H.imle_batch + x[0].shape[0])
+                batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
+                print(x[0].shape)
                 if(self.H.search_type == 'l2'):
                     self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
                 else:
