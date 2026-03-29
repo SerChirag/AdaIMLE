@@ -54,8 +54,9 @@ class Sampler:
             ae_name = type(self.autoencoder).__name__
             ae_source = getattr(getattr(self.autoencoder, 'config', None), '_name_or_path', 'unknown')
             print(f'\n[autoencoder] Loaded {ae_name} from {ae_source}\n')
-        if(H.compile):
-            self.autoencoder = torch.compile(self.autoencoder) 
+        # Do not compile the autoencoder — it runs in frozen inference-only mode rarely
+        # (FID, visualization). CUDA graph capture for the VAE decoder is expensive and
+        # its graph memory stays resident permanently, causing VRAM spikes after FID runs.
 
         self.autoencoder_native_latent_size = None
         fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
