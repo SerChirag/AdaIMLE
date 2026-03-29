@@ -165,7 +165,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         for cur, indices in data_loader:
             latents = cur[1][0]
-            flat_target = sampler.dataset_proj_torch.index_select(0, indices)
+            _proj = sampler._dataset_proj_gpu if sampler._dataset_proj_gpu is not None else sampler.dataset_proj_torch.to(device, non_blocking=True)
+            flat_target = _proj.index_select(0, indices.to(device, non_blocking=True))
             target_bchw = flat_target.view(
                 flat_target.shape[0],
                 H.image_channels,

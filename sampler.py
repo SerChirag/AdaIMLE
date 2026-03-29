@@ -391,9 +391,7 @@ class Sampler:
 
         # If everything was rejected, keep one least-close sample so FAISS index is valid.
         if kept_count == 0 and close_indices is not None and close_indices.numel() > 0:
-            min_dist = torch.full((Nd,), float('inf'), dtype=torch.float32, device=dataset_t.device)
-            min_dist.scatter_reduce_(0, close_indices.long(), close_distances.float(), reduce='amin', include_self=True)
-            recover_idx = torch.argmax(min_dist).item()
+            recover_idx = close_indices[close_distances.argmin()].item()
             keep_mask[recover_idx] = True
             kept_count = 1
 
@@ -402,7 +400,7 @@ class Sampler:
             self.total_excluded = Nd - kept_count
             self.total_excluded_percentage = (self.total_excluded * 100.0) / Nd
             dataset_kept = dataset_t[keep_mask]
-            original_indices_map = torch.nonzero(keep_mask, as_tuple=False).squeeze(1)
+            original_indices_map = torch.arange(Nd, device=dataset_t.device)[keep_mask]
         else:
             self.total_excluded = 0
             self.total_excluded_percentage = 0.0
