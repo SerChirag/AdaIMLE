@@ -193,7 +193,6 @@ class Sampler:
 
             for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
                 batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
-                print(x[0].shape)
                 if(self.H.search_type == 'l2'):
                     self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
                 else:
