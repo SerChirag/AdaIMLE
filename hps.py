@@ -214,16 +214,6 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--viz_freq', type=int, default=20)
 
-    parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
-
-    parser.add_argument('--rs_radius', type=float, default=100.0)
-    parser.add_argument('--rs_knn_ignore', type=int, default=10)
-    parser.add_argument('--rs_reject_ema_beta', type=float, default=0.9)
-    parser.add_argument('--rs_reject_ema_threshold', type=float, default=30.0)  # percentage threshold
-    parser.add_argument('--rs_radius_anneal_factor', type=float, default=0.9)
-    parser.add_argument('--rs_radius_min', type=float, default=0.0)
-    parser.add_argument('--rs_radius_anneal_cooldown_rounds', type=int, default=20)
-
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
     
