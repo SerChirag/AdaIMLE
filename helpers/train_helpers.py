@@ -71,8 +71,8 @@ def maybe_to_channels_last(module, enabled):
 
 def update_ema(imle, ema_imle, ema_rate):
     ema_rate = float(ema_rate)
-    src_params = [p.detach() for p in imle.parameters()]
-    ema_params = [p.detach() for p in ema_imle.parameters()]
+    src_params = list(imle.parameters())
+    ema_params = list(ema_imle.parameters())
     one_minus_ema = 1 - ema_rate
     torch._foreach_mul_(ema_params, ema_rate)
     torch._foreach_add_(ema_params, src_params, alpha=one_minus_ema)
