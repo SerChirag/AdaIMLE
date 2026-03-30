@@ -285,4 +285,6 @@ def add_imle_arguments(parser):
     parser.add_argument('--ppl_save_name', type=str, default='ppl')
     parser.add_argument("--fid_factor", type=int, default=5, help="number of the samples for calculating FID")
     parser.add_argument("--fid_freq", type=int, default=500, help="frequency of calculating fid")
+    parser.add_argument('--cache_dir', type=str, default='./cache', help='Directory for on-disk caches (image tensors and latent projections).')
+    parser.add_argument('--use_cache', default=True, type=lambda x: bool(strtobool(x)), help='Enable disk caching of image tensors and latent projections.')
     return parser

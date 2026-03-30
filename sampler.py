@@ -15,6 +15,7 @@ import faiss
 import faiss.contrib.torch_utils
 from tqdm import tqdm
 from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
+from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn, autoencoder=None):
@@ -181,23 +182,47 @@ class Sampler:
 
     def init_projection(self, dataset):
 
-        ae_batch = getattr(self.H, 'ae_batch', self.H.imle_batch)
-        dataloader = DataLoader(
-            dataset,
-            batch_size=ae_batch,
-        )
+        use_cache = bool(getattr(self.H, 'use_cache', True))
+        cache_dir = getattr(self.H, 'cache_dir', './cache')
 
-        if(is_main_process()):
-            print("Starting Initialization")
+        cached = None
+        if use_cache:
+            key = latent_cache_key(
+                data_root=self.H.data_root,
+                dataset_type=self.H.dataset,
+                image_size=self.H.image_size,
+                latent_spatial_size=self.latent_spatial_size,
+                autoencoder_type=getattr(self.H, 'autoencoder_type', 'kl'),
+                autoencoder_name_or_path=getattr(self.H, 'autoencoder_name_or_path', ''),
+                image_channels=self.latent_channels,
+            )
+            cached = load_latent_cache(cache_dir, key, expected_size=self.sz)
 
-        with torch.inference_mode():
+        if cached is not None:
+            if is_main_process():
+                print(f"[cache] Loaded latent projections from cache "
+                      f"({cached.shape[0]} samples, dim={cached.shape[1]}).")
+            self.dataset_proj_torch.copy_(cached)
+        else:
+            ae_batch = getattr(self.H, 'ae_batch', self.H.imle_batch)
+            dataloader = DataLoader(
+                dataset,
+                batch_size=ae_batch,
+            )
 
-            for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
-                batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
-                if(self.H.search_type == 'l2'):
-                    self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
-                else:
-                    exit()
+            if is_main_process():
+                print("Starting Initialization")
+
+            with torch.inference_mode():
+                for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
+                    batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
+                    if self.H.search_type == 'l2':
+                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                    else:
+                        exit()
+
+            if use_cache and is_main_process():
+                save_latent_cache(cache_dir, key, self.dataset_proj_torch)
 
         # Pin host memory so per-batch H2D copies can use faster async transfer.
         if torch.cuda.is_available() and not self.dataset_proj_torch.is_pinned():

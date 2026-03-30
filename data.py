@@ -14,6 +14,7 @@ from helpers.utils import get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
 from helpers.autoencoder import load_autoencoder, encode_images_to_latents
+from helpers.cache_utils import image_cache_key, load_image_cache, save_image_cache
 
 
 def set_up_data(H):
@@ -72,13 +73,25 @@ def set_up_data(H):
     #     valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
     #     untranspose = True
     train_len = None
+    use_cache = bool(getattr(H, 'use_cache', True))
+    cache_dir = getattr(H, 'cache_dir', './cache')
     if H.dataset == 'stl10':
-        train_data = trX
-        chunks = []
-        for batch in DataLoader(train_data, batch_size=2048):
-            chunks.append(((batch[0] + 1) * 127.5).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
-        train_data = TensorDataset(torch.cat(chunks, dim=0))
-        del chunks
+        cached_tensor = None
+        if use_cache:
+            key = image_cache_key(H.data_root, H.image_size, H.dataset)
+            cached_tensor = load_image_cache(cache_dir, key, expected_size=len(trX))
+        if cached_tensor is not None:
+            print(f"[cache] Loaded image tensor from cache ({cached_tensor.shape[0]} images).")
+            train_data = TensorDataset(cached_tensor)
+        else:
+            chunks = []
+            for batch in DataLoader(trX, batch_size=2048):
+                chunks.append(((batch[0] + 1) * 127.5).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
+            full_tensor = torch.cat(chunks, dim=0)
+            del chunks
+            train_data = TensorDataset(full_tensor)
+            if use_cache:
+                save_image_cache(cache_dir, key, full_tensor)
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
@@ -102,12 +115,23 @@ def set_up_data(H):
         train_len = len(train_data)
 
     else:
-        train_data = trX
-        chunks = []
-        for batch in DataLoader(train_data, batch_size=2048):
-            chunks.append((batch[0] * 255).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
-        train_data = TensorDataset(torch.cat(chunks, dim=0))
-        del chunks
+        # fewshot / fewshot64 / fewshot512
+        cached_tensor = None
+        if use_cache:
+            key = image_cache_key(H.data_root, H.image_size, H.dataset)
+            cached_tensor = load_image_cache(cache_dir, key, expected_size=len(trX))
+        if cached_tensor is not None:
+            print(f"[cache] Loaded image tensor from cache ({cached_tensor.shape[0]} images).")
+            train_data = TensorDataset(cached_tensor)
+        else:
+            chunks = []
+            for batch in DataLoader(trX, batch_size=2048):
+                chunks.append((batch[0] * 255).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
+            full_tensor = torch.cat(chunks, dim=0)
+            del chunks
+            train_data = TensorDataset(full_tensor)
+            if use_cache:
+                save_image_cache(cache_dir, key, full_tensor)
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
