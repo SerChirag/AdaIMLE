@@ -85,9 +85,11 @@ class Sampler:
         self.dci_dim = sum_dims
         self.latent_channels = H.image_channels
         self.dataset_proj_torch = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
+        self.dataset_proj = None
         self.pool_samples_proj = None
         self._dataset_proj_gpu = None
         self._local_pool_latents = None
+        self._local_pool_proj = None
         self._local_pool_combined = None
         self._gathered_combined_main = None
         self._full_combined_main = None
@@ -180,8 +182,14 @@ class Sampler:
                 if is_main_process():
                     print(f"Warning: could not pin dataset_proj_torch ({e}); continuing without pinned cache.")
 
-        # Persistent GPU copy for fast per-batch target lookup in the training loop.
-        self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
+        # Keep a torch tensor for fast indexed target lookup in training,
+        # and a NumPy view for FAISS nearest-neighbor search.
+        self.dataset_proj = self.dataset_proj_torch.numpy()
+
+        # Build a persistent GPU cache of query features on rank 0 to avoid
+        # re-uploading the full table every resample.
+        if is_main_process():
+            self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
     def sample(self, latents, gen, snoise=None):
         with torch.inference_mode():
@@ -198,7 +206,7 @@ class Sampler:
 
                 px_z = px_z.permute(0, 2, 3, 1)
                 xhat = (px_z + 1.0) * 127.5
-                xhat = xhat.cpu().numpy()
+                xhat = xhat.detach().cpu().numpy()
                 xhat = np.minimum(np.maximum(0.0, xhat), 255.0).astype(np.uint8)
                 return xhat
 
@@ -280,10 +288,10 @@ class Sampler:
             full_pool_size = local_pool_size * self.world_size
             combined_dim = self.H.latent_dim + self.dci_dim
             if (self._full_combined_main is None or self._full_combined_main.shape[0] != full_pool_size):
-                self._full_combined_main = torch.empty((full_pool_size, combined_dim), dtype=self._comm_dtype, device=self.device)
-            torch.cat(self._gathered_combined_main, dim=0, out=self._full_combined_main)
-            self.pool_latents = self._full_combined_main[:, :self.H.latent_dim].to(torch.float32)
-            self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:].to(torch.float32)
+                self._full_combined_main = torch.empty((full_pool_size, combined_dim), dtype=torch.float32, device=self.device)
+            torch.cat([c.to(torch.float32) for c in self._gathered_combined_main], dim=0, out=self._full_combined_main)
+            self.pool_latents = self._full_combined_main[:, :self.H.latent_dim]
+            self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:]
     
 
     def nn_search_batched(self, queries, dataset):
@@ -331,8 +339,14 @@ class Sampler:
         with torch.inference_mode():
 
             if(is_main_process()):
-                nn_query_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
-                local_ds_feats = nn_query_gpu
+                if (
+                    self._dataset_proj_gpu is None
+                    or self._dataset_proj_gpu.shape != self.dataset_proj_torch.shape
+                    or self._dataset_proj_gpu.device != self.device
+                ):
+                    self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
+
+                local_ds_feats = self._dataset_proj_gpu
 
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj
@@ -347,7 +361,6 @@ class Sampler:
                 new_latents = self.pool_latents.index_select(0, local_indices)
 
             if is_main_process():
-                del nn_query_gpu
                 full_updated_latents = new_latents
                 perturbation = self.H.imle_perturb_coef * torch.randn(
                     (self.sz, self.H.latent_dim),
