@@ -70,15 +70,6 @@ class Sampler:
         self.nn_search_batch = H.nn_search_batch
 
         self.l2_projection = None
-        self.total_excluded = 0
-        self.total_excluded_percentage = 0.0
-        self.rs_current_radius = float(getattr(H, 'rs_radius', 100.0))
-        self.rs_reject_ema_beta = float(getattr(H, 'rs_reject_ema_beta', 0.9))
-        self.rs_reject_ema = 0.0
-        self.rs_reject_ema_steps = 0
-        self.rs_reject_ema_corrected = 0.0
-        self.rs_radius_anneal_cooldown_rounds = int(getattr(H, 'rs_radius_anneal_cooldown_rounds', 20))
-        self.rs_radius_anneal_cooldown_left = 0
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
@@ -103,13 +94,6 @@ class Sampler:
         self._gathered_combined_main = None
         self._full_combined_main = None
 
-        self.knn_ignore = H.knn_ignore
-        self.ignore_radius = H.ignore_radius
-        self.resample_angle = H.resample_angle
-
-        self.total_excluded = 0
-        self.total_excluded_percentage = 0
-
         self.dataset_size = sz
         self.db_iter = 0
         self.generator_seed = torch.Generator(device=self.device)         
@@ -131,44 +115,10 @@ class Sampler:
         self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     def state_dict(self):
-        return {
-            'total_excluded': int(self.total_excluded),
-            'total_excluded_percentage': float(self.total_excluded_percentage),
-            'rs_current_radius': float(self.rs_current_radius),
-            'rs_reject_ema_beta': float(self.rs_reject_ema_beta),
-            'rs_reject_ema': float(self.rs_reject_ema),
-            'rs_reject_ema_steps': int(self.rs_reject_ema_steps),
-            'rs_reject_ema_corrected': float(self.rs_reject_ema_corrected),
-            'rs_radius_anneal_cooldown_rounds': int(self.rs_radius_anneal_cooldown_rounds),
-            'rs_radius_anneal_cooldown_left': int(self.rs_radius_anneal_cooldown_left),
-        }
+        return {}
 
     def load_state_dict(self, state):
-        if not isinstance(state, dict):
-            return
-        self.total_excluded = int(state.get('total_excluded', self.total_excluded))
-        self.total_excluded_percentage = float(state.get('total_excluded_percentage', self.total_excluded_percentage))
-        self.rs_current_radius = float(state.get('rs_current_radius', self.rs_current_radius))
-        self.rs_reject_ema_beta = float(state.get('rs_reject_ema_beta', self.rs_reject_ema_beta))
-        self.rs_reject_ema = float(state.get('rs_reject_ema', self.rs_reject_ema))
-        self.rs_reject_ema_steps = int(state.get('rs_reject_ema_steps', self.rs_reject_ema_steps))
-        self.rs_reject_ema_corrected = float(state.get('rs_reject_ema_corrected', self.rs_reject_ema_corrected))
-        self.rs_radius_anneal_cooldown_rounds = int(state.get('rs_radius_anneal_cooldown_rounds', self.rs_radius_anneal_cooldown_rounds))
-        self.rs_radius_anneal_cooldown_left = int(state.get('rs_radius_anneal_cooldown_left', self.rs_radius_anneal_cooldown_left))
-
-    def _update_rs_rejection_ema(self, rejection_pct):
-        # Bias-corrected EMA:
-        # m_t = beta * m_{t-1} + (1-beta) * x_t
-        # m_hat_t = m_t / (1 - beta^t)
-        beta = min(max(self.rs_reject_ema_beta, 0.0), 0.999999)
-        self.rs_reject_ema = beta * self.rs_reject_ema + (1.0 - beta) * float(rejection_pct)
-        self.rs_reject_ema_steps += 1
-        bias_correction = 1.0 - (beta ** self.rs_reject_ema_steps)
-        if bias_correction <= 0.0:
-            self.rs_reject_ema_corrected = self.rs_reject_ema
-            return self.rs_reject_ema
-        self.rs_reject_ema_corrected = self.rs_reject_ema / bias_correction
-        return self.rs_reject_ema_corrected
+        pass
 
     
     def get_l2_feature(self, inp, permute=True):
@@ -345,15 +295,7 @@ class Sampler:
     
 
     def nn_search_batched(self, queries, dataset):
-        """
-        RS-IMLE search (when enabled):
-        1) Query top-k (k = rs_knn_ignore).
-        2) Remove samples inside rs_radius of any query.
-        3) Query k=1 on the remaining samples.
-
-        Non-RS path (use_rs_imle=False):
-        Direct k=1 search on the full sample set.
-        """
+        """k=1 exact L2 nearest-neighbour search via FAISS."""
         if isinstance(queries, np.ndarray):
             queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
         else:
@@ -367,99 +309,11 @@ class Sampler:
         queries_t = queries_t.contiguous()
         dataset_t = dataset_t.contiguous()
 
-        Nq = int(queries_t.shape[0])
-        Nd = int(dataset_t.shape[0])
-        if Nq == 0 or Nd == 0:
-            return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
-
-        use_rs = bool(getattr(self.H, 'use_rs_imle', False))
-
-        # Free PyTorch cached memory so FAISS can allocate from the same pool.
-        torch.cuda.empty_cache()
-
-        # Fast fallback path when RS-IMLE filtering is disabled.
-        if not use_rs:
-            self.total_excluded = 0
-            self.total_excluded_percentage = 0.0
-            self.rs_reject_ema = 0.0
-            self.rs_reject_ema_steps = 0
-            self.rs_reject_ema_corrected = 0.0
-            self.faiss_index_flat.reset()
-            self.faiss_index_flat.add(dataset_t)
-            D1, I1 = self.faiss_index_flat.search(queries_t, 1)
-            self.faiss_index_flat.reset()
-            return D1.squeeze(1).to(torch.float32), I1.squeeze(1).to(torch.long)
-
-        topk = int(min(max(1, int(getattr(self.H, 'rs_knn_ignore', 10))), Nd))
-        epsilon = float(self.rs_current_radius)
-
-        # Step 1: top-k search on the full sample set.
         self.faiss_index_flat.reset()
         self.faiss_index_flat.add(dataset_t)
-        Dk, Ik = self.faiss_index_flat.search(queries_t, topk)
-
-        # Step 2: reject any sample that appears within epsilon of any query.
-        keep_mask = torch.ones(Nd, dtype=torch.bool, device=dataset_t.device)
-        close_indices = None
-        close_distances = None
-        if epsilon > 0.0:
-            reject_mask = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
-            close_indices = Ik[Dk < epsilon]
-            close_distances = Dk[Dk < epsilon]
-            if close_indices.numel() > 0:
-                reject_mask[close_indices.long()] = True
-                keep_mask = ~reject_mask
-
-        kept_count = int(keep_mask.sum().item())
-        original_indices_map = None
-
-        # If everything was rejected, keep one least-close sample so FAISS index is valid.
-        if kept_count == 0 and close_indices is not None and close_indices.numel() > 0:
-            recover_idx = close_indices[close_distances.argmin()].item()
-            keep_mask[recover_idx] = True
-            kept_count = 1
-
-        # Keep at least one candidate to avoid an empty FAISS index.
-        if kept_count > 0 and kept_count < Nd:
-            self.total_excluded = Nd - kept_count
-            self.total_excluded_percentage = (self.total_excluded * 100.0) / Nd
-            dataset_kept = dataset_t[keep_mask]
-            original_indices_map = torch.arange(Nd, device=dataset_t.device)[keep_mask]
-        else:
-            self.total_excluded = 0
-            self.total_excluded_percentage = 0.0
-            dataset_kept = dataset_t
-
-        # Update rejection EMA and anneal epsilon if the EMA crosses threshold.
-        reject_ema = self._update_rs_rejection_ema(self.total_excluded_percentage)
-        anneal_threshold = float(getattr(self.H, 'rs_reject_ema_threshold', 50.0))
-        anneal_factor = float(getattr(self.H, 'rs_radius_anneal_factor', 0.9))
-        min_radius = float(getattr(self.H, 'rs_radius_min', 0.0))
-        if self.rs_radius_anneal_cooldown_left > 0:
-            self.rs_radius_anneal_cooldown_left -= 1
-        elif reject_ema >= anneal_threshold:
-            new_radius = max(min_radius, self.rs_current_radius * anneal_factor)
-            if new_radius < self.rs_current_radius:
-                self.rs_current_radius = new_radius
-                # Reset EMA after anneal to avoid immediate repeated annealing.
-                self.rs_reject_ema = 0.0
-                self.rs_reject_ema_steps = 0
-                self.rs_reject_ema_corrected = 0.0
-                self.rs_radius_anneal_cooldown_left = self.rs_radius_anneal_cooldown_rounds
-
-        # Step 3: final k=1 search on the remaining sample set.
-        self.faiss_index_flat.reset()
-        self.faiss_index_flat.add(dataset_kept)
         D1, I1 = self.faiss_index_flat.search(queries_t, 1)
-
-        out_dst = D1.squeeze(1).to(torch.float32)
-        out_idx = I1.squeeze(1).to(torch.long)
-
-        if original_indices_map is not None:
-            out_idx = original_indices_map.index_select(0, out_idx)
-
         self.faiss_index_flat.reset()
-        return out_dst, out_idx
+        return D1.squeeze(1).to(torch.float32), I1.squeeze(1).to(torch.long)
 
 
     def imle_sample_force(self, gen, to_update=None):

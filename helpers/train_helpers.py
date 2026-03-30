@@ -372,24 +372,7 @@ def _resolve_sampler_restore_path(H):
 
 
 def load_sampler_state(H, sampler, logprint):
-    if not bool(getattr(H, 'use_rs_imle', False)):
-        return
-
-    sampler_path = _resolve_sampler_restore_path(H)
-    if not sampler_path:
-        return
-
-    try:
-        state = torch.load(distributed_maybe_download(sampler_path, H.local_rank, H.mpi_size), map_location='cpu')
-    except Exception as e:
-        if is_main_process():
-            logprint(f'Could not restore sampler state from {sampler_path} ({e})')
-        return
-
-    if hasattr(sampler, 'load_state_dict'):
-        sampler.load_state_dict(state)
-        if is_main_process():
-            logprint(f"Restored sampler RS state from {sampler_path}")
+    pass
 
 
 def save_latents(H, outer, split_ind, latents, name='latents'):
