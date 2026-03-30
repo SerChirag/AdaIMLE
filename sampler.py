@@ -12,6 +12,7 @@ from helpers.utils import is_main_process, get_world_size, get_rank, safe_barrie
 from models import parse_layer_string
 from torch import autocast
 import faiss
+import faiss.contrib.torch_utils
 from tqdm import tqdm
 from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
 from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
@@ -266,7 +267,7 @@ class Sampler:
         gen.train()
 
         # Each rank keeps its own local projection slice for distributed NN search.
-        self.local_pool_proj = self._local_pool_combined[:, self.H.latent_dim:].to(torch.float32)
+        self.local_pool_proj = self._local_pool_combined[:, self.H.latent_dim:].to(torch.float32).contiguous()
         self.local_pool_offset = self.rank * local_pool_size
 
         # All-gather latents so every rank can look up the winning latent after sync.
