@@ -333,6 +333,8 @@ class Sampler:
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
+        
+        torch.cuda.empty_cache()
 
         self.selected_dists_tmp[:] = np.inf
 
