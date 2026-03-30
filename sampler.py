@@ -270,7 +270,7 @@ class Sampler:
         self.local_pool_offset = self.rank * local_pool_size
 
         # All-gather latents so every rank can look up the winning latent after sync.
-        local_latents_f32 = self._local_pool_combined[:, :self.H.latent_dim].to(torch.float32)
+        local_latents_f32 = self._local_pool_combined[:, :self.H.latent_dim].to(torch.float32).contiguous()
         gathered_latents = [torch.empty_like(local_latents_f32) for _ in range(self.world_size)]
         torch.distributed.all_gather(gathered_latents, local_latents_f32)
         self.pool_latents = torch.cat(gathered_latents, dim=0)  # [full_pool_size, latent_dim]
