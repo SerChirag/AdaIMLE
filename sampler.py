@@ -295,25 +295,62 @@ class Sampler:
     
 
     def nn_search_batched(self, queries, dataset):
-        """k=1 exact L2 nearest-neighbour search via FAISS."""
-        if isinstance(queries, np.ndarray):
-            queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
-        else:
-            queries_t = queries.to(self.device)
+        """
+        Hard-first greedy Top-K matching (unique when possible).
+        Returns:
+            distances: (Nq,) torch.float32  # squared L2
+            indices:   (Nq,) torch.long
+        """
+        topk = self.H.imle_db_topk
+        Nq = queries.shape[0]
+        Nd = dataset.shape[0]
 
-        if isinstance(dataset, np.ndarray):
-            dataset_t = torch.from_numpy(np.ascontiguousarray(dataset, dtype=np.float32)).to(self.device)
-        else:
-            dataset_t = dataset.to(self.device)
+        if Nq == 0:
+            return torch.empty(0, dtype=torch.float32), torch.empty(0, dtype=torch.long)
 
-        queries_t = queries_t.contiguous()
-        dataset_t = dataset_t.contiguous()
+        queries_np = np.ascontiguousarray(queries.detach().cpu().numpy() if isinstance(queries, torch.Tensor) else queries, dtype=np.float32)
+        dataset_np = np.ascontiguousarray(dataset.detach().cpu().numpy() if isinstance(dataset, torch.Tensor) else dataset, dtype=np.float32)
+
+        topk = int(min(max(1, topk), Nd))
 
         self.faiss_index_flat.reset()
-        self.faiss_index_flat.add(dataset_t)
-        D1, I1 = self.faiss_index_flat.search(queries_t, 1)
+        self.faiss_index_flat.add(dataset_np)
+
+        # Sort queries hard-first by 1-NN distance (proxy for hardness)
+        if Nd >= 2:
+            D2, _ = self.faiss_index_flat.search(queries_np, 2)
+            margin = D2[:, 0]
+        else:
+            margin = np.zeros(Nq, dtype=np.float32)
+
+        perm = np.random.permutation(Nq)
+        order = perm[np.argsort(margin[perm], kind="stable")]
+
+        # Top-K candidates for all queries at once
+        D, I = self.faiss_index_flat.search(queries_np, topk)  # (Nq, K)
+
+        # Greedy unique assignment in hard-first order
+        used = np.zeros(Nd, dtype=bool)
+        out_idx = np.empty(Nq, dtype=np.int64)
+        out_dst = np.empty(Nq, dtype=np.float32)
+
+        for qi in order:
+            cand, cd = I[qi], D[qi]
+            chosen = -1
+            for k in range(topk):
+                j = int(cand[k])
+                if not used[j]:
+                    chosen = j
+                    used[j] = True
+                    out_dst[qi] = float(cd[k])
+                    break
+            if chosen == -1:  # all top-K taken, allow collision
+                chosen = int(cand[0])
+                out_dst[qi] = float(cd[0])
+            out_idx[qi] = chosen
+
         self.faiss_index_flat.reset()
-        return D1.squeeze(1).to(torch.float32), I1.squeeze(1).to(torch.long)
+        return torch.from_numpy(out_dst), torch.from_numpy(out_idx)
 
 
     def imle_sample_force(self, gen, to_update=None):
