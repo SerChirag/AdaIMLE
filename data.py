@@ -18,15 +18,21 @@ from helpers.cache_utils import image_cache_key, load_image_cache, save_image_ca
 
 
 def set_up_data(H):
-    
+
     blocks = parse_layer_string(H.dec_blocks)
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
     H.latent_spatial_size = max(H.block_res)
 
+    # trX: image array (NHWC uint8 or similar); trY: label array or None
+    trY = None
+
     if H.dataset == 'imagenet32':
-        trX, vaX, teX = imagenet32(H.data_root)
+        trX, trY, teX = imagenet32(H.data_root)
         H.image_size = 32
+        H.image_channels = 3
+    elif H.dataset == 'imagenet_folder':
+        trX, trY = None, None  # loaded below via cache path
         H.image_channels = 3
     elif H.dataset in ['fewshot', 'fewshot512', 'fewshot64']:
         trX, vaX, teX = few_shot_image_folder(H.data_root, H.image_size)
@@ -44,7 +50,8 @@ def set_up_data(H):
         H.image_size = 1024
         H.image_channels = 3
     elif H.dataset == 'cifar10':
-        (trX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
+        (trX, trY_raw), (teX, _) = cifar10(H.data_root, one_hot=False)
+        trY = trY_raw.reshape(-1)
         H.image_size = 32
         H.image_channels = 3
     elif H.dataset == "stl10":
@@ -52,7 +59,7 @@ def set_up_data(H):
         H.image_size = 64
         H.image_channels = 3
     elif H.dataset == 'lsun':
-        trX, vaX, teX = lsun_church(H.data_root)   # helper above
+        trX, vaX, teX = lsun_church(H.data_root)
         H.image_size     = 256
         H.image_channels = 3
     else:
@@ -68,21 +75,21 @@ def set_up_data(H):
     )
     H.image_channels = latent_probe.shape[1]
 
-    # if H.dataset == 'ffhq_1024':
-    #     train_data = ImageFolder(trX, transforms.ToTensor())
-    #     valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
-    #     untranspose = True
     train_len = None
     use_cache = bool(getattr(H, 'use_cache', True))
     cache_dir = getattr(H, 'cache_dir', './cache')
+    num_classes = getattr(H, 'num_classes', 0)
+
     if H.dataset == 'stl10':
-        cached_tensor = None
+        cached = None
         if use_cache:
             key = image_cache_key(H.data_root, H.image_size, H.dataset)
-            cached_tensor = load_image_cache(cache_dir, key, expected_size=len(trX))
-        if cached_tensor is not None:
-            print(f"[cache] Loaded image tensor from cache ({cached_tensor.shape[0]} images).")
-            train_data = TensorDataset(cached_tensor)
+            cached = load_image_cache(cache_dir, key, expected_size=len(trX))
+        if cached is not None:
+            # legacy: plain tensor
+            tensor = cached if isinstance(cached, torch.Tensor) else cached['images']
+            print(f"[cache] Loaded image tensor from cache ({tensor.shape[0]} images).")
+            train_data = TensorDataset(tensor)
         else:
             chunks = []
             for batch in DataLoader(trX, batch_size=2048):
@@ -95,34 +102,87 @@ def set_up_data(H):
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
-    
+
     elif H.dataset == 'lsun':
         train_data = trX
         valid_data = trX
-        train_len = train_data.ds.num_rows  
+        train_len = train_data.ds.num_rows
         untranspose = True
-    
+
     elif H.dataset == 'imagenet32':
-        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
+        imgs = torch.as_tensor(trX).permute(0, 2, 3, 1)   # [N, H, W, 3]
+        if num_classes > 0 and trY is not None:
+            labels_t = torch.as_tensor(trY, dtype=torch.long)
+            sort_idx = torch.argsort(labels_t, stable=True)
+            imgs = imgs[sort_idx]
+            labels_t = labels_t[sort_idx]
+            H.labels = labels_t
+            train_data = TensorDataset(imgs, labels_t)
+        else:
+            H.labels = None
+            train_data = TensorDataset(imgs)
         valid_data = None
         train_len = len(train_data)
         untranspose = False
 
+    elif H.dataset == 'cifar10':
+        imgs = torch.as_tensor(trX)   # already [N, H, W, 3]
+        if num_classes > 0 and trY is not None:
+            labels_t = torch.as_tensor(trY, dtype=torch.long)
+            sort_idx = torch.argsort(labels_t, stable=True)
+            imgs = imgs[sort_idx]
+            labels_t = labels_t[sort_idx]
+            H.labels = labels_t
+            train_data = TensorDataset(imgs, labels_t)
+        else:
+            H.labels = None
+            train_data = TensorDataset(imgs)
+        valid_data = None
+        train_len = len(train_data)
+        untranspose = False
+
+    elif H.dataset == 'imagenet_folder':
+        # Load via ImageFolder with caching.  Data is sorted by class
+        # (ImageFolder iterates in folder-alphabetical order).
+        key = image_cache_key(H.data_root, H.image_size, H.dataset, sorted_by_class=True)
+        cached = load_image_cache(cache_dir, key) if use_cache else None
+        if cached is not None and isinstance(cached, dict):
+            imgs   = cached['images']
+            labels_t = cached['labels']
+            print(f"[cache] Loaded imagenet_folder from cache ({imgs.shape[0]} images).")
+        else:
+            imgs, labels_t = _load_imagefolder_to_tensors(H.data_root, H.image_size)
+            if use_cache:
+                save_image_cache(cache_dir, key, {'images': imgs, 'labels': labels_t})
+
+        # Ensure class-sorted order (ImageFolder already is, but sort for safety)
+        sort_idx = torch.argsort(labels_t, stable=True)
+        imgs     = imgs[sort_idx]
+        labels_t = labels_t[sort_idx]
+
+        H.labels = labels_t
+        train_data  = TensorDataset(imgs, labels_t)
+        valid_data  = None
+        train_len   = len(train_data)
+        untranspose = False
+
     elif H.dataset not in ['fewshot', 'fewshot512', 'fewshot64']:
         train_data = TensorDataset(torch.as_tensor(trX))
+        H.labels = None
         valid_data = None
         untranspose = False
         train_len = len(train_data)
 
     else:
         # fewshot / fewshot64 / fewshot512
-        cached_tensor = None
+        cached = None
         if use_cache:
             key = image_cache_key(H.data_root, H.image_size, H.dataset)
-            cached_tensor = load_image_cache(cache_dir, key, expected_size=len(trX))
-        if cached_tensor is not None:
-            print(f"[cache] Loaded image tensor from cache ({cached_tensor.shape[0]} images).")
-            train_data = TensorDataset(cached_tensor)
+            cached = load_image_cache(cache_dir, key, expected_size=len(trX))
+        if cached is not None:
+            tensor = cached if isinstance(cached, torch.Tensor) else cached['images']
+            print(f"[cache] Loaded image tensor from cache ({tensor.shape[0]} images).")
+            train_data = TensorDataset(tensor)
         else:
             chunks = []
             for batch in DataLoader(trX, batch_size=2048):
@@ -132,11 +192,12 @@ def set_up_data(H):
             train_data = TensorDataset(full_tensor)
             if use_cache:
                 save_image_cache(cache_dir, key, full_tensor)
+        H.labels = None
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
-    
-        
+
+
     H.global_batch_size = H.n_batch * get_world_size()
     effective_len = H.subset_len if H.subset_len != -1 else train_len
     H.train_len = effective_len
@@ -144,7 +205,7 @@ def set_up_data(H):
 
     if H.subset_len != -1:
         g = torch.Generator()
-        g.manual_seed(H.seed)  # same seed on all ranks → identical indices everywhere
+        g.manual_seed(H.seed)
         subset_indices = torch.randperm(train_len, generator=g)[:H.subset_len].tolist()
         train_data = Subset(train_data, subset_indices)
 
@@ -163,9 +224,33 @@ def set_up_data(H):
             target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
         )
         target = target.permute(0, 2, 3, 1).contiguous()
-        return inp, target
+        # Return 3-tuple: (pixel_input, labels_or_None, latent_target)
+        # Callers should use preprocess_func(x)[-1] to get the latent target.
+        if num_classes > 0 and len(x) > 1:
+            labels_batch = x[1].to(device=device, non_blocking=True)
+            return inp, labels_batch, target
+        return inp, None, target
 
     return H, train_data, valid_data, preprocess_func, autoencoder
+
+
+def _load_imagefolder_to_tensors(data_root, image_size):
+    """Load an ImageFolder dataset into (images_NHWC_uint8, labels_int64) tensors.
+    ImageFolder iterates in class-sorted folder order, so no extra sort is needed
+    (though set_up_data sorts anyway for safety)."""
+    transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),  # [0, 1] float, NCHW
+    ])
+    dataset = ImageFolder(data_root, transform=transform)
+    loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=4, pin_memory=False)
+    imgs_list, lbls_list = [], []
+    for imgs, lbls in loader:
+        imgs_list.append((imgs * 255).clamp_(0, 255).to(torch.uint8).permute(0, 2, 3, 1))
+        lbls_list.append(lbls)
+    images = torch.cat(imgs_list, dim=0)   # [N, H, W, 3] uint8
+    labels = torch.cat(lbls_list, dim=0)   # [N] int64
+    return images, labels
 
 
 def mkdir_p(path):
@@ -204,7 +289,7 @@ def imagenet32(data_root):
         batch = np.load(os.path.join(data_root, f))
         X = batch["data"]        # shape (N, 3072)
         Y = batch["labels"]      # shape (N,)
-        
+
         # reshape to (N, 3, 32, 32)
         X = X.reshape(-1, 3, 32, 32)
         images.append(X)
@@ -213,7 +298,7 @@ def imagenet32(data_root):
     images = np.concatenate(images)
     labels = np.concatenate(labels) - 1
 
-    return images, None, None
+    return images, labels, None
 
 
 def imagenet64(data_root):
@@ -221,12 +306,11 @@ def imagenet64(data_root):
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-5000]]
     valid = trX[tr_va_split_indices[-5000:]]
-    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')  # this is test.
+    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')
     return train, valid, test
 
 
 def ffhq1024(data_root):
-    # we did not significantly tune hyperparameters on ffhq-1024, and so simply evaluate on the test set
     return os.path.join(data_root, 'ffhq1024/train'), os.path.join(data_root, 'ffhq1024/valid'), os.path.join(data_root, 'ffhq1024/valid')
 
 
@@ -235,7 +319,6 @@ def ffhq256(data_root):
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-7000]]
     valid = trX[tr_va_split_indices[-7000:]]
-    # we did not significantly tune hyperparameters on ffhq-256, and so simply evaluate on the test set
     return train, valid, valid
 
 def stl10(data_root):
@@ -245,7 +328,7 @@ def stl10(data_root):
                             transforms.RandomHorizontalFlip(),
                             transforms.ToTensor(),
                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]), download=True)
-    
+
     return dataset, None, None
 
 class HuggingFaceLSUNChurch(Dataset):
@@ -267,10 +350,10 @@ class HuggingFaceLSUNChurch(Dataset):
             image = Image.fromarray(image)
         image = self.transform(image) * 255.0
         return [image]
-    
+
 def lsun_church(data_root):
     train_ds = HuggingFaceLSUNChurch(data_root, split='train', image_size=256)
-    return train_ds, None, None  # No validation or test set in this case
+    return train_ds, None, None
 
 
 def cifar10(data_root, one_hot=True):

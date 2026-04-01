@@ -44,11 +44,11 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, imle, loss_fn, scaler):
-    
+def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
-        px_z = imle(latents, train=True)
+        px_z = imle(latents, labels, train=True)
         loss = loss_fn(px_z[-1], targets_bchw)
         loss_measure = loss.detach().clone()
         num_resolutions = 1
@@ -149,9 +149,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latents = sampler.selected_latents[:H.num_images_visualize]
             with torch.inference_mode():
                 imle.eval()
+                vis_labels = H.labels[:H.num_images_visualize].to(device) if H.num_classes > 0 else None
                 generate_for_NN(sampler, viz_batch_original, latents,
                                 viz_batch_original.shape, imle,
-                                f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
+                                f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint,
+                                condition=vis_labels)
                 imle.train()
         # If using distributed sampler, set the epoch for shuffling
         train_sampler.set_epoch(epoch)
@@ -167,6 +169,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         for cur, indices in data_loader:
             latents = cur[1][0]
+            # cur[0] is (image_tensor, label_tensor) when num_classes > 0, else (image_tensor,)
+            labels = cur[0][1].to(device, non_blocking=True) if H.num_classes > 0 and len(cur[0]) > 1 else None
             _proj = sampler._dataset_proj_gpu if sampler._dataset_proj_gpu is not None else sampler.dataset_proj_torch.to(device, non_blocking=True)
             flat_target = _proj.index_select(0, indices.to(device, non_blocking=True))
             target_bchw = flat_target.view(
@@ -181,7 +185,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, imle, sampler.calc_loss, scaler)
+                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
             
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
@@ -202,12 +206,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 if(is_main_process()):
                     imle.eval()
                     with torch.inference_mode():
+                        if H.num_classes > 0:
+                            vis_row_labels = [H.labels[:H.num_images_visualize].to(device)] * 2 + [
+                                torch.full((H.num_images_visualize,), i % H.num_classes, dtype=torch.long, device=device)
+                                for i in range(H.num_rows_visualize)
+                            ]
+                        else:
+                            vis_row_labels = None
                         generate_visualization(H, sampler, viz_batch_original,
                                                 sampler.selected_latents[0: H.num_images_visualize],
                                                 sampler.last_selected_latents[0: H.num_images_visualize],
                                                 latent_for_visualization,
                                                 viz_batch_original.shape, imle,
-                                                f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
+                                                f'{H.save_dir}/samples-{iterate}.png', logprint, experiment,
+                                                latent_labels=vis_row_labels)
                     imle.train()
             iterate += 1
             
@@ -276,12 +288,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % H.viz_freq == 0 and is_main_process()):
             imle.eval()
             with torch.inference_mode():
+                if H.num_classes > 0:
+                    vis_row_labels = [H.labels[:H.num_images_visualize].to(device)] * 2 + [
+                        torch.full((H.num_images_visualize,), i % H.num_classes, dtype=torch.long, device=device)
+                        for i in range(H.num_rows_visualize)
+                    ]
+                else:
+                    vis_row_labels = None
                 generate_visualization(H, sampler, viz_batch_original,
                                         sampler.selected_latents[0: H.num_images_visualize],
                                         sampler.last_selected_latents[0: H.num_images_visualize],
                                         latent_for_visualization,
                                         viz_batch_original.shape, imle,
-                                        f'{H.save_dir}/latest.png', logprint, experiment)
+                                        f'{H.save_dir}/latest.png', logprint, experiment,
+                                        latent_labels=vis_row_labels)
             imle.train()
 
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):

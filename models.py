@@ -149,6 +149,10 @@ class Decoder(nn.Module):
         super().__init__()
         self.H = H
         self.mapping_network = MappingNetwork(H)
+        self.num_classes = getattr(H, 'num_classes', 0)
+        if self.num_classes > 0:
+            self.class_embedding = nn.Embedding(self.num_classes, H.latent_dim)
+            nn.init.normal_(self.class_embedding.weight, std=0.02)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -173,11 +177,13 @@ class Decoder(nn.Module):
 
 
         self.resnets = nn.ModuleDict(resnets)
-        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
-        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        self.gains = nn.Parameter(torch.ones(H.image_channels))
+        self.biases = nn.Parameter(torch.zeros(H.image_channels))
 
 
-    def forward(self, latent_code, train=False):
+    def forward(self, latent_code, condition=None, train=False):
+        if self.num_classes > 0 and condition is not None:
+            latent_code = latent_code + self.class_embedding(condition)
         w = self.mapping_network(latent_code)
         targets = []
         x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous(memory_format=torch.channels_last)
@@ -190,7 +196,7 @@ class Decoder(nn.Module):
                     x = x.detach()
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
-        x = self.gains * x + self.biases
+        x = self.gains.view(1, -1, 1, 1) * x + self.biases.view(1, -1, 1, 1)
         targets.append(x)
         if(train):
             return targets
@@ -202,5 +208,5 @@ class IMLE(nn.Module):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, train=False):
-        return self.decoder.forward(latents, train)
+    def forward(self, latents, condition=None, train=False):
+        return self.decoder.forward(latents, condition, train)

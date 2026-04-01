@@ -24,7 +24,22 @@ class Sampler:
         self.world_size = get_world_size()
         self.rank = get_rank()
 
-        self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+        self.num_classes = getattr(H, 'num_classes', 0)
+        self.class_ranges = None  # populated in init_projection
+
+        if self.num_classes > 0:
+            per_class_n = sz // self.num_classes
+            if getattr(H, 'pool_size_per_class', 0) > 0:
+                self.pool_size_per_class = ceil(H.pool_size_per_class / H.imle_db_size) * H.imle_db_size
+            else:
+                self.pool_size_per_class = ceil(H.force_factor * per_class_n / H.imle_db_size) * H.imle_db_size
+            self.local_classes = list(range(self.rank, self.num_classes, self.world_size))
+            # Global pool size not used in conditional path, but set for buffer-sizing compat
+            self.pool_size = self.pool_size_per_class
+        else:
+            self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+            self.local_classes = []
+
         self.preprocess_fn = preprocess_fn
         self.l2_loss = torch.nn.MSELoss(reduction='none').to(self.device)
         self.l1_loss = torch.nn.L1Loss(reduction='none').to(self.device)
@@ -145,6 +160,8 @@ class Sampler:
                 autoencoder_type=getattr(self.H, 'autoencoder_type', 'kl'),
                 autoencoder_name_or_path=getattr(self.H, 'autoencoder_name_or_path', ''),
                 image_channels=self.latent_channels,
+                num_classes=self.num_classes,
+                sorted_by_class=(self.num_classes > 0),
             )
             cached = load_latent_cache(cache_dir, key, expected_size=self.sz)
 
@@ -167,7 +184,7 @@ class Sampler:
                 for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
                     batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
                     if self.H.search_type == 'l2':
-                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[1]).cpu()
+                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[-1]).cpu()
                     else:
                         exit()
 
@@ -186,16 +203,28 @@ class Sampler:
         # and a NumPy view for FAISS nearest-neighbor search.
         self.dataset_proj = self.dataset_proj_torch.numpy()
 
-        # Build a persistent GPU cache of query features on rank 0 to avoid
-        # re-uploading the full table every resample.
-        if is_main_process():
+        # Build class_ranges for conditional NN search.
+        if self.num_classes > 0:
+            labels_cpu = self.H.labels  # [sz] int64, class-sorted
+            unique, counts = torch.unique_consecutive(labels_cpu, return_counts=True)
+            starts = torch.cat([torch.zeros(1, dtype=torch.long), counts.cumsum(0)[:-1]])
+            self.class_ranges = {
+                int(c): (int(s), int(s + n))
+                for c, s, n in zip(unique, starts, counts)
+            }
+
+        # Build a persistent GPU cache of query features.
+        # For conditional: all ranks need it (each handles its own local_classes slice).
+        # For unconditional: only rank 0 needs it.
+        if self.num_classes > 0 or is_main_process():
             self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
 
-    def sample(self, latents, gen, snoise=None):
+    def sample(self, latents, gen, snoise=None, condition=None):
         with torch.inference_mode():
             with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
                 latents = latents.to(self.device)
-                px_z = gen(latents, None)
+                cond = condition.to(self.device) if condition is not None else None
+                px_z = gen(latents, cond)
                 if self.decode_for_metrics:
                     px_z = decode_latents_to_images(self.autoencoder, px_z, self.autoencoder_native_latent_size)
 
@@ -235,12 +264,15 @@ class Sampler:
 
         return per_elem.mean()
     
-    def resample_pool(self, gen):
+    def resample_pool(self, gen, class_condition=None):
 
         gen.eval()
 
         # Determine local pool size
-        local_pool_size = ceil(self.pool_size / self.world_size)
+        if self.num_classes > 0:
+            local_pool_size = self.pool_size_per_class
+        else:
+            local_pool_size = ceil(self.pool_size / self.world_size)
 
         # Reuse local buffers across resamples to avoid repeated allocations.
         if self._local_pool_latents is None or self._local_pool_latents.shape[0] != local_pool_size:
@@ -250,10 +282,10 @@ class Sampler:
                 device=self.device,
                 dtype=self._comm_dtype,
             )
-            if self.rank == 0:
+            if self.rank == 0 and self.num_classes == 0:
                 self._gathered_combined_main = [torch.empty_like(self._local_pool_combined) for _ in range(self.world_size)]
 
-        # Preserve existing behavior: regenerate the entire local pool each resample.
+        # Regenerate the entire local pool each resample.
         self._local_pool_latents.normal_(mean=0.0, std=1.0, generator=self.generator_seed)
 
         # Process local chunk in batches, including the tail batch.
@@ -264,13 +296,28 @@ class Sampler:
                 cur_latents = self._local_pool_latents[batch_slice]
                 self._local_pool_combined[batch_slice, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
                 with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
-                    outputs = gen(cur_latents)
+                    if class_condition is not None:
+                        class_tensor = torch.full(
+                            (cur_latents.shape[0],), class_condition,
+                            dtype=torch.long, device=self.device
+                        )
+                        outputs = gen(cur_latents, class_tensor)
+                    else:
+                        outputs = gen(cur_latents)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
                         exit()
                     self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
 
+        if self.num_classes > 0:
+            # Conditional: each rank owns its class's pool — no gather needed.
+            self.pool_latents = self._local_pool_combined[:, :self.H.latent_dim].float()
+            self.pool_samples_proj = self._local_pool_combined[:, self.H.latent_dim:].float()
+            gen.train()
+            return
+
+        # Unconditional: gather to rank 0.
         # One collective for both latents and projections to reduce comm overhead.
         if self.rank == 0:
             if self._gathered_combined_main is None or len(self._gathered_combined_main) != self.world_size:
@@ -295,7 +342,7 @@ class Sampler:
     
 
     def nn_search_batched(self, queries, dataset):
-        """k=1 exact L2 nearest-neighbour search via FAISS."""
+        """Exact L2 nearest-neighbour search via FAISS with optional hard-first greedy Top-K."""
         if isinstance(queries, np.ndarray):
             queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
         else:
@@ -309,19 +356,59 @@ class Sampler:
         queries_t = queries_t.contiguous()
         dataset_t = dataset_t.contiguous()
 
+        topk = getattr(self.H, 'imle_db_topk', 1)
+
         self.faiss_index_flat.reset()
         self.faiss_index_flat.add(dataset_t)
-        D1, I1 = self.faiss_index_flat.search(queries_t, 1)
+        D, I = self.faiss_index_flat.search(queries_t, min(topk, dataset_t.shape[0]))
         self.faiss_index_flat.reset()
-        return D1.squeeze(1).to(torch.float32), I1.squeeze(1).to(torch.long)
+
+        if topk == 1:
+            return D.squeeze(1).to(torch.float32), I.squeeze(1).to(torch.long)
+
+        # Hard-first greedy assignment via numpy
+        D_np = D.cpu().numpy()
+        I_np = I.cpu().numpy()
+        Nq, K = D_np.shape
+        Nd = dataset_t.shape[0]
+
+        # Sort all (query, candidate) pairs by distance ascending
+        q_ids = np.repeat(np.arange(Nq), K)
+        c_ids = I_np.flatten()
+        d_vals = D_np.flatten()
+        order = np.argsort(d_vals, kind='stable')
+
+        assigned_q = np.full(Nq, -1, dtype=np.int64)
+        assigned_d = np.full(Nq, np.inf, dtype=np.float32)
+        used_c = np.zeros(Nd, dtype=bool)
+
+        for pos in order:
+            q, c = q_ids[pos], c_ids[pos]
+            if assigned_q[q] == -1 and not used_c[c]:
+                assigned_q[q] = c
+                assigned_d[q] = d_vals[pos]
+                used_c[c] = True
+
+        # Fallback: unassigned queries get their k=1 match
+        unassigned = np.where(assigned_q == -1)[0]
+        if len(unassigned) > 0:
+            assigned_q[unassigned] = I_np[unassigned, 0]
+            assigned_d[unassigned] = D_np[unassigned, 0]
+
+        return torch.from_numpy(assigned_d), torch.from_numpy(assigned_q)
 
 
     def imle_sample_force(self, gen, to_update=None):
+        if self.num_classes > 0:
+            self._imle_sample_force_conditional(gen)
+        else:
+            self._imle_sample_force_unconditional(gen)
+
+    def _imle_sample_force_unconditional(self, gen):
         """
         Optimized force resampling routine using FAISS for batched nearest-neighbor search.
-        In a DDP setting, each process handles a different subset of the dataset features,
-        performs NN search locally, and then the results are merged and broadcast so that
-        all processes end up with the complete global results.
+        In a DDP setting, each process contributes to the pool; rank 0 performs NN search,
+        adds perturbation, and broadcasts the result to all processes.
         """
         if is_main_process():
             t1 = time.time()
@@ -333,7 +420,7 @@ class Sampler:
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
-        
+
         torch.cuda.empty_cache()
 
         self.selected_dists_tmp[:] = np.inf
@@ -382,5 +469,54 @@ class Sampler:
 
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
+
+        self.faiss_index_flat.reset()
+
+    def _imle_sample_force_conditional(self, gen):
+        """
+        Conditional force resampling: each rank handles its local_classes.
+        Per-class pool is generated and searched against that class's real latents.
+        all_reduce(SUM) merges results across ranks (each rank only writes its owned slices).
+        """
+        t1 = time.time()
+        if is_main_process():
+            print("Starting conditional pool resampling...")
+
+        comm_latents = torch.zeros(
+            self.sz, self.H.latent_dim,
+            dtype=self._comm_dtype, device=self.device
+        )
+
+        with torch.inference_mode():
+            for class_id in self.local_classes:
+                start, end = self.class_ranges[class_id]
+                if end <= start:
+                    continue
+
+                self.resample_pool(gen, class_condition=class_id)
+
+                class_ds_feats = self._dataset_proj_gpu[start:end]
+                _, local_indices = self.nn_search_batched(class_ds_feats, self.pool_samples_proj)
+                local_indices = local_indices.to(self.pool_latents.device)
+                new_latents = self.pool_latents.index_select(0, local_indices)
+                comm_latents[start:end] = new_latents.to(self._comm_dtype)
+
+                torch.cuda.empty_cache()
+
+        # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
+        torch.distributed.all_reduce(comm_latents, op=torch.distributed.ReduceOp.SUM)
+        full_updated_latents = comm_latents.float()
+
+        perturbation = self.H.imle_perturb_coef * torch.randn(
+            (self.sz, self.H.latent_dim), device=self.device,
+            generator=self.generator_seed
+        )
+        full_updated_latents.add_(perturbation)
+
+        self.last_selected_latents.copy_(self.selected_latents)
+        self.selected_latents.copy_(full_updated_latents.cpu())
+
+        if is_main_process():
+            print(f"Conditional force resampling took {time.time() - t1:.2f}s")
 
         self.faiss_index_flat.reset()

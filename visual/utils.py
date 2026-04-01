@@ -53,10 +53,11 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 
 
-def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
+def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint, condition=None):
     mb = shape[0]
     initial = initial[:mb].to(ema_imle.device)
-    nns = sampler.sample(initial, ema_imle, None)
+    cond = condition[:mb].to(ema_imle.device) if condition is not None else None
+    nns = sampler.sample(initial, ema_imle, None, condition=cond)
     batches = [orig[:mb], nns]
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
@@ -66,7 +67,7 @@ def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     imageio.imwrite(fname, im)
 
 
-def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_visualization, shape, imle, fname, logprint, experiment=None):
+def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_visualization, shape, imle, fname, logprint, experiment=None, latent_labels=None):
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
@@ -81,8 +82,9 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
             row = torch.as_tensor(row)
         normalized_rows.append(row[:mb].detach().to(cat_device))
     batches = [orig[:mb]]
-    for row in normalized_rows:
-        batches.append(sampler.sample(row, imle, None))
+    for idx, row in enumerate(normalized_rows):
+        cond = latent_labels[idx][:mb].to(cat_device) if latent_labels is not None else None
+        batches.append(sampler.sample(row, imle, None, condition=cond))
 
     n_rows = len(batches)
     im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(

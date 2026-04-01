@@ -42,6 +42,23 @@ imagenet32.convnext_expansion = 6
 HPARAMS_REGISTRY['imagenet32'] = imagenet32
 
 
+imagenet_folder = Hyperparams()
+imagenet_folder.width = 512
+imagenet_folder.lr = 0.0002
+imagenet_folder.wd = 0.01
+imagenet_folder.dec_blocks = "1x1,4m1,4x8,8m4,8x16,16m8,16x16,32m16,32x21"
+imagenet_folder.dataset = 'imagenet_folder'
+imagenet_folder.n_batch = 32
+imagenet_folder.imle_batch = 32
+imagenet_folder.ema_rate = 0.9999
+imagenet_folder.l2_search_downsample = 1.0
+imagenet_folder.multi_res_scales = '8,12,16,24,28'
+imagenet_folder.convnext_expansion = 6
+imagenet_folder.num_classes = 1000
+imagenet_folder.pool_size_per_class = 0  # derive from force_factor
+imagenet_folder.imle_db_topk = 20
+HPARAMS_REGISTRY['imagenet_folder'] = imagenet_folder
+
 stl10 = Hyperparams()
 stl10.width = 384
 stl10.lr = 0.0002
@@ -258,6 +275,18 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
+
+    parser.add_argument('--num_classes', type=int, default=0,
+                        help='Number of classes for conditional generation. 0 = unconditional.')
+    parser.add_argument('--pool_size_per_class', type=int, default=0,
+                        help='Candidate pool size per class. 0 = derive from force_factor * (sz/num_classes).')
+
+    parser.add_argument('--nn_search_batch', type=int, default=4096)  # batch size for FAISS queries
+    parser.add_argument('--compress_comm', default=True, type=lambda x: bool(strtobool(x)))  # compress DDP communication with bfloat16/float16
+    parser.add_argument('--num_workers', type=int, default=4)  # DataLoader worker count
+    parser.add_argument('--prefetch_factor', type=int, default=4)  # DataLoader prefetch factor
+    parser.add_argument('--latent_spatial_size', type=int, default=0,
+                        help='Override latent spatial size. 0 = auto-detect from dec_blocks.')
 
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1", "cauchy", "mclure", "rmse", "welsch"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")

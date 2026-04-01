@@ -39,11 +39,13 @@ def _canonical_ae_path(autoencoder_type: str, autoencoder_name_or_path: str) -> 
 # Image-cache helpers  (Problem: slow startup for large fewshot/stl10 datasets)
 # ---------------------------------------------------------------------------
 
-def image_cache_key(data_root: str, image_size: int, dataset_type: str) -> str:
+def image_cache_key(data_root: str, image_size: int, dataset_type: str,
+                    sorted_by_class: bool = False) -> str:
     d = {
-        'data_root':    os.path.abspath(data_root),
-        'image_size':   int(image_size),
-        'dataset_type': str(dataset_type),
+        'data_root':       os.path.abspath(data_root),
+        'image_size':      int(image_size),
+        'dataset_type':    str(dataset_type),
+        'sorted_by_class': bool(sorted_by_class),
     }
     h = _stable_hash(d)
     return f"images_{dataset_type}_sz{image_size}_{h}"
@@ -57,35 +59,39 @@ def _image_cache_paths(cache_dir: str, key: str):
 
 
 def load_image_cache(cache_dir: str, key: str, expected_size: int | None = None):
-    """Return the cached image tensor, or None on any miss / mismatch."""
+    """Return the cached image tensor (or dict with 'images'/'labels'), or None on any miss."""
     pt_path, meta_path = _image_cache_paths(cache_dir, key)
     if not os.path.isfile(pt_path) or not os.path.isfile(meta_path):
         return None
     try:
         with open(meta_path) as f:
             meta = json.load(f)
-        tensor = torch.load(pt_path, map_location='cpu', weights_only=True)
+        obj = torch.load(pt_path, map_location='cpu', weights_only=True)
+        # obj can be a plain tensor (legacy) or a dict {'images': ..., 'labels': ...}
+        size = obj['images'].shape[0] if isinstance(obj, dict) else obj.shape[0]
         cached_size = meta.get('dataset_size')
-        if cached_size is not None and tensor.shape[0] != int(cached_size):
+        if cached_size is not None and size != int(cached_size):
             print(f"[cache] Image meta/tensor size disagreement. Rebuilding.")
             return None
-        if expected_size is not None and tensor.shape[0] != expected_size:
+        if expected_size is not None and size != expected_size:
             print(f"[cache] Image cache size mismatch "
-                  f"(cached {tensor.shape[0]} != expected {expected_size}). Rebuilding.")
+                  f"(cached {size} != expected {expected_size}). Rebuilding.")
             return None
-        return tensor
+        return obj
     except Exception as e:
         print(f"[cache] Could not load image cache ({e}). Rebuilding.")
         return None
 
 
-def save_image_cache(cache_dir: str, key: str, tensor: torch.Tensor):
+def save_image_cache(cache_dir: str, key: str, obj):
+    """Save image cache. obj is either a Tensor or a dict {'images': Tensor, 'labels': Tensor}."""
     os.makedirs(cache_dir, exist_ok=True)
     pt_path, meta_path = _image_cache_paths(cache_dir, key)
     try:
-        _atomic_save(tensor, pt_path)
+        size = obj['images'].shape[0] if isinstance(obj, dict) else obj.shape[0]
+        _atomic_save(obj, pt_path)
         with open(meta_path, 'w') as f:
-            json.dump({'dataset_size': tensor.shape[0]}, f)
+            json.dump({'dataset_size': size}, f)
         print(f"[cache] Saved image cache -> {pt_path}")
     except Exception as e:
         print(f"[cache] Failed to save image cache ({e}). Continuing without cache.")
@@ -103,6 +109,8 @@ def latent_cache_key(
     autoencoder_type: str,
     autoencoder_name_or_path: str,
     image_channels: int,
+    num_classes: int = 0,
+    sorted_by_class: bool = False,
 ) -> str:
     d = {
         'data_root':          os.path.abspath(data_root),
@@ -111,6 +119,8 @@ def latent_cache_key(
         'latent_spatial_size': int(latent_spatial_size),
         'ae_path':            _canonical_ae_path(autoencoder_type, autoencoder_name_or_path),
         'image_channels':     int(image_channels),
+        'num_classes':        int(num_classes),
+        'sorted_by_class':    bool(sorted_by_class),
     }
     h = _stable_hash(d)
     return (
