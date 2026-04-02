@@ -266,8 +266,6 @@ class Sampler:
     
     def resample_pool(self, gen, class_condition=None):
 
-        gen.eval()
-
         # Determine local pool size
         if self.num_classes > 0:
             local_pool_size = self.pool_size_per_class
@@ -314,7 +312,6 @@ class Sampler:
             # Conditional: each rank owns its class's pool — no gather needed.
             self.pool_latents = self._local_pool_combined[:, :self.H.latent_dim].float()
             self.pool_samples_proj = self._local_pool_combined[:, self.H.latent_dim:].float()
-            gen.train()
             return
 
         # Unconditional: gather to rank 0.
@@ -326,7 +323,7 @@ class Sampler:
         else:
             torch.distributed.gather(self._local_pool_combined, gather_list=None, dst=0)
 
-        gen.train()
+        gen.train()  # unconditional path only — conditional caller manages eval/train
 
         # Aggregate the full pool latents and projected features.
         # cat into a pre-allocated combined buffer (one GPU kernel), then take contiguous
@@ -487,6 +484,7 @@ class Sampler:
             dtype=self._comm_dtype, device=self.device
         )
 
+        gen.eval()
         with torch.inference_mode():
             for class_id in self.local_classes:
                 start, end = self.class_ranges[class_id]
@@ -495,13 +493,16 @@ class Sampler:
 
                 self.resample_pool(gen, class_condition=class_id)
 
-                class_ds_feats = self._dataset_proj_gpu[start:end]
-                _, local_indices = self.nn_search_batched(class_ds_feats, self.pool_samples_proj)
-                local_indices = local_indices.to(self.pool_latents.device)
+                # Simple top-1 NN via torch cdist — faster than FAISS for small
+                # per-class pools (pool_size_per_class << imle_db_size).
+                class_ds_feats = self._dataset_proj_gpu[start:end]   # [n_real, dci_dim]
+                pool_feats = self.pool_samples_proj                   # [pool_size, dci_dim]
+                dists = torch.cdist(class_ds_feats, pool_feats)       # [n_real, pool_size]
+                local_indices = dists.argmin(dim=1)                   # [n_real]
                 new_latents = self.pool_latents.index_select(0, local_indices)
                 comm_latents[start:end] = new_latents.to(self._comm_dtype)
 
-                torch.cuda.empty_cache()
+        gen.train()
 
         # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
         torch.distributed.all_reduce(comm_latents, op=torch.distributed.ReduceOp.SUM)
