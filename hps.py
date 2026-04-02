@@ -56,6 +56,7 @@ imagenet_folder.multi_res_scales = '8,12,16,24,28'
 imagenet_folder.convnext_expansion = 6
 imagenet_folder.num_classes = 1000
 imagenet_folder.pool_size_per_class = 0  # derive from force_factor
+imagenet_folder.imle_db_size = 256       # alignment for conditional pool (pool_size_per_class = ceil(force_factor * per_class_n / 256) * 256)
 imagenet_folder.imle_db_topk = 20
 HPARAMS_REGISTRY['imagenet_folder'] = imagenet_folder
 
