@@ -92,13 +92,24 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     sampler.init_projection(data_train)
 
     safe_barrier()
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
-
+    if H.num_classes > 0:
+        # One image per class, evenly strided so all classes are represented.
+        # Dataset is sorted by class, so striding by (N // num_images_visualize) gives class diversity.
+        n_total = len(data_train)
+        stride = max(1, n_total // H.num_images_visualize)
+        viz_indices = list(range(0, stride * H.num_images_visualize, stride))[:H.num_images_visualize]
+        viz_subset = torch.utils.data.Subset(data_train, viz_indices)
+        viz_batch_original, _ = get_sample_for_visualization(viz_subset, preprocess_fn, H.num_images_visualize, H.dataset)
+    else:
+        viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
     latent_for_visualization = []
 
     if(is_main_process()):
-        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
+        # Fixed seed so the same noise vectors are used across epochs and restarts.
+        _viz_gen = torch.Generator().manual_seed(42)
+        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim,
+                                               generator=_viz_gen).to(device)
     
     mean_loss = float('inf')
     metrics = {
