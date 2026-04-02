@@ -30,9 +30,9 @@ class Sampler:
         if self.num_classes > 0:
             per_class_n = sz // self.num_classes
             if getattr(H, 'pool_size_per_class', 0) > 0:
-                self.pool_size_per_class = ceil(H.pool_size_per_class / H.imle_db_size) * H.imle_db_size
+                self.pool_size_per_class = int(H.pool_size_per_class)
             else:
-                self.pool_size_per_class = ceil(H.force_factor * per_class_n / H.imle_db_size) * H.imle_db_size
+                self.pool_size_per_class = ceil(H.force_factor * per_class_n)
             self.local_classes = list(range(self.rank, self.num_classes, self.world_size))
             # Global pool size not used in conditional path, but set for buffer-sizing compat
             self.pool_size = self.pool_size_per_class
@@ -472,7 +472,9 @@ class Sampler:
     def _imle_sample_force_conditional(self, gen):
         """
         Conditional force resampling: each rank handles its local_classes.
-        Per-class pool is generated and searched against that class's real latents.
+        All local classes are processed in one fused forward pass loop — latents for all
+        classes are concatenated with their class IDs and run through the generator in
+        contiguous batches of imle_batch, then split back per class for NN search.
         all_reduce(SUM) merges results across ranks (each rank only writes its owned slices).
         """
         t1 = time.time()
@@ -484,23 +486,56 @@ class Sampler:
             dtype=self._comm_dtype, device=self.device
         )
 
+        n_local = len(self.local_classes)
+        if n_local == 0:
+            gen.train()
+            return
+
+        total_pool = n_local * self.pool_size_per_class
+
+        # Allocate / reuse fused buffers for all local classes at once
+        if (self._local_pool_latents is None or self._local_pool_latents.shape[0] != total_pool):
+            self._local_pool_latents = torch.empty((total_pool, self.H.latent_dim), device=self.device)
+            self._local_pool_combined = torch.empty(
+                (total_pool, self.H.latent_dim + self.dci_dim),
+                device=self.device, dtype=self._comm_dtype,
+            )
+
+        # Fill latents and build class-ID tensor for all local classes
+        self._local_pool_latents.normal_(mean=0.0, std=1.0, generator=self.generator_seed)
+        class_ids = torch.repeat_interleave(
+            torch.tensor(self.local_classes, device=self.device, dtype=torch.long),
+            self.pool_size_per_class,
+        )  # [total_pool]
+
+        # Single fused forward pass loop over all local classes
         gen.eval()
         with torch.inference_mode():
-            for class_id in self.local_classes:
-                start, end = self.class_ranges[class_id]
-                if end <= start:
+            for start in range(0, total_pool, self.H.imle_batch):
+                end = min(start + self.H.imle_batch, total_pool)
+                cur_latents = self._local_pool_latents[start:end]
+                cur_classes = class_ids[start:end]
+                self._local_pool_combined[start:end, :self.H.latent_dim].copy_(cur_latents.to(self._comm_dtype))
+                with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
+                    outputs = gen(cur_latents, cur_classes)
+                    proj = self.get_l2_feature(outputs, False)
+                self._local_pool_combined[start:end, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
+
+            # Per-class NN search using the fused buffer
+            for i, class_id in enumerate(self.local_classes):
+                start_pool = i * self.pool_size_per_class
+                end_pool   = start_pool + self.pool_size_per_class
+                pool_latents = self._local_pool_combined[start_pool:end_pool, :self.H.latent_dim].float()
+                pool_feats   = self._local_pool_combined[start_pool:end_pool, self.H.latent_dim:].float()
+
+                ds_start, ds_end = self.class_ranges[class_id]
+                if ds_end <= ds_start:
                     continue
-
-                self.resample_pool(gen, class_condition=class_id)
-
-                # Simple top-1 NN via torch cdist — faster than FAISS for small
-                # per-class pools (pool_size_per_class << imle_db_size).
-                class_ds_feats = self._dataset_proj_gpu[start:end]   # [n_real, dci_dim]
-                pool_feats = self.pool_samples_proj                   # [pool_size, dci_dim]
-                dists = torch.cdist(class_ds_feats, pool_feats)       # [n_real, pool_size]
-                local_indices = dists.argmin(dim=1)                   # [n_real]
-                new_latents = self.pool_latents.index_select(0, local_indices)
-                comm_latents[start:end] = new_latents.to(self._comm_dtype)
+                class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
+                dists = torch.cdist(class_ds_feats, pool_feats)            # [n_real, pool_size]
+                local_indices = dists.argmin(dim=1)
+                new_latents = pool_latents.index_select(0, local_indices)
+                comm_latents[ds_start:ds_end] = new_latents.to(self._comm_dtype)
 
         gen.train()
 
