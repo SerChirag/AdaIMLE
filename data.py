@@ -6,7 +6,8 @@ from torch.utils.data import TensorDataset, DataLoader, Subset
 from torchvision.datasets import ImageFolder
 import torchvision.transforms as transforms
 from sklearn.model_selection import train_test_split
-from PIL import Image
+from PIL import Image, PngImagePlugin
+PngImagePlugin.MAX_TEXT_CHUNK = 100 * 1024 * 1024  # raise limit to handle large ICC profiles in PNGs
 from datasets import load_dataset
 from torch.utils.data import Dataset
 
@@ -235,12 +236,10 @@ def set_up_data(H):
 
 
 def _pil_loader(path: str) -> Image.Image:
-    """PIL loader that strips ICC profiles to avoid Pillow MAX_TEXT_CHUNK errors
-    (triggered by large embedded profiles in PNG files)."""
+    """PIL loader that handles PNGs with large ICC profiles (MAX_TEXT_CHUNK raised at import)."""
     with open(path, "rb") as f:
         img = Image.open(f)
         img.load()  # force decode before file closes
-    img.info.pop("icc_profile", None)
     return img.convert("RGB")
 
 
