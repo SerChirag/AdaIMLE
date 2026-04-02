@@ -234,6 +234,16 @@ def set_up_data(H):
     return H, train_data, valid_data, preprocess_func, autoencoder
 
 
+def _pil_loader(path: str) -> Image.Image:
+    """PIL loader that strips ICC profiles to avoid Pillow MAX_TEXT_CHUNK errors
+    (triggered by large embedded profiles in PNG files)."""
+    with open(path, "rb") as f:
+        img = Image.open(f)
+        img.load()  # force decode before file closes
+    img.info.pop("icc_profile", None)
+    return img.convert("RGB")
+
+
 def _load_imagefolder_to_tensors(data_root, image_size):
     """Load an ImageFolder dataset into (images_NHWC_uint8, labels_int64) tensors.
     ImageFolder iterates in class-sorted folder order, so no extra sort is needed
@@ -242,7 +252,7 @@ def _load_imagefolder_to_tensors(data_root, image_size):
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),  # [0, 1] float, NCHW
     ])
-    dataset = ImageFolder(data_root, transform=transform)
+    dataset = ImageFolder(data_root, transform=transform, loader=_pil_loader)
     loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=4, pin_memory=False)
     imgs_list, lbls_list = [], []
     for imgs, lbls in loader:
