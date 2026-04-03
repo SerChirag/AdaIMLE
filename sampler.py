@@ -2,6 +2,7 @@ from math import ceil
 import time
 
 import numpy as np
+import scipy.optimize
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -534,8 +535,15 @@ class Sampler:
                     continue
                 n_real = ds_end - ds_start
                 class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
-                dists = torch.cdist(class_ds_feats, pool_feats)            # [n_real, pool_size]
-                local_indices = dists.argmin(dim=1)
+                dists = torch.cdist(class_ds_feats, pool_feats)  # [n_real, pool_size]
+
+                if self.H.imle_db_topk is not None and self.H.imle_db_topk > 1:
+                    # Optimal 1-to-1 assignment: no pool latent shared across images.
+                    _, col_ind = scipy.optimize.linear_sum_assignment(dists.cpu().numpy())
+                    local_indices = torch.from_numpy(col_ind).to(self.device, dtype=torch.long)
+                else:
+                    local_indices = dists.argmin(dim=1)
+
                 all_local_indices.append((local_indices, n_real))
                 new_latents = pool_latents.index_select(0, local_indices)  # float32, no precision loss
                 comm_latents[ds_start:ds_end] = new_latents
