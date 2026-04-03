@@ -532,20 +532,22 @@ class Sampler:
                 ds_start, ds_end = self.class_ranges[class_id]
                 if ds_end <= ds_start:
                     continue
+                n_real = ds_end - ds_start
                 class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
                 dists = torch.cdist(class_ds_feats, pool_feats)            # [n_real, pool_size]
                 local_indices = dists.argmin(dim=1)
-                all_local_indices.append(local_indices)
+                all_local_indices.append((local_indices, n_real))
                 new_latents = pool_latents.index_select(0, local_indices)  # float32, no precision loss
                 comm_latents[ds_start:ds_end] = new_latents
 
         gen.train()
 
         if all_local_indices:
-            # Measure per-class uniqueness: avg fraction of pool slots used within each class
+            # Measure per-class uniqueness: fraction of dataset images that got a unique pool latent.
+            # Denominator is n_real (images per class), so 1.0 = every image has a distinct latent.
             self.unique_indices = sum(
-                torch.unique(idx).numel() / self.pool_size_per_class
-                for idx in all_local_indices
+                torch.unique(idx).numel() / n_real
+                for idx, n_real in all_local_indices
             ) / len(all_local_indices)
 
         # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
