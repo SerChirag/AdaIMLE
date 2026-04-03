@@ -413,7 +413,9 @@ class Sampler:
 
         # Resample pool first (each process contributes its part);
         # this updates self.pool_samples_proj and self.pool_latents.
+        gen.eval()
         self.resample_pool(gen)
+        gen.train()
 
         if(is_main_process()):
             print(f"Resampling pool took {time.time() - t1:.2f} seconds")
@@ -438,7 +440,7 @@ class Sampler:
                 pool_feats = self.pool_samples_proj
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                local_distances, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz
@@ -462,7 +464,7 @@ class Sampler:
 
             # Update last and current selected latents on all processes.
             self.last_selected_latents.copy_(self.selected_latents)
-            self.selected_latents.copy_(full_updated_latents)
+            self.selected_latents.copy_(full_updated_latents.cpu())
 
             if is_main_process():
                 print(f"Force resampling took {time.time() - t1:.2f} seconds")
@@ -540,8 +542,11 @@ class Sampler:
         gen.train()
 
         if all_local_indices:
-            cat = torch.cat(all_local_indices)
-            self.unique_indices = torch.unique(cat).numel() / cat.numel()
+            # Measure per-class uniqueness: avg fraction of pool slots used within each class
+            self.unique_indices = sum(
+                torch.unique(idx).numel() / self.pool_size_per_class
+                for idx in all_local_indices
+            ) / len(all_local_indices)
 
         # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
         torch.distributed.all_reduce(comm_latents, op=torch.distributed.ReduceOp.SUM)
