@@ -261,10 +261,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
         
+        base_model = imle.module if hasattr(imle, 'module') else imle
+        class_emb_norm = base_model.decoder.class_embedding.weight.norm(dim=1).mean().item() if hasattr(base_model.decoder, 'class_embedding') else 0.0
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
             'unique_indices': sampler.unique_indices,
+            'class_emb_norm': class_emb_norm,
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):

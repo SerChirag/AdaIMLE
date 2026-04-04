@@ -295,16 +295,32 @@ def load_opt(H, imle, logprint):
     if fused_requested:
         optimizer_kwargs['fused'] = True
 
+    class_emb_lr_mult = getattr(H, 'class_emb_lr_mult', 1.0)
+    if class_emb_lr_mult != 1.0:
+        base_model = imle.module if hasattr(imle, 'module') else imle
+        emb_params, other_params = [], []
+        for name, param in base_model.named_parameters():
+            if 'class_embedding' in name:
+                emb_params.append(param)
+            else:
+                other_params.append(param)
+        params = [
+            {'params': other_params},
+            {'params': emb_params, 'lr': H.lr * class_emb_lr_mult, 'weight_decay': 0.0},
+        ]
+    else:
+        params = imle.parameters()
+
     try:
-        optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+        optimizer = AdamW(params, **optimizer_kwargs)
         if is_main_process():
-            logprint(f'AdamW fused={bool(optimizer_kwargs.get("fused", False))}')
+            logprint(f'AdamW fused={bool(optimizer_kwargs.get("fused", False))}, class_emb_lr_mult={class_emb_lr_mult}')
     except (TypeError, RuntimeError) as exc:
         if 'fused' in optimizer_kwargs:
             optimizer_kwargs.pop('fused')
             if is_main_process():
                 logprint(f'AdamW fused fallback: {exc}')
-            optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+            optimizer = AdamW(params, **optimizer_kwargs)
         else:
             raise
 
