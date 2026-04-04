@@ -98,9 +98,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         n_total = len(data_train)
         stride = max(1, n_total // H.num_images_visualize)
         viz_indices = list(range(0, stride * H.num_images_visualize, stride))[:H.num_images_visualize]
+        viz_indices_tensor = torch.tensor(viz_indices, dtype=torch.long)
         viz_subset = torch.utils.data.Subset(data_train, viz_indices)
         viz_batch_original, _ = get_sample_for_visualization(viz_subset, preprocess_fn, H.num_images_visualize, H.dataset)
     else:
+        viz_indices_tensor = torch.arange(H.num_images_visualize, dtype=torch.long)
         viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
     latent_for_visualization = []
@@ -157,10 +159,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
 
         if (epoch % H.viz_freq == 0 and is_main_process()):
-            latents = sampler.selected_latents[:H.num_images_visualize]
+            latents = sampler.selected_latents[viz_indices_tensor]
             with torch.inference_mode():
                 imle.eval()
-                vis_labels = H.labels[:H.num_images_visualize].to(device) if H.num_classes > 0 else None
+                vis_labels = H.labels[viz_indices_tensor].to(device) if H.num_classes > 0 else None
                 generate_for_NN(sampler, viz_batch_original, latents,
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint,
@@ -218,15 +220,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                     imle.eval()
                     with torch.inference_mode():
                         if H.num_classes > 0:
-                            vis_row_labels = [H.labels[:H.num_images_visualize].to(device)] * 2 + [
+                            vis_row_labels = [H.labels[viz_indices_tensor].to(device)] * 2 + [
                                 torch.full((H.num_images_visualize,), i % H.num_classes, dtype=torch.long, device=device)
                                 for i in range(H.num_rows_visualize)
                             ]
                         else:
                             vis_row_labels = None
                         generate_visualization(H, sampler, viz_batch_original,
-                                                sampler.selected_latents[0: H.num_images_visualize],
-                                                sampler.last_selected_latents[0: H.num_images_visualize],
+                                                sampler.selected_latents[viz_indices_tensor],
+                                                sampler.last_selected_latents[viz_indices_tensor],
                                                 latent_for_visualization,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment,
@@ -303,15 +305,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             imle.eval()
             with torch.inference_mode():
                 if H.num_classes > 0:
-                    vis_row_labels = [H.labels[:H.num_images_visualize].to(device)] * 2 + [
+                    vis_row_labels = [H.labels[viz_indices_tensor].to(device)] * 2 + [
                         torch.full((H.num_images_visualize,), i % H.num_classes, dtype=torch.long, device=device)
                         for i in range(H.num_rows_visualize)
                     ]
                 else:
                     vis_row_labels = None
                 generate_visualization(H, sampler, viz_batch_original,
-                                        sampler.selected_latents[0: H.num_images_visualize],
-                                        sampler.last_selected_latents[0: H.num_images_visualize],
+                                        sampler.selected_latents[viz_indices_tensor],
+                                        sampler.last_selected_latents[viz_indices_tensor],
                                         latent_for_visualization,
                                         viz_batch_original.shape, imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment,
