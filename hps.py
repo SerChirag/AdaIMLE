@@ -181,6 +181,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta1', type=float, default=0.9)
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
+    parser.add_argument('--class_emb_lr_mult', type=float, default=1.0)  # LR multiplier for class embedding (>1 to accelerate embedding norm growth)
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
