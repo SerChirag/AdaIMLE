@@ -256,7 +256,7 @@ def calculate_precision_recall_from_activations(activates_ref, activations_sampl
     radii_1 = estimator.manifold_radii(activates_ref)
     radii_2 = estimator.manifold_radii(activations_sample)
     pr = estimator.evaluate_pr(activates_ref, radii_1, activations_sample, radii_2)
-    return float(pr[0]), float(pr[1])
+    return float(pr[0][0]), float(pr[1][0])
 
 #----------------------------------------------------------------------------
 
