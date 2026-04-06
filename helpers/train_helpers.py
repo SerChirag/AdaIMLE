@@ -306,7 +306,7 @@ def load_opt(H, imle, logprint):
                 other_params.append(param)
         params = [
             {'params': other_params},
-            {'params': emb_params, 'lr': H.lr * class_emb_lr_mult, 'weight_decay': 0.0},
+            {'params': emb_params, 'lr': H.lr * class_emb_lr_mult},
         ]
     else:
         params = imle.parameters()
