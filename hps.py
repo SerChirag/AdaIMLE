@@ -308,4 +308,50 @@ def add_imle_arguments(parser):
     parser.add_argument("--fid_freq", type=int, default=500, help="frequency of calculating fid")
     parser.add_argument('--cache_dir', type=str, default='./cache', help='Directory for on-disk caches (image tensors and latent projections).')
     parser.add_argument('--use_cache', default=True, type=lambda x: bool(strtobool(x)), help='Enable disk caching of image tensors and latent projections.')
+
+    # DiT model hyperparameters
+    parser.add_argument('--dit_model', type=str, default=None,
+                        help='DiT size shorthand: S/2, S/4, B/2, B/4, L/2, L/4, XL/2. '
+                             'Sets patch_size, hidden_size, depth, num_heads. '
+                             'Individual --dit_* args override these defaults.')
+    parser.add_argument('--dit_patch_size', type=int, default=None, help='Patch size for DiT x_embedder (overrides --dit_model)')
+    parser.add_argument('--dit_hidden_size', type=int, default=None, help='Hidden size for DiT (overrides --dit_model)')
+    parser.add_argument('--dit_depth', type=int, default=None, help='Number of DiT transformer blocks (overrides --dit_model)')
+    parser.add_argument('--dit_num_heads', type=int, default=None, help='Number of attention heads in DiT (overrides --dit_model)')
+    parser.add_argument('--dit_mlp_ratio', type=float, default=4.0, help='MLP expansion ratio in DiT blocks')
+    parser.add_argument('--dit_class_dropout_prob', type=float, default=0.1, help='Class label dropout prob for CFG in DiT')
     return parser
+
+
+# DiT named configs: hidden_size, depth, num_heads
+_DIT_CONFIGS = {
+    'S': dict(hidden_size=384,  depth=12, num_heads=6),
+    'B': dict(hidden_size=768,  depth=12, num_heads=12),
+    'L': dict(hidden_size=1024, depth=24, num_heads=16),
+    'XL': dict(hidden_size=1152, depth=28, num_heads=16),
+}
+
+
+def apply_dit_model_defaults(H):
+    """Expand --dit_model (e.g. 'B/2') into individual dit_* fields.
+    Individual --dit_* args that were explicitly set take precedence."""
+    if not H.dit_model:
+        # Fall back to hard defaults if nothing was set
+        if H.dit_patch_size is None: H.dit_patch_size = 2
+        if H.dit_hidden_size is None: H.dit_hidden_size = 768
+        if H.dit_depth is None: H.dit_depth = 12
+        if H.dit_num_heads is None: H.dit_num_heads = 12
+        return
+
+    parts = H.dit_model.split('/')
+    size_key = parts[0].upper()
+    patch = int(parts[1]) if len(parts) > 1 else 2
+
+    if size_key not in _DIT_CONFIGS:
+        raise ValueError(f"Unknown DiT model size '{size_key}'. Choose from: {list(_DIT_CONFIGS)}")
+
+    cfg = _DIT_CONFIGS[size_key]
+    if H.dit_patch_size is None: H.dit_patch_size = patch
+    if H.dit_hidden_size is None: H.dit_hidden_size = cfg['hidden_size']
+    if H.dit_depth is None: H.dit_depth = cfg['depth']
+    if H.dit_num_heads is None: H.dit_num_heads = cfg['num_heads']

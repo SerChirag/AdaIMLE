@@ -1,13 +1,8 @@
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
 
-from mapping_network import AdaptiveInstanceNorm, MappingNetwork
-from helpers.imle_helpers import get_1x1
-from collections import defaultdict
-import numpy as np
-from timm.layers import trunc_normal_, DropPath
-import itertools
+from dit import DiT
+
 
 def parse_layer_string(s):
     layers = []
@@ -27,186 +22,68 @@ def parse_layer_string(s):
             layers.append((res, None))
     return layers
 
-def get_width_settings(width, s):
-    mapping = defaultdict(lambda: width)
-    if s:
-        s = s.split(',')
-        for ss in s:
-            k, v = ss.split(':')
-            mapping[int(k)] = int(v)
-    return mapping
 
-class SEBlock(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
-
-
-class ConvNeXtBlock(nn.Module):
-    def __init__(self, dim, H, expansion=4, kernel_size=7, use_se=True, reduction=16, dropout=0.0):
-        super().__init__()
-        self.dw_conv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size//2, groups=dim)
-
-        if(H.convnext_norm == 'layernorm'):
-            self.norm = nn.LayerNorm(dim, eps=H.convnext_norm_eps)
-        elif(H.convnext_norm == 'rmsnorm'):
-            self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
-        
-        self.pw_conv1 = nn.Linear(dim, expansion * dim)
-        self.gelu = nn.GELU(approximate='tanh')
-        self.pw_conv2 = nn.Linear(expansion * dim, dim)
-
-        ## single parameter for residual ratio
-        self.use_se = use_se
-        if use_se:
-            self.se = SEBlock(dim, reduction=reduction)  
-        else:
-            # Indentity layer if SE is not used
-            self.se = nn.Identity()
-
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, (nn.Conv2d, nn.Linear)):
-            # trunc_normal_(m.weight, std=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-
-    
-    def forward(self, x):
-        # Depthwise convolution with larger kernel
-        x = self.dw_conv(x)
-        # Permute to channels-last for LayerNorm
-        x = x.permute(0, 2, 3, 1)
-        x = self.norm(x)
-        x = self.pw_conv1(x)
-        x = self.gelu(x)
-        x = self.pw_conv2(x)
-        x = x.permute(0, 3, 1, 2)
-
-        x = self.se(x)
-
-        return x
-
-class DecBlock(nn.Module):
-    def __init__(self, H, res, mixin, n_blocks):
-        super().__init__()
-        self.base = res
-        self.mixin = mixin
-        self.H = H
-        self.widths = get_width_settings(H.width, H.custom_width_str)
-        width = self.widths[res]
-
-        if mixin is not None and self.widths[mixin] != width:
-            self.proj = get_1x1(self.widths[mixin], width)
-        else:
-            self.proj = nn.Identity()
-
-        self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
-        self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
-                                    expansion=H.convnext_expansion, 
-                                    use_se=H.use_se,
-                                    reduction=H.se_reduction,
-                                    dropout=H.dropout_p)
-
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))
-        self.residual_type = H.residual_type  # 'normal' or 'convex'
-
-
-    def forward(self, x, w):
-        if self.mixin is not None:
-            x = F.interpolate(x, scale_factor=self.base / self.mixin, mode='bicubic')
-            x = self.proj(x)
-        
-        residual = x
-        x = self.adaIN(x, w)
-        x = self.resnet(x)
-        residual_ratio = self.residual_ratio.sigmoid()
-
-        if self.residual_type == 'normal':
-            return x * residual_ratio + residual
-        
-        elif self.residual_type == 'convex':
-            return x * residual_ratio + residual * (1 - residual_ratio)
-
-def stopgrad_keep_graph(x):
-    return x.detach() + 0.0 * x
-
-class Decoder(nn.Module):
+class IMLEDiT(nn.Module):
+    """DiT for IMLE: no timestep. The IMLE latent is reshaped to (B, C, H, W)
+    and fed as x into the patch embedder. y is the class label.
+    """
     def __init__(self, H):
         super().__init__()
         self.H = H
-        self.mapping_network = MappingNetwork(H)
-        self.num_classes = getattr(H, 'num_classes', 0)
-        if self.num_classes > 0:
-            self.class_embedding = nn.Embedding(self.num_classes, H.latent_dim)
-            nn.init.normal_(self.class_embedding.weight, std=0.02)
-        resos = set()
-        dec_blocks = []
-        self.widths = get_width_settings(H.width, H.custom_width_str)
-        blocks = parse_layer_string(H.dec_blocks)
-        for idx, (res, mixin) in enumerate(blocks):
-            dec_blocks.append(DecBlock(H, res, mixin, n_blocks=len(blocks)))
-            resos.add(res)
-        self.resolutions = sorted(resos)
-        self.dec_blocks = nn.ModuleList(dec_blocks)
-        first_res = self.resolutions[0]
-        last_res = self.resolutions[-1]
-        self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        resnets = {}
+        num_classes = getattr(H, 'num_classes', 0)
+        self.num_classes = num_classes
 
-        for res in self.resolutions:
-            key = str(res)
+        # latent_dim must equal latent_channels * latent_spatial_size^2
+        # e.g. latent_dim=128, latent_channels=4, latent_spatial_size=... user sets these
+        self.latent_channels = H.image_channels
+        self.latent_spatial = H.latent_spatial_size if H.latent_spatial_size > 0 else H.image_size
 
-            if res < 8:
-                resnets[key] = nn.Identity()
-            else:
-                resnets[key] = get_1x1(self.widths[res], H.image_channels)
+        self.dit = DiT(
+            img_resolution=self.latent_spatial,
+            patch_size=H.dit_patch_size,
+            in_channels=self.latent_channels,
+            hidden_size=H.dit_hidden_size,
+            depth=H.dit_depth,
+            num_heads=H.dit_num_heads,
+            mlp_ratio=H.dit_mlp_ratio,
+            class_dropout_prob=0.0,
+            num_classes=max(num_classes, 1),
+        )
 
+    def forward(self, latents, condition=None, train=False):
+        B = latents.shape[0]
+        device = latents.device
 
-        self.resnets = nn.ModuleDict(resnets)
-        self.gains = nn.Parameter(torch.ones(H.image_channels))
-        self.biases = nn.Parameter(torch.zeros(H.image_channels))
+        # Reshape flat latent to spatial: (B, C, H, W)
+        x = latents.view(B, self.latent_channels, self.latent_spatial, self.latent_spatial)
 
+        # Patch embed + positional encoding
+        x = self.dit.x_embedder(x) + self.dit.pos_embed  # (B, T, hidden_size)
 
-    def forward(self, latent_code, condition=None, train=False):
+        # Class conditioning only
         if self.num_classes > 0 and condition is not None:
-            latent_code = latent_code + self.class_embedding(condition)
-        w = self.mapping_network(latent_code)
-        targets = []
-        x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous(memory_format=torch.channels_last)
-
-        for idx, block in enumerate(self.dec_blocks):
-            if(block.mixin is not None):
-                intermediate = self.resnets[str(block.mixin)](x)
-                targets.append(intermediate)
-                if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
-                    x = x.detach()
-            x = block(x, w)
-        x = self.resnets[str(self.resolutions[-1])](x)
-        x = self.gains.view(1, -1, 1, 1) * x + self.biases.view(1, -1, 1, 1)
-        targets.append(x)
-        if(train):
-            return targets
+            c = self.dit.y_embedder(condition, self.training)
         else:
-            return targets[-1]
+            dummy = torch.zeros(B, dtype=torch.long, device=device)
+            c = self.dit.y_embedder(dummy, self.training)
+
+        # Transformer blocks
+        for block in self.dit.blocks:
+            x = block(x, c)
+
+        # Final layer + unpatchify -> (B, C, H, W)
+        x = self.dit.final_layer(x, c)
+        x = self.dit.unpatchify(x)
+
+        if train:
+            return [x]
+        return x
+
 
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.decoder = IMLEDiT(H)
 
     def forward(self, latents, condition=None, train=False):
-        return self.decoder.forward(latents, condition, train)
+        return self.decoder(latents, condition, train)

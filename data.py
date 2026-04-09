@@ -20,10 +20,17 @@ from helpers.cache_utils import image_cache_key, load_image_cache, save_image_ca
 
 def set_up_data(H):
 
-    blocks = parse_layer_string(H.dec_blocks)
-    H.block_res = [s[0] for s in blocks]
-    H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
-    H.latent_spatial_size = max(H.block_res)
+    if H.dec_blocks:
+        blocks = parse_layer_string(H.dec_blocks)
+        H.block_res = [s[0] for s in blocks]
+        H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
+        if not H.latent_spatial_size:
+            H.latent_spatial_size = max(H.block_res)
+    else:
+        H.block_res = []
+        H.res = []
+        if not H.latent_spatial_size:
+            H.latent_spatial_size = H.image_size
 
     # trX: image array (NHWC uint8 or similar); trY: label array or None
     trY = None

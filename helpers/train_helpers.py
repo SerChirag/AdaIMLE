@@ -7,7 +7,7 @@ import argparse
 import os
 import json
 import subprocess
-from hps import Hyperparams, parse_args_and_update_hparams, add_imle_arguments
+from hps import Hyperparams, parse_args_and_update_hparams, add_imle_arguments, apply_dit_model_defaults
 from helpers.utils import (is_dist_avail_and_initialized, logger, maybe_download)
 from data import mkdir_p
 from contextlib import contextmanager
@@ -199,6 +199,7 @@ def set_up_hyperparams(s=None):
     parser = argparse.ArgumentParser()
     parser = add_imle_arguments(parser)
     parse_args_and_update_hparams(H, parser, s=s)
+    apply_dit_model_defaults(H)
     setup_save_dirs(H)
     set_seed(H.seed)
     logprint = logger(H.logdir)
