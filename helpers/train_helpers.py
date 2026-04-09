@@ -326,7 +326,7 @@ def load_opt(H, imle, logprint):
 
     scheduler1 = LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
     cosine_iters = H.total_iters - H.warmup_iters
-    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)
+    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=H.lr_eta_min_frac * H.lr)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
     scaler = torch.GradScaler(device="cuda", enabled=(getattr(H, 'amp_dtype', 'fp16') == 'fp16'))
     
