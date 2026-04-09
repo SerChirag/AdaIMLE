@@ -386,6 +386,7 @@ def activations(dataset_path, dest_path, batch):
             os.system(f'rm {data_path}')
         
         os.system(f'rm -r {temp_dir}')
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         np.savez(dest_path, feat=features, s_feat=s_features)
             
     safe_barrier()    
