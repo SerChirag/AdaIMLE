@@ -116,6 +116,7 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
 
     imle.eval()
 
+    num_classes = getattr(H, 'num_classes', 0)
     ae_batch = getattr(H, 'ae_batch', H.imle_batch)
     with torch.inference_mode():
         # Process images in batches
@@ -126,8 +127,15 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
                                        device=imle.device,
                                        generator=sampler.generator_seed)
             # latent_batch.normal_()  # Reinitialize latent_batch from normal distribution
+            # For conditional models, assign class labels round-robin across the batch
+            if num_classes > 0:
+                condition = torch.tensor(
+                    [indices[i + j] % num_classes for j in range(current_batch_size)],
+                    dtype=torch.long, device=imle.device)
+            else:
+                condition = None
             # Generate samples using the provided sampler
-            samp = sampler.sample(latent_batch, imle, None)
+            samp = sampler.sample(latent_batch, imle, None, condition=condition)
             path_and_imgs = []
             for j in range(current_batch_size):
                 global_index = indices[i + j]
