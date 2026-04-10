@@ -84,7 +84,8 @@ def set_up_data(H):
     if H.dataset == 'stl10':
         cached = None
         if use_cache:
-            key = image_cache_key(H.data_root, H.image_size, H.dataset)
+            key = image_cache_key(H.data_root, H.image_size, H.dataset,
+                                   cache_dataset_id=getattr(H, 'cache_dataset_id', ''))
             cached = load_image_cache(cache_dir, key, expected_size=len(trX))
         if cached is not None:
             # legacy: plain tensor
@@ -145,7 +146,8 @@ def set_up_data(H):
     elif H.dataset == 'imagenet_folder':
         # Load via ImageFolder with caching.  Data is sorted by class
         # (ImageFolder iterates in folder-alphabetical order).
-        key = image_cache_key(H.data_root, H.image_size, H.dataset, sorted_by_class=True)
+        key = image_cache_key(H.data_root, H.image_size, H.dataset, sorted_by_class=True,
+                               cache_dataset_id=getattr(H, 'cache_dataset_id', ''))
         cached = load_image_cache(cache_dir, key) if use_cache else None
         if cached is not None and isinstance(cached, dict):
             imgs   = cached['images']
@@ -178,7 +180,8 @@ def set_up_data(H):
         # fewshot / fewshot64 / fewshot512
         cached = None
         if use_cache:
-            key = image_cache_key(H.data_root, H.image_size, H.dataset)
+            key = image_cache_key(H.data_root, H.image_size, H.dataset,
+                                   cache_dataset_id=getattr(H, 'cache_dataset_id', ''))
             cached = load_image_cache(cache_dir, key, expected_size=len(trX))
         if cached is not None:
             tensor = cached if isinstance(cached, torch.Tensor) else cached['images']

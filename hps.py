@@ -308,4 +308,5 @@ def add_imle_arguments(parser):
     parser.add_argument("--fid_freq", type=int, default=500, help="frequency of calculating fid")
     parser.add_argument('--cache_dir', type=str, default='./cache', help='Directory for on-disk caches (image tensors and latent projections).')
     parser.add_argument('--use_cache', default=True, type=lambda x: bool(strtobool(x)), help='Enable disk caching of image tensors and latent projections.')
+    parser.add_argument('--cache_dataset_id', type=str, default='', help='Stable dataset identifier for cache keys. When set, replaces the absolute data_root path in the cache hash so caches are portable across machines with different dataset paths.')
     return parser

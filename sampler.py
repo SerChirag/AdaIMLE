@@ -163,6 +163,7 @@ class Sampler:
                 image_channels=self.latent_channels,
                 num_classes=self.num_classes,
                 sorted_by_class=(self.num_classes > 0),
+                cache_dataset_id=getattr(self.H, 'cache_dataset_id', ''),
             )
             cached = load_latent_cache(cache_dir, key, expected_size=self.sz)
 

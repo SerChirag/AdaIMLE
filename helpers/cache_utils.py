@@ -40,9 +40,10 @@ def _canonical_ae_path(autoencoder_type: str, autoencoder_name_or_path: str) -> 
 # ---------------------------------------------------------------------------
 
 def image_cache_key(data_root: str, image_size: int, dataset_type: str,
-                    sorted_by_class: bool = False) -> str:
+                    sorted_by_class: bool = False,
+                    cache_dataset_id: str = '') -> str:
     d = {
-        'data_root':       os.path.abspath(data_root),
+        'data_root':       cache_dataset_id if cache_dataset_id else os.path.abspath(data_root),
         'image_size':      int(image_size),
         'dataset_type':    str(dataset_type),
         'sorted_by_class': bool(sorted_by_class),
@@ -111,9 +112,10 @@ def latent_cache_key(
     image_channels: int,
     num_classes: int = 0,
     sorted_by_class: bool = False,
+    cache_dataset_id: str = '',
 ) -> str:
     d = {
-        'data_root':          os.path.abspath(data_root),
+        'data_root':          cache_dataset_id if cache_dataset_id else os.path.abspath(data_root),
         'dataset_type':       str(dataset_type),
         'image_size':         int(image_size),
         'latent_spatial_size': int(latent_spatial_size),
