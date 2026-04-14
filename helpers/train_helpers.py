@@ -335,6 +335,12 @@ def load_opt(H, imle, logprint):
             logprint(f'Restoring optimizer from {H.restore_optimizer_path}')
         optimizer.load_state_dict(
             torch.load(H.restore_optimizer_path, map_location='cpu'))
+        # Re-apply lr overrides after loading state_dict, which restores saved lr values
+        if class_emb_lr_mult != 1.0:
+            for i, pg in enumerate(optimizer.param_groups):
+                if i == 1:  # embedding param group
+                    pg['lr'] = H.lr * class_emb_lr_mult
+                    pg['initial_lr'] = H.lr * class_emb_lr_mult
         
     if H.restore_scheduler_path:
         if(is_main_process()):
