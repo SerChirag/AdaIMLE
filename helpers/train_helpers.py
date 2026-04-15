@@ -347,6 +347,17 @@ def load_opt(H, imle, logprint):
             logprint(f'Restoring scheduler from {H.restore_scheduler_path}')
         scheduler.load_state_dict(
             torch.load(H.restore_scheduler_path, map_location='cpu', weights_only=False))
+        # Patch scheduler base_lrs so future scheduler.step() calls don't overwrite our lr=0 override
+        if class_emb_lr_mult != 1.0:
+            target_lr = H.lr * class_emb_lr_mult
+            for sched in scheduler._schedulers:
+                if hasattr(sched, 'base_lrs') and len(sched.base_lrs) > 1:
+                    sched.base_lrs[1] = target_lr
+            # Also re-zero pg['lr'] since the incremental cosine branch propagates from group["lr"]
+            for i, pg in enumerate(optimizer.param_groups):
+                if i == 1:
+                    pg['lr'] = target_lr
+                    pg['initial_lr'] = target_lr
         
     if H.restore_scaler_path:
         if(is_main_process()):
