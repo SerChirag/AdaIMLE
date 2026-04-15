@@ -296,20 +296,20 @@ def load_opt(H, imle, logprint):
         optimizer_kwargs['fused'] = True
 
     class_emb_lr_mult = getattr(H, 'class_emb_lr_mult', 1.0)
-    if class_emb_lr_mult != 1.0:
-        base_model = imle.module if hasattr(imle, 'module') else imle
-        emb_params, other_params = [], []
-        for name, param in base_model.named_parameters():
-            if 'class_embedding' in name:
-                emb_params.append(param)
-            else:
-                other_params.append(param)
+    base_model = imle.module if hasattr(imle, 'module') else imle
+    if class_emb_lr_mult == 0.0 and hasattr(base_model.decoder, 'class_embedding'):
+        # Freeze embedding completely — exclude from optimizer so weight decay can't touch it
+        base_model.decoder.class_embedding.requires_grad_(False)
+        params = [p for p in imle.parameters() if p.requires_grad]
+    elif class_emb_lr_mult != 1.0 and hasattr(base_model.decoder, 'class_embedding'):
+        emb_params = list(base_model.decoder.class_embedding.parameters())
+        other_params = [p for p in imle.parameters() if all(p is not e for e in emb_params)]
         params = [
             {'params': other_params},
-            {'params': emb_params, 'lr': H.lr * class_emb_lr_mult},
+            {'params': emb_params, 'lr': H.lr * class_emb_lr_mult, 'weight_decay': 0.0},
         ]
     else:
-        params = imle.parameters()
+        params = list(imle.parameters())
 
     try:
         optimizer = AdamW(params, **optimizer_kwargs)
@@ -335,29 +335,25 @@ def load_opt(H, imle, logprint):
             logprint(f'Restoring optimizer from {H.restore_optimizer_path}')
         optimizer.load_state_dict(
             torch.load(H.restore_optimizer_path, map_location='cpu'))
-        # Re-apply lr overrides after loading state_dict, which restores saved lr values
-        if class_emb_lr_mult != 1.0:
-            for i, pg in enumerate(optimizer.param_groups):
-                if i == 1:  # embedding param group
-                    pg['lr'] = H.lr * class_emb_lr_mult
-                    pg['initial_lr'] = H.lr * class_emb_lr_mult
+        # Re-apply lr override after loading state_dict (only needed when emb has custom lr)
+        if class_emb_lr_mult not in (0.0, 1.0) and hasattr(base_model.decoder, 'class_embedding'):
+            optimizer.param_groups[1]['lr'] = H.lr * class_emb_lr_mult
+            optimizer.param_groups[1]['initial_lr'] = H.lr * class_emb_lr_mult
+            optimizer.param_groups[1]['weight_decay'] = 0.0
         
     if H.restore_scheduler_path:
         if(is_main_process()):
             logprint(f'Restoring scheduler from {H.restore_scheduler_path}')
         scheduler.load_state_dict(
             torch.load(H.restore_scheduler_path, map_location='cpu', weights_only=False))
-        # Patch scheduler base_lrs so future scheduler.step() calls don't overwrite our lr=0 override
-        if class_emb_lr_mult != 1.0:
+        # Patch scheduler base_lrs for custom embedding lr
+        if class_emb_lr_mult not in (0.0, 1.0) and hasattr(base_model.decoder, 'class_embedding'):
             target_lr = H.lr * class_emb_lr_mult
             for sched in scheduler._schedulers:
                 if hasattr(sched, 'base_lrs') and len(sched.base_lrs) > 1:
                     sched.base_lrs[1] = target_lr
-            # Also re-zero pg['lr'] since the incremental cosine branch propagates from group["lr"]
-            for i, pg in enumerate(optimizer.param_groups):
-                if i == 1:
-                    pg['lr'] = target_lr
-                    pg['initial_lr'] = target_lr
+            optimizer.param_groups[1]['lr'] = target_lr
+            optimizer.param_groups[1]['initial_lr'] = target_lr
         
     if H.restore_scaler_path:
         if(is_main_process()):
