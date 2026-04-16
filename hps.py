@@ -182,7 +182,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--imle_db_size', type=int, default=1024)  # imle database size
     parser.add_argument('--imle_factor', type=float, default=0.)  # imle soft-sampling factor -- not used in the paper
     parser.add_argument('--imle_staleness', type=int, default=7)  # imle staleness, i.e., number of iterations to wait before considering the thresholds, tau_i
-    parser.add_argument('--imle_batch', type=int, default=32)  # imle batch size used for sampling
+    parser.add_argument('--imle_batch', type=int, default=256)  # imle batch size used for sampling
     parser.add_argument('--ae_batch', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--prefetch_factor', type=int, default=4)
@@ -258,7 +258,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--imle_db_topk', type=int, default=1)  # top-k for imle database search
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
     parser.add_argument('--num_classes', type=int, default=0,
                         help='Number of classes for conditional generation. 0 = unconditional.')
