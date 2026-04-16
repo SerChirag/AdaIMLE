@@ -13,7 +13,6 @@ from torch.utils.data import Dataset
 from helpers.utils import get_world_size
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
-from helpers.autoencoder import load_autoencoder, encode_images_to_latents
 
 
 def set_up_data(H):
@@ -24,48 +23,48 @@ def set_up_data(H):
     H.latent_spatial_size = max(H.block_res)
 
     if H.dataset == 'imagenet32':
-        trX, vaX, teX = imagenet32(H.data_root)
+        trX, trY = imagenet32(H.data_root)
+        vaX = teX = None
         H.image_size = 32
         H.image_channels = 3
     elif H.dataset in ['fewshot', 'fewshot512', 'fewshot64']:
         trX, vaX, teX = few_shot_image_folder(H.data_root, H.image_size)
+        trY = None
         H.image_channels = 3
     elif H.dataset == 'imagenet64':
-        trX, vaX, teX = imagenet64(H.data_root)
+        trX, vaX, teX, trY = imagenet64(H.data_root)
         H.image_size = 64
         H.image_channels = 3
     elif H.dataset == 'ffhq_256':
         trX, vaX, teX = ffhq256(H.data_root)
+        trY = None
         H.image_size = 256
         H.image_channels = 3
     elif H.dataset == 'ffhq_1024':
         trX, vaX, teX = ffhq1024(H.data_root)
+        trY = None
         H.image_size = 1024
         H.image_channels = 3
     elif H.dataset == 'cifar10':
-        (trX, _), (teX, _) = cifar10(H.data_root, one_hot=False)
+        (trX, trY), (teX, teY) = cifar10(H.data_root, one_hot=False)
+        vaX = None
         H.image_size = 32
         H.image_channels = 3
     elif H.dataset == "stl10":
         trX, vaX, teX = stl10(H.data_root)
+        trY = None
         H.image_size = 64
         H.image_channels = 3
     elif H.dataset == 'lsun':
-        trX, vaX, teX = lsun_church(H.data_root)   # helper above
-        H.image_size     = 256
+        trX, vaX, teX = lsun_church(H.data_root)
+        trY = None
+        H.image_size = 256
         H.image_channels = 3
     else:
         raise ValueError('unknown dataset: ', H.dataset)
 
     device = torch.device("cuda", torch.cuda.current_device())
-
-    autoencoder = load_autoencoder(H, device)
-    latent_probe = encode_images_to_latents(
-        autoencoder,
-        torch.zeros(1, 3, H.image_size, H.image_size, device=device),
-        target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
-    )
-    H.image_channels = latent_probe.shape[1]
+    H.image_channels = 3
 
     # if H.dataset == 'ffhq_1024':
     #     train_data = ImageFolder(trX, transforms.ToTensor())
@@ -89,13 +88,19 @@ def set_up_data(H):
         untranspose = True
     
     elif H.dataset == 'imagenet32':
-        train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
+        if trY is not None:
+            train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY, dtype=torch.long))
+        else:
+            train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1))
         valid_data = None
         train_len = len(train_data)
         untranspose = False
 
     elif H.dataset not in ['fewshot', 'fewshot512', 'fewshot64']:
-        train_data = TensorDataset(torch.as_tensor(trX))
+        if trY is not None:
+            train_data = TensorDataset(torch.as_tensor(trX), torch.as_tensor(trY, dtype=torch.long))
+        else:
+            train_data = TensorDataset(torch.as_tensor(trX))
         valid_data = None
         untranspose = False
         train_len = len(train_data)
@@ -130,14 +135,8 @@ def set_up_data(H):
             x[0] = x[0].permute(0, 2, 3, 1)
         inp = x[0].to(device=device, non_blocking=True).float()
         inp.mul_(1./127.5).add_(-1)
-        target = inp.permute(0, 3, 1, 2)
-        target = encode_images_to_latents(
-            autoencoder,
-            target,
-            target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
-        )
-        target = target.permute(0, 2, 3, 1).contiguous()
-        return inp, target
+        # Pixel-space branch: return (inp_normalized, inp_normalized) — same tensor used as target
+        return inp, inp
 
     return H, train_data, valid_data, preprocess_func
 
@@ -187,7 +186,7 @@ def imagenet32(data_root):
     images = np.concatenate(images)
     labels = np.concatenate(labels) - 1
 
-    return images, None, None
+    return images, labels
 
 
 def imagenet64(data_root):
@@ -195,8 +194,9 @@ def imagenet64(data_root):
     tr_va_split_indices = np.random.permutation(trX.shape[0])
     train = trX[tr_va_split_indices[:-5000]]
     valid = trX[tr_va_split_indices[-5000:]]
-    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')  # this is test.
-    return train, valid, test
+    test = np.load(os.path.join(data_root, 'imagenet64-valid.npy'), mmap_mode='r')
+    trY = np.zeros(len(train), dtype=np.int64)
+    return train, valid, test, trY
 
 
 def ffhq1024(data_root):

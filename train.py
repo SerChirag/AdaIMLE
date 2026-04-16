@@ -1,6 +1,8 @@
 import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import time
 
+from contextlib import nullcontext
 from comet_ml import Experiment, ExistingExperiment
 import imageio
 import torch
@@ -12,7 +14,7 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (load_imle, load_opt, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
@@ -41,130 +43,142 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, n, targets, latents, imle, ema_imle, optimizer, loss_fn, scaler):
-    
-    # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
-    targets_permuted = targets.permute(0, 3, 1, 2)
-    with autocast(device_type='cuda'):
-
-        px_z = imle(latents, train=True)
-        loss = loss_fn(px_z[-1], targets.permute(0, 3, 1, 2))
-        loss_measure = loss.clone()
+def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+    with autocast(device_type='cuda', dtype=getattr(H, 'amp_dtype_torch', torch.float16)):
+        px_z = imle(latents, labels, train=True)
+        loss = loss_fn(px_z[-1], targets_bchw)
+        loss_measure = loss.detach().clone()
         num_resolutions = 1
 
-        if(H.use_multi_res):
-            
-            for i in range(2,len(px_z)-1):
+        if H.use_multi_res:
+            for i in range(2, len(px_z)-1):
                 px_z_scale = px_z[i]
 
-                if(H.use_resize_right):
-                    targets_scale = resize_right.resize(targets_permuted, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
-                                                        interp_method=interp_methods.cubic, antialiasing =True)
+                if H.use_resize_right:
+                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]),
+                                                        interp_method=interp_methods.cubic, antialiasing=True)
                 else:
-                    targets_scale = F.interpolate(targets_permuted, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
                                                   antialias=True, mode='bicubic', align_corners=H.align_corners)
-                
 
                 loss_scale = loss_fn(px_z_scale, targets_scale)
-                
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
-
-    loss = loss / (H.accumulation_steps)
-    
+    loss = loss / H.accumulation_steps
     scaler.scale(loss).backward()
     return loss_measure.detach()
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
+def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    sampler = Sampler(H, len(data_train), preprocess_fn)
+    sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
     safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
+
+    load_sampler_state(H, sampler, logprint)
 
     epoch = starting_epoch
     sampler.init_projection(data_train)
 
     safe_barrier()
-    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
+
+    num_classes = getattr(H, 'num_classes', 0)
+    if num_classes > 0:
+        n_total = len(data_train)
+        stride = max(1, n_total // H.num_images_visualize)
+        viz_indices = list(range(0, stride * H.num_images_visualize, stride))[:H.num_images_visualize]
+        viz_indices_tensor = torch.tensor(viz_indices, dtype=torch.long)
+        viz_subset = torch.utils.data.Subset(data_train, viz_indices)
+        viz_batch_original, _ = get_sample_for_visualization(viz_subset, preprocess_fn, H.num_images_visualize, H.dataset)
+    else:
+        viz_indices_tensor = torch.arange(H.num_images_visualize, dtype=torch.long)
+        viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
 
-    latent_for_visualization = []
+    if is_main_process():
+        _viz_gen = torch.Generator().manual_seed(42)
+        latent_for_visualization = torch.randn(
+            H.num_rows_visualize, H.num_images_visualize, H.latent_dim,
+            generator=_viz_gen).to(device)
+    else:
+        latent_for_visualization = []
 
-    if(is_main_process()):
-        latent_for_visualization = torch.randn(H.num_rows_visualize, H.num_images_visualize, H.latent_dim).to(device)
-    
     mean_loss = float('inf')
-    metrics = {
-        'mean_loss': mean_loss
-    }
-        
+    metrics = {'mean_loss': mean_loss}
+
+    # Shared-memory latent table — DataLoader workers read this; we update it in-place.
+    latent_table = torch.empty((len(data_train), H.latent_dim), dtype=torch.float32)
+    latent_table.share_memory_()
+    latent_table.copy_(sampler.selected_latents)
+
+    comb_dataset = ZippedDataset(data_train, TensorDataset(latent_table))
+    train_sampler = DistributedSampler(
+        comb_dataset, shuffle=True,
+        num_replicas=H.world_size, rank=H.local_rank, seed=H.seed,
+    )
+    train_num_workers = getattr(H, 'num_workers', 4)
+    data_loader = DataLoader(
+        comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
+        pin_memory=True, num_workers=train_num_workers,
+        persistent_workers=(train_num_workers > 0),
+        multiprocessing_context='spawn' if train_num_workers > 0 else None,
+        prefetch_factor=getattr(H, 'prefetch_factor', 4) if train_num_workers > 0 else None,
+        shuffle=False,
+    )
+    force_initial_resample = True
+
     while (epoch < H.num_epochs):
 
-        safe_barrier()
         # Update the IMLE force resampling every imle_force_resample epochs.
-        if epoch % H.imle_force_resample == 0:
-            torch.cuda.empty_cache()
+        if (epoch % H.imle_force_resample == 0) or force_initial_resample:
             sampler.imle_sample_force(imle)
-            torch.cuda.empty_cache()
+            latent_table.copy_(sampler.selected_latents)
+            force_initial_resample = False
 
-        safe_barrier()        
-
-
-        if (epoch % 20 == 0 and is_main_process()):
-            latents = sampler.selected_latents[:H.num_images_visualize]
-            with torch.no_grad():
+        viz_freq = getattr(H, 'viz_freq', 20)
+        if (epoch % viz_freq == 0 and is_main_process()):
+            latents = sampler.selected_latents[viz_indices_tensor]
+            with torch.inference_mode():
                 imle.eval()
                 generate_for_NN(sampler, viz_batch_original, latents,
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint)
                 imle.train()
 
-        # Create a dataset that pairs images with their current latents.
-        safe_barrier()        
-        comb_dataset = ZippedDataset(data_train, TensorDataset(sampler.selected_latents))
-
-        # Use a DistributedSampler if in distributed training.
-        train_sampler = DistributedSampler(comb_dataset, 
-                                           shuffle=True, 
-                                           num_replicas=H.world_size,
-                                           rank=H.local_rank,
-                                           seed=H.seed)
-        
-        data_loader = DataLoader(comb_dataset, batch_size=H.n_batch, sampler=train_sampler,
-                                    pin_memory=True, num_workers=4, 
-                                    persistent_workers=True, 
-                                    multiprocessing_context="spawn",
-                                    shuffle=False)
-
-        # If using distributed sampler, set the epoch for shuffling
         train_sampler.set_epoch(epoch)
 
-        if(is_main_process()):
+        if is_main_process():
             start_time = time.time()
 
-        safe_barrier()        # Main training loop.
-
-        epoch_loss_sum = 0.0  # We'll accumulate loss from each batch.
+        epoch_loss_sum = torch.zeros((), device=device)
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
 
-
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
-            _, target = preprocess_fn(x)
-            target = target.to(device)
-            latents = latents.to(device)
+            # Extract class labels when doing conditional generation
+            if num_classes > 0 and isinstance(x, (list, tuple)) and len(x) > 1:
+                labels = x[1].view(-1).to(device, non_blocking=True)
+                img_x = x[0]
+            else:
+                labels = None
+                img_x = x[0] if isinstance(x, (list, tuple)) else x
+            # preprocess_fn expects a tuple/list with image at index 0
+            _, target = preprocess_fn([img_x])
+            targets_bchw = target.permute(0, 3, 1, 2).to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
+            latents = latents.to(device, non_blocking=True)
 
-            loss = training_step_imle(H, target.shape[0], target, latents, imle, ema_imle,
-                               optimizer, sampler.calc_loss, scaler)
-            
-            epoch_loss_sum += loss.item()
+            should_sync = ((accum_counter + 1) % H.accumulation_steps == 0)
+            grad_ctx = nullcontext() if should_sync or not hasattr(imle, 'no_sync') else imle.no_sync()
+            with grad_ctx:
+                loss = training_step_imle(H, targets_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+
+            epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
 
             accum_counter += 1
@@ -180,12 +194,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 update_ema(imle.module, ema_imle, H.ema_rate)
             
             if iterate % H.iters_per_images == 0:
-                if(is_main_process()):
+                if is_main_process():
                     imle.eval()
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         generate_visualization(H, sampler, viz_batch_original,
-                                                sampler.selected_latents[0: H.num_images_visualize],
-                                                sampler.last_selected_latents[0: H.num_images_visualize],
+                                                sampler.selected_latents[viz_indices_tensor],
+                                                sampler.last_selected_latents[viz_indices_tensor],
                                                 latent_for_visualization,
                                                 viz_batch_original.shape, imle,
                                                 f'{H.save_dir}/samples-{iterate}.png', logprint, experiment)
@@ -210,7 +224,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             imle.zero_grad(set_to_none=True)
             update_ema(imle.module, ema_imle, H.ema_rate)
         
-        epoch_loss_tensor = torch.tensor(epoch_loss_sum, device=device)
+        epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
@@ -220,9 +234,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         metrics = {
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
-            'unique_indices': sampler.unique_indices,
-            'total_excluded': getattr(sampler, 'total_excluded', 0),
-            'total_excluded_percentage': getattr(sampler, 'total_excluded_percentage', 0),
+            'unique_indices': getattr(sampler, 'unique_indices', 0),
         }
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
@@ -258,10 +270,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         if (epoch % 5 == 0 and is_main_process()):
             imle.eval()
-            with torch.no_grad():
+            with torch.inference_mode():
                 generate_visualization(H, sampler, viz_batch_original,
-                                        sampler.selected_latents[0: H.num_images_visualize],
-                                        sampler.last_selected_latents[0: H.num_images_visualize],
+                                        sampler.selected_latents[viz_indices_tensor],
+                                        sampler.last_selected_latents[viz_indices_tensor],
                                         latent_for_visualization,
                                         viz_batch_original.shape, imle,
                                         f'{H.save_dir}/latest.png', logprint, experiment)
@@ -270,11 +282,13 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % 5 == 0 and experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
         
-        if epoch % H.epoch_per_save == 0 and is_main_process() and isValid(mean_loss):
-            fp = os.path.join(H.save_dir, 'latest')
-            logprint(f'Saving latest model@ {iterate} to {fp}')
-            save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
-        safe_barrier()
+        if epoch % H.epoch_per_save == 0 and isValid(mean_loss):
+            safe_barrier()
+            if is_main_process():
+                fp = os.path.join(H.save_dir, 'latest')
+                logprint(f'Saving latest model@ {iterate} to {fp}')
+                save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H)
+            safe_barrier()
         epoch += 1
     
     if is_main_process():
@@ -288,6 +302,7 @@ def main():
     init_distributed_mode()
     
     H, logprint = set_up_hyperparams()
+    configure_runtime_performance(H, logprint)
     H.search_type = 'l2'
     H.lpips_coef = 0.0
     H.dino_coef = 0.0
@@ -339,7 +354,7 @@ def main():
             experiment.log_parameter("num_params", num_params)
 
     if(H.mode == 'train'):
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
+        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment, autoencoder=None)
 
     elif H.mode == 'eval_fid':
         sampler = Sampler(H, len(data_train), preprocess_fn)

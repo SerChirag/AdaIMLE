@@ -147,6 +147,14 @@ def add_imle_arguments(parser):
 
 
     parser.add_argument('--compile', default=True, type=lambda x: bool(strtobool(x)))  # whether to use nearest neighbour search
+    parser.add_argument('--amp_dtype', type=str, default='auto', choices=['auto', 'fp16', 'bf16'])
+    parser.add_argument('--cudnn_benchmark', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--allow_tf32', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--float32_matmul_precision', type=str, default='high', choices=['highest', 'high', 'medium'])
+    parser.add_argument('--use_channels_last', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--use_fused_adamw', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--lr_eta_min_frac', type=float, default=0.1)
+    parser.add_argument('--class_emb_lr_mult', type=float, default=1.0)
 
     parser.add_argument('--lr', type=float, default=0.00015)  # learning rate
     parser.add_argument('--lr2', type=float, default=0.00005)  # learning rate
@@ -175,6 +183,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--imle_factor', type=float, default=0.)  # imle soft-sampling factor -- not used in the paper
     parser.add_argument('--imle_staleness', type=int, default=7)  # imle staleness, i.e., number of iterations to wait before considering the thresholds, tau_i
     parser.add_argument('--imle_batch', type=int, default=32)  # imle batch size used for sampling
+    parser.add_argument('--ae_batch', type=int, default=32)
+    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--prefetch_factor', type=int, default=4)
+    parser.add_argument('--viz_freq', type=int, default=20)
     parser.add_argument('--subset_len', type=int, default=-1)  # subset length for training -- random subset of the dataset. -1 means full dataset
     parser.add_argument('--latent_dim', type=int, default=128)  # latent code dimension
     parser.add_argument('--imle_perturb_coef', type=float, default=0.001)  # imle perturbation coefficient to avoid same latent codes
@@ -203,11 +215,6 @@ def add_imle_arguments(parser):
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
     parser.add_argument('--zero_init', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
-
-    parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
-
-    parser.add_argument('--rs_radius', type=float, default=100.0)
-    parser.add_argument('--rs_knn_ignore', type=int, default=10)
 
     parser.add_argument('--angle', type=float, default=0.0)  # angle to splatter
     parser.add_argument('--use_splatter', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter
@@ -253,6 +260,16 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
+    parser.add_argument('--num_classes', type=int, default=0,
+                        help='Number of classes for conditional generation. 0 = unconditional.')
+    parser.add_argument('--pool_size_per_class', type=int, default=0,
+                        help='Candidate pool size per class. 0 = derive from force_factor * (sz/num_classes).')
+    parser.add_argument('--nn_search_batch', type=int, default=4096)
+    parser.add_argument('--compress_comm', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--cache_dir', type=str, default='./cache')
+    parser.add_argument('--use_cache', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--cache_dataset_id', type=str, default='')
+    parser.add_argument('--restore_sampler_path', type=str, default=None)
 
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1", "cauchy", "mclure", "rmse", "welsch"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")

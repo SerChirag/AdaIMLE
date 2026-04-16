@@ -22,10 +22,57 @@ from helpers.utils import is_main_process, get_world_size, get_rank
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.nn as nn
 
+
+def resolve_amp_dtype(H):
+    requested = str(getattr(H, 'amp_dtype', 'auto')).lower()
+    if requested == 'auto':
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            requested = 'bf16'
+        else:
+            requested = 'fp16'
+    if requested == 'bf16':
+        return requested, torch.bfloat16
+    return 'fp16', torch.float16
+
+
+def configure_runtime_performance(H, logprint=None):
+    torch.backends.cudnn.benchmark = bool(getattr(H, 'cudnn_benchmark', True))
+
+    allow_tf32 = bool(getattr(H, 'allow_tf32', True))
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+
+    matmul_precision = getattr(H, 'float32_matmul_precision', 'high')
+    if hasattr(torch, 'set_float32_matmul_precision'):
+        torch.set_float32_matmul_precision(matmul_precision)
+
+    amp_name, amp_dtype = resolve_amp_dtype(H)
+    H.amp_dtype = amp_name
+    H.amp_dtype_torch = amp_dtype
+
+    if logprint is not None and is_main_process():
+        logprint(
+            f"runtime config: amp_dtype={H.amp_dtype} "
+            f"cudnn_benchmark={torch.backends.cudnn.benchmark} "
+            f"allow_tf32={allow_tf32} "
+            f"float32_matmul_precision={matmul_precision} "
+            f"channels_last={bool(getattr(H, 'use_channels_last', True))}"
+        )
+
+
+def maybe_to_channels_last(module, enabled):
+    if enabled and torch.cuda.is_available():
+        module.to(memory_format=torch.channels_last)
+    return module
+
+
 def update_ema(imle, ema_imle, ema_rate):
-    for p1, p2 in zip(imle.parameters(), ema_imle.parameters()):
-        p2.data.mul_(ema_rate)
-        p2.data.add_(p1.data * (1 - ema_rate))
+    ema_rate = float(ema_rate)
+    src_params = list(imle.parameters())
+    ema_params = list(ema_imle.parameters())
+    torch._foreach_mul_(ema_params, ema_rate)
+    torch._foreach_add_(ema_params, src_params, alpha=1 - ema_rate)
 
 
 def as_plain_nn(model):
@@ -47,23 +94,32 @@ def map_saved_by_type(x):
     else:
         return x
 
-def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
-
-    model_state   = map_saved_by_type(imle)
-    ema_state     = map_saved_by_type(ema_imle)
-    optim_state   = map_saved_by_type(optimizer)
-    sched_state   = map_saved_by_type(scheduler)
-    scaler_state  = map_saved_by_type(scaler)
-
+def _save_model_worker(path, model_state, ema_state, optim_state, sched_state, scaler_state, from_log, to_log):
+    import shutil
     torch.save(model_state,  f"{path}-model.th")
     torch.save(ema_state,    f"{path}-model-ema.th")
     torch.save(optim_state,  f"{path}-opt.th")
     torch.save(sched_state,  f"{path}-sched.th")
     torch.save(scaler_state, f"{path}-scaler.th")
+    if os.path.exists(from_log):
+        shutil.copy2(from_log, to_log)
 
+
+def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H):
+    import threading
+    model_state  = map_saved_by_type(imle)
+    ema_state    = map_saved_by_type(ema_imle)
+    optim_state  = map_saved_by_type(optimizer)
+    sched_state  = map_saved_by_type(scheduler)
+    scaler_state = map_saved_by_type(scaler)
     from_log = os.path.join(H.save_dir, 'log.jsonl')
     to_log = f'{os.path.dirname(path)}/{os.path.basename(path)}-log.jsonl'
-    subprocess.check_output(['cp', from_log, to_log])
+    t = threading.Thread(
+        target=_save_model_worker,
+        args=(path, model_state, ema_state, optim_state, sched_state, scaler_state, from_log, to_log),
+        daemon=True,
+    )
+    t.start()
 
 
 def accumulate_stats(stats, frequency):
@@ -182,19 +238,23 @@ def load_imle(H, logprint):
 
     imle = IMLE(H)
     imle.to(device)
-    
+    maybe_to_channels_last(imle, getattr(H, 'use_channels_last', True))
+
     if H.restore_path:
         if(is_main_process()):
             logprint(f'Restoring imle from {H.restore_path}')
         restore_params(imle, H.restore_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+        maybe_to_channels_last(imle, getattr(H, 'use_channels_last', True))
 
     ema_imle = IMLE(H)
     ema_imle = ema_imle.to(device)  # Move to the correct device.
+    maybe_to_channels_last(ema_imle, getattr(H, 'use_channels_last', True))
 
     if H.restore_ema_path:
         if(is_main_process()):
             logprint(f'Restoring ema imle from {H.restore_ema_path}')
         restore_params(ema_imle, H.restore_ema_path, map_cpu=True, local_rank=H.local_rank, mpi_size=H.mpi_size, strict=H.load_strict)
+        maybe_to_channels_last(ema_imle, getattr(H, 'use_channels_last', True))
     else:
         ema_imle.load_state_dict(imle.state_dict())
 
@@ -204,26 +264,42 @@ def load_imle(H, logprint):
     ddp_dev = torch.cuda.current_device()
 
     if(is_dist_avail_and_initialized()):
-        imle = DDP(imle, device_ids=[ddp_dev], 
+        imle = DDP(imle, device_ids=[ddp_dev],
                     output_device=ddp_dev,
                     gradient_as_bucket_view=True,
-                    static_graph=True
+                    find_unused_parameters=True
                     )
     
-    if(H.compile):
-        imle = torch.compile(imle) 
-        ema_imle = torch.compile(ema_imle)
+    if H.compile:
+        imle = torch.compile(imle)
+        # ema_imle is frozen eval-only — skip compile to avoid inductor overhead
     
     return imle, ema_imle
 
 
 def load_opt(H, imle, logprint):
-    optimizer = AdamW(imle.parameters(), weight_decay=H.wd, lr=H.lr, betas=(H.adam_beta1, H.adam_beta2), eps=H.adam_eps)
+    optimizer_kwargs = dict(
+        weight_decay=H.wd, lr=H.lr,
+        betas=(H.adam_beta1, H.adam_beta2), eps=H.adam_eps,
+    )
+    if bool(getattr(H, 'use_fused_adamw', True)) and torch.cuda.is_available():
+        optimizer_kwargs['fused'] = True
+    try:
+        optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+        if is_main_process():
+            logprint(f'AdamW fused={bool(optimizer_kwargs.get("fused", False))}')
+    except (TypeError, RuntimeError) as exc:
+        optimizer_kwargs.pop('fused', None)
+        if is_main_process():
+            logprint(f'AdamW fused fallback: {exc}')
+        optimizer = AdamW(imle.parameters(), **optimizer_kwargs)
+
     scheduler1 = LambdaLR(optimizer, lr_lambda=linear_warmup(H.warmup_iters))
     cosine_iters = H.total_iters - H.warmup_iters
-    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=0.1 * H.lr)
+    eta_min_frac = getattr(H, 'lr_eta_min_frac', 0.1)
+    scheduler2 = CosineAnnealingLR(optimizer, T_max=cosine_iters, eta_min=eta_min_frac * H.lr)
     scheduler = SequentialLR(optimizer, schedulers=[scheduler1, scheduler2], milestones=[H.warmup_iters])
-    scaler = torch.GradScaler(device="cuda")
+    scaler = torch.GradScaler(device="cuda", enabled=(getattr(H, 'amp_dtype', 'fp16') == 'fp16'))
     
     if H.restore_optimizer_path:
         if(is_main_process()):
@@ -250,6 +326,10 @@ def load_opt(H, imle, logprint):
 
     logprint('starting at epoch', starting_epoch, 'iterate', iterate, 'eval loss', cur_eval_loss)
     return optimizer, scheduler, scaler, cur_eval_loss, iterate, starting_epoch
+
+
+def load_sampler_state(H, sampler, logprint):
+    pass
 
 
 def save_latents(H, outer, split_ind, latents, name='latents'):

@@ -51,7 +51,7 @@ class SEBlock(nn.Module):
         b, c, _, _ = x.size()
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
-        return x * y.expand_as(x)
+        return x * y
 
 
 class ConvNeXtBlock(nn.Module):
@@ -65,7 +65,7 @@ class ConvNeXtBlock(nn.Module):
             self.norm = nn.RMSNorm(dim, eps=H.convnext_norm_eps)
         
         self.pw_conv1 = nn.Linear(dim, expansion * dim)
-        self.gelu = nn.GELU()
+        self.gelu = nn.GELU(approximate='tanh')
         self.pw_conv2 = nn.Linear(expansion * dim, dim)
 
         ## single parameter for residual ratio
@@ -121,9 +121,8 @@ class DecBlock(nn.Module):
                                     reduction=H.se_reduction,
                                     dropout=H.dropout_p)
 
-        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio)) 
-        self.residual_type = H.residual_type  # 'normal' or 'convex' 
-        self.sigmoid = nn.Sigmoid()
+        self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))
+        self.residual_type = H.residual_type  # 'normal' or 'convex'
 
 
     def forward(self, x, w):
@@ -135,11 +134,11 @@ class DecBlock(nn.Module):
         x = self.adaIN(x, w)
         x = self.resnet(x)
 
+        residual_ratio = self.residual_ratio.sigmoid()
         if self.residual_type == 'normal':
-            return x * self.sigmoid(self.residual_ratio) + residual
-        
+            return x * residual_ratio + residual
         elif self.residual_type == 'convex':
-            return x * self.sigmoid(self.residual_ratio) + residual * (1 - self.sigmoid(self.residual_ratio))
+            return x * residual_ratio + residual * (1 - residual_ratio)
 
 def stopgrad_keep_graph(x):
     return x.detach() + 0.0 * x
@@ -149,6 +148,10 @@ class Decoder(nn.Module):
         super().__init__()
         self.H = H
         self.mapping_network = MappingNetwork(H)
+        self.num_classes = getattr(H, 'num_classes', 0)
+        if self.num_classes > 0:
+            self.class_embedding = nn.Embedding(self.num_classes, H.latent_dim)
+            nn.init.normal_(self.class_embedding.weight, std=0.02)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
@@ -173,14 +176,16 @@ class Decoder(nn.Module):
 
 
         self.resnets = nn.ModuleDict(resnets)
-        self.gains = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
-        self.biases = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
+        self.gains = nn.Parameter(torch.ones(H.image_channels))
+        self.biases = nn.Parameter(torch.zeros(H.image_channels))
 
 
-    def forward(self, latent_code, train=False):
-        w = self.mapping_network(latent_code)       
+    def forward(self, latent_code, condition=None, train=False):
+        if self.num_classes > 0 and condition is not None:
+            latent_code = latent_code + self.class_embedding(condition.view(-1))
+        w = self.mapping_network(latent_code)
         targets = []
-        x = self.constant.repeat(latent_code.shape[0], 1, 1, 1)
+        x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous()
 
         for idx, block in enumerate(self.dec_blocks):
             if(block.mixin is not None):
@@ -190,7 +195,8 @@ class Decoder(nn.Module):
                     x = x.detach()
             x = block(x, w)
         x = self.resnets[str(self.resolutions[-1])](x)
-        x = self.gains * x + self.biases
+        if self.resolutions[-1] >= 8:
+            x = self.gains.view(1, -1, 1, 1) * x + self.biases.view(1, -1, 1, 1)
         targets.append(x)
         if(train):
             return targets
@@ -202,5 +208,5 @@ class IMLE(nn.Module):
         super().__init__()
         self.decoder = Decoder(H)
 
-    def forward(self, latents, train=False):
-        return self.decoder.forward(latents, train)
+    def forward(self, latents, condition=None, train=False):
+        return self.decoder.forward(latents, condition, train)
