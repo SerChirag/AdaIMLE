@@ -355,6 +355,10 @@ class Sampler:
         queries_t = queries_t.contiguous()
         dataset_t = dataset_t.contiguous()
 
+        if getattr(self.H, 'nn_search_normalize', False):
+            queries_t = F.normalize(queries_t, dim=-1)
+            dataset_t = F.normalize(dataset_t, dim=-1)
+
         topk = getattr(self.H, 'imle_db_topk', 1)
 
         self.faiss_index_flat.reset()

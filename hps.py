@@ -284,6 +284,7 @@ def add_imle_arguments(parser):
                         help='Candidate pool size per class. 0 = derive from force_factor * (sz/num_classes).')
 
     parser.add_argument('--nn_search_batch', type=int, default=4096)  # batch size for FAISS queries
+    parser.add_argument('--nn_search_normalize', default=False, type=lambda x: bool(strtobool(x)))  # L2-normalize queries and dataset before NN search
     parser.add_argument('--compress_comm', default=True, type=lambda x: bool(strtobool(x)))  # compress DDP communication with bfloat16/float16
     parser.add_argument('--num_workers', type=int, default=4)  # DataLoader worker count
     parser.add_argument('--prefetch_factor', type=int, default=4)  # DataLoader prefetch factor
