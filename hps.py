@@ -210,6 +210,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # lpips loss coefficient
     parser.add_argument('--lpips_pixel_coef', type=float, default=0.0)  # pixel-space LPIPS loss weight; 0 = disabled
+    parser.add_argument('--lpips_batch', type=int, default=4)  # number of samples per step to decode for LPIPS loss
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
     parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)

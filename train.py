@@ -75,12 +75,17 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler,
 
     # LPIPS pixel-space loss runs outside autocast — VAE decode and VGG forward
     # must be in FP32; autocast would interfere with the decode and perceptual features.
+    # We subsample the batch to keep memory usage bounded: decoding the full batch
+    # at 256x256 is too expensive; a small subset gives an unbiased gradient estimate.
     lpips_pixel_coef = getattr(H, 'lpips_pixel_coef', 0.0)
     if lpips_fn is not None and autoencoder is not None and lpips_pixel_coef > 0.0:
         from helpers.autoencoder import decode_latents_for_loss, decode_latents_to_images
-        pred_px = decode_latents_for_loss(autoencoder, px_z[-1].contiguous().float(), latent_spatial)
+        lpips_batch = getattr(H, 'lpips_batch', 4)
+        B = px_z[-1].shape[0]
+        idx = torch.randperm(B, device=px_z[-1].device)[:min(lpips_batch, B)]
+        pred_px = decode_latents_for_loss(autoencoder, px_z[-1][idx].contiguous().float(), latent_spatial)
         with torch.no_grad():
-            tar_px = decode_latents_to_images(autoencoder, targets_bchw.contiguous(), latent_spatial)
+            tar_px = decode_latents_to_images(autoencoder, targets_bchw[idx].contiguous(), latent_spatial)
             lpips_feats_tar = lpips_fn(tar_px.float())
         lpips_feats_pred = lpips_fn(pred_px.float())
         lpips_loss = sum(
