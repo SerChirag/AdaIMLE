@@ -51,29 +51,43 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler,
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, labels, train=True)
-        loss = loss_fn(px_z[-1], targets_bchw,
-                       lpips_fn=lpips_fn, autoencoder=autoencoder, latent_spatial=latent_spatial)
+        loss = loss_fn(px_z[-1], targets_bchw)
         loss_measure = loss.detach().clone()
         num_resolutions = 1
 
         if(H.use_multi_res):
-            
+
             for i in range(2,len(px_z)-1):
                 px_z_scale = px_z[i]
 
                 if(H.use_resize_right):
-                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]),
                                                         interp_method=interp_methods.cubic, antialiasing =True)
                 else:
-                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
                                                   antialias=True, mode='bicubic', align_corners=H.align_corners)
-                
+
 
                 loss_scale = loss_fn(px_z_scale, targets_scale)
-                
+
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
+    # LPIPS pixel-space loss runs outside autocast — VAE decode and VGG forward
+    # must be in FP32; autocast would interfere with the decode and perceptual features.
+    lpips_pixel_coef = getattr(H, 'lpips_pixel_coef', 0.0)
+    if lpips_fn is not None and autoencoder is not None and lpips_pixel_coef > 0.0:
+        from helpers.autoencoder import decode_latents_for_loss, decode_latents_to_images
+        pred_px = decode_latents_for_loss(autoencoder, px_z[-1].contiguous().float(), latent_spatial)
+        with torch.no_grad():
+            tar_px = decode_latents_to_images(autoencoder, targets_bchw.contiguous(), latent_spatial)
+            lpips_feats_tar = lpips_fn(tar_px.float())
+        lpips_feats_pred = lpips_fn(pred_px.float())
+        lpips_loss = sum(
+            (f_pred - f_tar).pow(2).mean()
+            for f_pred, f_tar in zip(lpips_feats_pred, lpips_feats_tar)
+        )
+        loss = loss + lpips_pixel_coef * lpips_loss
 
     loss = loss / (H.accumulation_steps)
     
