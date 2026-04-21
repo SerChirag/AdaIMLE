@@ -70,7 +70,6 @@ class LPNet(nn.Module):
         in0_input = self.scaling_layer(in0_input)
         outs0 = self.net.forward(in0_input)
         feats0 = {}
-        shapes = []
         res = []
 
         for kk in range(self.L):
@@ -81,12 +80,9 @@ class LPNet(nn.Module):
         else:
             for kk in range(self.L):
                 cur_res = self.lins[kk](feats0[kk])
-                shapes.append(cur_res.shape[-1])
                 res.append(cur_res.reshape(cur_res.shape[0], -1))
 
-        # Convert shapes list to tensor
-        shapes_tensor = torch.tensor(shapes, device=in0.device)
-        return res, shapes_tensor
+        return res
 
 
 class vgg16(torch.nn.Module):

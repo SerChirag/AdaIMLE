@@ -13,6 +13,7 @@ from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from models import IMLE
+from LPNet import LPNet
 import numpy as np
 from data import set_up_data
 from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
@@ -44,12 +45,14 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler,
+                        lpips_fn=None, autoencoder=None, latent_spatial=None):
 
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, labels, train=True)
-        loss = loss_fn(px_z[-1], targets_bchw)
+        loss = loss_fn(px_z[-1], targets_bchw,
+                       lpips_fn=lpips_fn, autoencoder=autoencoder, latent_spatial=latent_spatial)
         loss_measure = loss.detach().clone()
         num_resolutions = 1
 
@@ -87,6 +90,18 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     device = torch.device("cuda", torch.cuda.current_device())
 
     load_sampler_state(H, sampler, logprint)
+    safe_barrier()
+
+    # Load LPIPS network for pixel-space loss if requested.
+    lpips_pixel_coef = getattr(H, 'lpips_pixel_coef', 0.0)
+    lpips_fn = None
+    if lpips_pixel_coef > 0.0:
+        lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(device)
+        lpips_net.eval()
+        lpips_net.requires_grad_(False)
+        if getattr(H, 'compile', True):
+            lpips_net = torch.compile(lpips_net)
+        lpips_fn = lpips_net
 
     epoch = starting_epoch
     sampler.init_projection(data_train)
@@ -198,7 +213,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler,
+                                          lpips_fn=lpips_fn, autoencoder=sampler.autoencoder,
+                                          latent_spatial=sampler.autoencoder_native_latent_size)
             
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1

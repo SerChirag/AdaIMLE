@@ -95,20 +95,47 @@ def encode_images_to_latents(autoencoder, images_chw, target_spatial=None):
     return latents
 
 
-def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
-    if autoencoder is None:
-        return latents_chw
+def _decode_latents_impl(autoencoder, latents, latent_spatial):
+    """Shared implementation for decoding latents to images.
 
-    latents = latents_chw
+    Handles spatial interpolation, memory format optimization, scaling,
+    and decoding. Called by both decode_latents_to_images and
+    decode_latents_for_loss with different outer contexts.
+    """
     if latent_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(latent_spatial):
         latents = F.interpolate(latents, size=latent_spatial, mode='bicubic', align_corners=False)
     if latents.is_cuda and latents.ndim == 4:
         latents = latents.contiguous(memory_format=torch.channels_last)
-
     scaling_factor = getattr(autoencoder, '_cached_scaling_factor', 1.0)
-    with torch.inference_mode():
-        with _fp32_vae_context(latents):
-            decoded = autoencoder.decode((latents / scaling_factor).float())
-        images = _extract_sample(decoded)
-
+    with _fp32_vae_context(latents):
+        decoded = autoencoder.decode((latents / scaling_factor).float())
+    images = _extract_sample(decoded)
     return torch.clamp(images, -1.0, 1.0)
+
+
+def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
+    if autoencoder is None:
+        return latents_chw
+
+    with torch.inference_mode():
+        return _decode_latents_impl(autoencoder, latents_chw, latent_spatial)
+
+
+def decode_latents_for_loss(autoencoder, latents_chw, latent_spatial=None):
+    """Decode latents to pixel images with gradient flow enabled.
+
+    Unlike decode_latents_to_images, this does NOT wrap in inference_mode,
+    so autograd can propagate gradients through the frozen AE ops back to
+    the input latents. The AE weights are frozen (requires_grad=False) so
+    they accumulate no gradients — only the latent input receives grad.
+
+    IMPORTANT: latents_chw must be float32 when gradients are required.
+    A dtype change from bf16/fp16 inside _fp32_vae_context can silently
+    sever the autograd graph, dropping gradients. Ensure caller casts to
+    float32 before passing if gradient flow is critical.
+
+    Returns images in [-1, 1], channels-first float32.
+    """
+    if autoencoder is None:
+        return latents_chw
+    return _decode_latents_impl(autoencoder, latents_chw, latent_spatial)

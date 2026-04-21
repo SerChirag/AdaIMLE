@@ -15,7 +15,7 @@ from torch import autocast
 import faiss
 import faiss.contrib.torch_utils
 from tqdm import tqdm
-from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
+from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images, decode_latents_for_loss
 from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
 
 class Sampler:
@@ -245,7 +245,8 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def calc_loss(self, inp, tar, use_mean=True, logging=False,
+                  lpips_fn=None, autoencoder=None, latent_spatial=None):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
         elif self.H.loss_type == 'pseudo_l1':
@@ -264,7 +265,27 @@ class Sampler:
         else:
             per_elem = self.l2_loss(inp, tar)
 
-        return per_elem.mean()
+        loss = per_elem.mean()
+
+        lpips_pixel_coef = getattr(self.H, 'lpips_pixel_coef', 0.0)
+        if lpips_fn is not None and autoencoder is not None and lpips_pixel_coef > 0.0:
+            # Decode predicted latent differentiably so gradients flow to the model.
+            # Cast to float32 — decode_latents_for_loss requires float32 for gradient flow.
+            pred_px = decode_latents_for_loss(autoencoder, inp.contiguous().float(), latent_spatial)
+            # Decode target latent and extract its features without grad — it is a constant.
+            with torch.no_grad():
+                tar_px = decode_latents_to_images(autoencoder, tar.contiguous(), latent_spatial)
+                with torch.autocast(device_type='cuda', enabled=False):
+                    lpips_feats_tar = lpips_fn(tar_px.float())
+            with torch.autocast(device_type='cuda', enabled=False):
+                lpips_feats_pred = lpips_fn(pred_px.float())
+            lpips_loss = sum(
+                (f_pred - f_tar).pow(2).mean()
+                for f_pred, f_tar in zip(lpips_feats_pred, lpips_feats_tar)
+            )
+            loss = loss + lpips_pixel_coef * lpips_loss
+
+        return loss
     
     def resample_pool(self, gen, class_condition=None):
 
