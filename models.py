@@ -152,7 +152,7 @@ class Decoder(nn.Module):
         self.num_classes = getattr(H, 'num_classes', 0)
         if self.num_classes > 0:
             self.class_embedding = nn.Embedding(self.num_classes, H.latent_dim)
-            nn.init.normal_(self.class_embedding.weight, std=0.02)
+            nn.init.normal_(self.class_embedding.weight, std=H.class_emb_init_std)
         resos = set()
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
