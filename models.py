@@ -183,7 +183,7 @@ class Decoder(nn.Module):
         x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous(memory_format=torch.channels_last)
 
         for idx, block in enumerate(self.dec_blocks):
-            if(block.mixin is not None):
+            if(block.mixin is not None and train and self.H.use_multi_res):
                 intermediate = self.resnets[str(block.mixin)](x)
                 targets.append(intermediate)
                 if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
