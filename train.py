@@ -50,20 +50,20 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
         loss_measure = loss.detach().clone()
         num_resolutions = 1
 
-        if H.use_multi_res:
-            for i in range(2, len(px_z)-1):
-                px_z_scale = px_z[i]
+        # if H.use_multi_res:
+        #     for i in range(2, len(px_z)-1):
+        #         px_z_scale = px_z[i]
 
-                if H.use_resize_right:
-                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]),
-                                                        interp_method=interp_methods.cubic, antialiasing=True)
-                else:
-                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
-                                                  antialias=True, mode='bicubic', align_corners=H.align_corners)
+        #         if H.use_resize_right:
+        #             targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]),
+        #                                                 interp_method=interp_methods.cubic, antialiasing=True)
+        #         else:
+        #             targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
+        #                                           antialias=True, mode='bicubic', align_corners=H.align_corners)
 
-                loss_scale = loss_fn(px_z_scale, targets_scale)
-                loss.add_(loss_scale)
-                num_resolutions += 1
+        #         loss_scale = loss_fn(px_z_scale, targets_scale)
+        #         loss.add_(loss_scale)
+        #         num_resolutions += 1
 
     loss = loss / H.accumulation_steps
     scaler.scale(loss).backward()
