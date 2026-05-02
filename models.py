@@ -164,21 +164,10 @@ class Decoder(nn.Module):
         first_res = self.resolutions[0]
         last_res = self.resolutions[-1]
         self.constant = nn.Parameter(torch.randn(1, self.widths[first_res], first_res, first_res))
-        resnets = {}
-
-        for res in self.resolutions:
-            key = str(res)
-
-            if res < 8:
-                resnets[key] = nn.Identity()
-            else:
-                resnets[key] = get_1x1(self.widths[res], H.image_channels)
-
-
-        self.resnets = nn.ModuleDict(resnets)
-        self.gains = nn.Parameter(torch.ones(H.image_channels))
-        self.biases = nn.Parameter(torch.zeros(H.image_channels))
-
+        # resnet/gain/bias keep old names so weights from imle-phoenix-resident load directly
+        self.resnet = get_1x1(self.widths[last_res], H.image_channels)
+        self.gain = nn.Parameter(torch.ones(1, H.image_channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, H.image_channels, 1, 1))
 
     def forward(self, latent_code, condition=None, train=False):
         if self.num_classes > 0 and condition is not None:
@@ -188,15 +177,11 @@ class Decoder(nn.Module):
         x = self.constant.expand(latent_code.shape[0], -1, -1, -1).contiguous()
 
         for idx, block in enumerate(self.dec_blocks):
-            if(block.mixin is not None):
-                intermediate = self.resnets[str(block.mixin)](x)
-                targets.append(intermediate)
-                if(block.mixin >= 8 and self.H.use_stopgrad_for_intermediate):
-                    x = x.detach()
+            if(block.mixin is not None and self.H.use_stopgrad_for_intermediate and block.mixin >= 8):
+                x = x.detach()
             x = block(x, w)
-        x = self.resnets[str(self.resolutions[-1])](x)
-        if self.resolutions[-1] >= 8:
-            x = self.gains.view(1, -1, 1, 1) * x + self.biases.view(1, -1, 1, 1)
+        x = self.resnet(x)
+        x = self.gain * x + self.bias
         targets.append(x)
         if(train):
             return targets
