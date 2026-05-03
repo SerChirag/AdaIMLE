@@ -173,7 +173,7 @@ class Sampler:
     def get_projected(self, inp, permute=True):
         if permute:
             inp = inp.permute(0, 3, 1, 2)
-        interpolated = F.interpolate(inp, scale_factor=self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        interpolated = F.interpolate(inp.float(), scale_factor=self.H.l2_search_downsample, antialias=True, mode='bicubic')
         out, _ = self.lpips_net(interpolated.to(self.device))
         gen_feat = [torch.mm(out[i], self.projections[i]) for i in range(len(out))]
         return torch.cat(gen_feat, dim=1)
@@ -329,10 +329,12 @@ class Sampler:
                         outputs = gen(cur_latents, class_tensor)
                     else:
                         outputs = gen(cur_latents)
-                    if self.H.search_type == 'l2':
+                    if self.H.search_type == 'lpips':
+                        proj = self.get_projected(outputs, False)
+                    elif self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
-                        exit()
+                        raise ValueError(f'Unsupported search_type: {self.H.search_type}')
                     self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
 
         if self.num_classes > 0:
