@@ -238,11 +238,6 @@ def add_imle_arguments(parser):
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
-    parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl'])
-    parser.add_argument('--autoencoder_name_or_path', type=str, default='stabilityai/sd-vae-ft-mse')
-    parser.add_argument('--autoencoder_subfolder', type=str, default='')
-    parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
-
     parser.add_argument('--use_comet', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--comet_name', type=str, default='AdaptiveIMLE')  # used in comet.ml
     parser.add_argument('--comet_api_key', type=str, default='')  # comet.ml api key -- leave blank to disable comet.ml
@@ -258,12 +253,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=1)  # top-k for imle database search
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
-    parser.add_argument('--num_classes', type=int, default=0,
-                        help='Number of classes for conditional generation. 0 = unconditional.')
-    parser.add_argument('--pool_size_per_class', type=int, default=0,
-                        help='Candidate pool size per class. 0 = derive from force_factor * (sz/num_classes).')
     parser.add_argument('--nn_search_batch', type=int, default=4096)
     parser.add_argument('--compress_comm', default=True, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--cache_dir', type=str, default='./cache')

@@ -69,12 +69,12 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
     scaler.scale(loss).backward()
     return loss_measure.detach()
 
-def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
+def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)
 
-    sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
+    sampler = Sampler(H, len(data_train), preprocess_fn)
     safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
@@ -85,17 +85,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
     safe_barrier()
 
-    num_classes = getattr(H, 'num_classes', 0)
-    if num_classes > 0:
-        n_total = len(data_train)
-        stride = max(1, n_total // H.num_images_visualize)
-        viz_indices = list(range(0, stride * H.num_images_visualize, stride))[:H.num_images_visualize]
-        viz_indices_tensor = torch.tensor(viz_indices, dtype=torch.long)
-        viz_subset = torch.utils.data.Subset(data_train, viz_indices)
-        viz_batch_original, _ = get_sample_for_visualization(viz_subset, preprocess_fn, H.num_images_visualize, H.dataset)
-    else:
-        viz_indices_tensor = torch.arange(H.num_images_visualize, dtype=torch.long)
-        viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
+    viz_indices_tensor = torch.arange(H.num_images_visualize, dtype=torch.long)
+    viz_batch_original, _ = get_sample_for_visualization(data_train, preprocess_fn, H.num_images_visualize, H.dataset)
 
 
     if is_main_process():
@@ -161,14 +152,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         for cur, indices in data_loader:
             x = cur[0]
             latents = cur[1][0]
-            # Extract class labels when doing conditional generation
-            if num_classes > 0 and isinstance(x, (list, tuple)) and len(x) > 1:
-                labels = x[1].view(-1).to(device, non_blocking=True)
-                img_x = x[0]
-            else:
-                labels = None
-                img_x = x[0] if isinstance(x, (list, tuple)) else x
-            # preprocess_fn expects a tuple/list with image at index 0
+            img_x = x[0] if isinstance(x, (list, tuple)) else x
             _, target = preprocess_fn([img_x])
             targets_bchw = target.permute(0, 3, 1, 2).to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
             latents = latents.to(device, non_blocking=True)
@@ -176,7 +160,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_ctx = nullcontext() if should_sync or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_ctx:
-                loss = training_step_imle(H, targets_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+                loss = training_step_imle(H, targets_bchw, latents, None, imle, sampler.calc_loss, scaler)
 
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
@@ -243,9 +227,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             safe_barrier()            
             torch.cuda.empty_cache()
             if(is_main_process()):
-                if not H.autoencoder_decode_for_metrics:
-                    metrics.update({'fid': float('nan'), 'best_fid': best_fid, 'precision': float('nan'), 'recall': float('nan')})
-                else:
+                if True:
                     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
                     precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
                     if cur_fid < best_fid:
@@ -351,7 +333,7 @@ def main():
             experiment.log_parameter("num_params", num_params)
 
     if(H.mode == 'train'):
-        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment, autoencoder=None)
+        train_loop_imle(H, data_train, data_valid_or_test, preprocess_fn, imle, ema_imle, logprint, experiment)
 
     elif H.mode == 'eval_fid':
         sampler = Sampler(H, len(data_train), preprocess_fn)
