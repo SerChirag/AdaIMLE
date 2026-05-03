@@ -148,7 +148,7 @@ class Decoder(nn.Module):
         super().__init__()
         self.H = H
         self.mapping_network = MappingNetwork(H)
-        self.num_classes = getattr(H, 'num_classes', 0)
+        self.num_classes = getattr(H, 'num_classes', None) or 0
         if self.num_classes > 0:
             self.class_embedding = nn.Embedding(self.num_classes, H.latent_dim)
             nn.init.normal_(self.class_embedding.weight, std=0.02)
