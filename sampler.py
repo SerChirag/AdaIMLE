@@ -276,26 +276,39 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def robust_fn(self, sq_diff):
         if self.H.loss_type == 'huber':
-            per_elem = self.pseudo_huber((inp - tar) ** 2)
+            return self.pseudo_huber(sq_diff)
         elif self.H.loss_type == 'pseudo_l1':
-            per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
+            return torch.sqrt(sq_diff + 1e-8) * self.H.huber_delta
         elif self.H.loss_type == 'mclure':
-            residual = inp - tar
-            per_elem = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
+            return sq_diff / (self.H.loss_scale**2 + sq_diff)
         elif self.H.loss_type == 'welsch':
-            residual = inp - tar
-            per_elem = (1 - torch.exp(-(residual / self.H.loss_scale)**2))
-        elif self.H.loss_type == 'rmse':
-            l2_loss = (inp - tar).pow(2).flatten(1).mean(dim=1)
-            per_elem = torch.sqrt(l2_loss + 1e-8)
+            return 1 - torch.exp(-sq_diff / self.H.loss_scale**2)
         elif self.H.loss_type == 'cauchy':
-            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
+            return torch.log(1 + 0.5 * sq_diff / self.H.loss_scale**2)
         else:
-            per_elem = self.l2_loss(inp, tar)
+            return sq_diff
 
-        return per_elem.mean()
+    def get_lpips_loss(self, inp, tar, use_mean=True):
+        if inp.shape[2] < 32:
+            inp = F.interpolate(inp, size=(32, 32), mode='bicubic')
+            tar = F.interpolate(tar, size=(32, 32), mode='bicubic')
+        inp_feat, inp_shape = self.lpips_net(inp.float())
+        tar_feat, _ = self.lpips_net(tar.float())
+        res = 0
+        for i, g_feat in enumerate(inp_feat):
+            sq_diff = (g_feat - tar_feat[i]) ** 2
+            res = res + torch.sum(self.robust_fn(sq_diff), dim=1) / (inp_shape[i] ** 2)
+        return res.mean() if use_mean else res
+
+    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+        sq_diff = (inp - tar) ** 2
+        l2_loss = self.robust_fn(sq_diff).mean(dim=[1, 2, 3])
+        per_sample = self.H.l2_coef * l2_loss
+        if self.H.lpips_coef > 0:
+            per_sample = per_sample + self.H.lpips_coef * self.get_lpips_loss(inp, tar, use_mean=False)
+        return per_sample.mean() if use_mean else per_sample
     
     def resample_pool(self, gen, class_condition=None):
         local_pool_size = self.pool_size
