@@ -17,6 +17,11 @@ def latent_cache_key(
     num_classes=0,
     sorted_by_class=False,
     cache_dataset_id='',
+    search_type='l2',
+    proj_dim=0,
+    lpips_net='',
+    proj_proportion=0,
+    l2_search_downsample=1.0,
 ):
     root_token = cache_dataset_id if cache_dataset_id else data_root
     payload = json.dumps({
@@ -29,6 +34,11 @@ def latent_cache_key(
         'channels': image_channels,
         'num_classes': num_classes,
         'sorted_by_class': sorted_by_class,
+        'search_type': search_type,
+        'proj_dim': proj_dim if search_type != 'l2' else 0,
+        'lpips_net': lpips_net if search_type in ('lpips', 'combined') else '',
+        'proj_proportion': proj_proportion if search_type in ('lpips', 'combined') else 0,
+        'l2_search_downsample': l2_search_downsample if search_type != 'l2' else 1.0,
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 

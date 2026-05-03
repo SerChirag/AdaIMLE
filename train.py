@@ -303,9 +303,6 @@ def main():
     
     H, logprint = set_up_hyperparams()
     configure_runtime_performance(H, logprint)
-    H.search_type = 'l2'
-    H.lpips_coef = 0.0
-    H.dino_coef = 0.0
     if H.l2_coef == 0.0:
         H.l2_coef = 1.0
     H, data_train, data_valid_or_test, preprocess_fn = set_up_data(H)

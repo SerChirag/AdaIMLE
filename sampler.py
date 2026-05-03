@@ -9,6 +9,7 @@ from transformers import AutoModel
 
 from LPNet import LPNet
 from helpers.utils import is_main_process, get_world_size, get_rank, safe_barrier
+from helpers.utils import is_dist_avail_and_initialized
 from models import parse_layer_string
 from torch import autocast
 import faiss
@@ -78,26 +79,45 @@ class Sampler:
             native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
             self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
 
-        if H.search_type != 'l2':
-            raise ValueError('This branch expects search_type=l2.')
-
         self.nn_search_batch = H.nn_search_batch
 
+        self.projections = []
         self.l2_projection = None
         self.total_excluded = 0
         self.total_excluded_percentage = 0.0
+
+        if H.search_type in ('lpips', 'combined'):
+            self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
+            self.lpips_net.eval()
+            self.lpips_net.requires_grad_(False)
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
         safe_barrier()
 
-        if(H.search_type == 'l2'):
-            interpolated = fake.reshape(fake.shape[0],-1)
+        if H.search_type == 'lpips':
+            interpolated = F.interpolate(fake, scale_factor=H.l2_search_downsample, antialias=True, mode='bicubic')
+            out, _ = self.lpips_net(interpolated)
+            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
+            if H.proj_proportion:
+                sm = sum([f.shape[1] for f in out])
+                dims = [int(out[i].shape[1] * (H.proj_dim / sm)) for i in range(1, len(out))]
+                dims.insert(0, H.proj_dim - sum(dims))
+            for ind, feat in enumerate(out):
+                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
+            sum_dims = sum(dims)
+
+        elif H.search_type == 'l2':
+            interpolated = fake.reshape(fake.shape[0], -1)
             sum_dims = interpolated.shape[1]
 
         else:
-            exit()
-
+            raise ValueError(f'Unsupported search_type: {H.search_type}')
+        
+        # print search type on rank 0
+        if is_main_process():
+            print(f"Using search type: {H.search_type} with projection dimension: {sum_dims}")
+            
         self.dci_dim = sum_dims
 
         self.dataset_proj_torch = torch.empty([sz, sum_dims], dtype=torch.float32, device='cpu')
@@ -150,6 +170,14 @@ class Sampler:
         interpolated = inp.reshape(inp.shape[0], -1)
         return interpolated
 
+    def get_projected(self, inp, permute=True):
+        if permute:
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = F.interpolate(inp, scale_factor=self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        out, _ = self.lpips_net(interpolated.to(self.device))
+        gen_feat = [torch.mm(out[i], self.projections[i]) for i in range(len(out))]
+        return torch.cat(gen_feat, dim=1)
+
 
     def init_projection(self, dataset):
         use_cache = bool(getattr(self.H, 'use_cache', True))
@@ -185,10 +213,13 @@ class Sampler:
             with torch.inference_mode():
                 for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
                     batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
-                    if self.H.search_type == 'l2':
-                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[-1]).cpu()
+                    features = self.preprocess_fn(x)[-1]
+                    if self.H.search_type == 'lpips':
+                        self.dataset_proj_torch[batch_slice] = self.get_projected(features).cpu()
+                    elif self.H.search_type == 'l2':
+                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(features).cpu()
                     else:
-                        exit()
+                        raise ValueError(f'Unsupported search_type: {self.H.search_type}')
 
             if use_cache and is_main_process():
                 save_latent_cache(cache_dir, key, self.dataset_proj_torch)
