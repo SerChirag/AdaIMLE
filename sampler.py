@@ -78,25 +78,43 @@ class Sampler:
             native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
             self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
 
-        if H.search_type != 'l2':
-            raise ValueError('This branch expects search_type=l2.')
-
         self.nn_search_batch = H.nn_search_batch
 
+        self.projections = []
         self.l2_projection = None
         self.total_excluded = 0
         self.total_excluded_percentage = 0.0
+
+        if H.search_type == 'lpips':
+            self.lpips_net = LPNet(pnet_type=H.lpips_net, path=H.lpips_path).to(self.device)
+            self.lpips_net.eval()
+            self.lpips_net.requires_grad_(False)
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
         safe_barrier()
 
-        if(H.search_type == 'l2'):
-            interpolated = fake.reshape(fake.shape[0],-1)
+        if H.search_type == 'lpips':
+            interpolated = F.interpolate(fake, scale_factor=H.l2_search_downsample, antialias=True, mode='bicubic')
+            out, _ = self.lpips_net(interpolated)
+            dims = [int(H.proj_dim * 1. / len(out)) for _ in range(len(out))]
+            if H.proj_proportion:
+                sm = sum([f.shape[1] for f in out])
+                dims = [int(out[i].shape[1] * (H.proj_dim / sm)) for i in range(1, len(out))]
+                dims.insert(0, H.proj_dim - sum(dims))
+            for ind, feat in enumerate(out):
+                self.projections.append(F.normalize(torch.randn(feat.shape[1], dims[ind], device=self.device), p=2, dim=1))
+            sum_dims = sum(dims)
+
+        elif H.search_type == 'l2':
+            interpolated = fake.reshape(fake.shape[0], -1)
             sum_dims = interpolated.shape[1]
 
         else:
-            exit()
+            raise ValueError(f'Unsupported search_type: {H.search_type}')
+        
+        if(is_main_process()):
+            print("Using search type:", H.search_type)
 
         self.dci_dim = sum_dims
 
@@ -150,6 +168,13 @@ class Sampler:
         interpolated = inp.reshape(inp.shape[0], -1)
         return interpolated
 
+    def get_projected(self, inp, permute=True):
+        if permute:
+            inp = inp.permute(0, 3, 1, 2)
+        interpolated = F.interpolate(inp.float(), scale_factor=self.H.l2_search_downsample, antialias=True, mode='bicubic')
+        out, _ = self.lpips_net(interpolated.to(self.device))
+        gen_feat = [torch.mm(out[i], self.projections[i]) for i in range(len(out))]
+        return torch.cat(gen_feat, dim=1)
 
     def init_projection(self, dataset):
         use_cache = bool(getattr(self.H, 'use_cache', True))
@@ -168,6 +193,11 @@ class Sampler:
                 num_classes=self.num_classes,
                 sorted_by_class=(self.num_classes > 0),
                 cache_dataset_id=getattr(self.H, 'cache_dataset_id', ''),
+                search_type=self.H.search_type,
+                proj_dim=getattr(self.H, 'proj_dim', 0),
+                lpips_net=getattr(self.H, 'lpips_net', ''),
+                proj_proportion=getattr(self.H, 'proj_proportion', 0),
+                l2_search_downsample=getattr(self.H, 'l2_search_downsample', 1.0),
             )
             cached = load_latent_cache(cache_dir, key, expected_size=self.sz)
 
@@ -185,10 +215,13 @@ class Sampler:
             with torch.inference_mode():
                 for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
                     batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
-                    if self.H.search_type == 'l2':
-                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[-1]).cpu()
+                    features = self.preprocess_fn(x)[-1]
+                    if self.H.search_type == 'lpips':
+                        self.dataset_proj_torch[batch_slice] = self.get_projected(features).cpu()
+                    elif self.H.search_type == 'l2':
+                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(features).cpu()
                     else:
-                        exit()
+                        raise ValueError(f'Unsupported search_type: {self.H.search_type}')
 
             if use_cache and is_main_process():
                 save_latent_cache(cache_dir, key, self.dataset_proj_torch)
@@ -245,26 +278,40 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def robust_fn(self, sq_diff):
+        """Apply robust loss to squared differences. Input and output are same shape."""
         if self.H.loss_type == 'huber':
-            per_elem = self.pseudo_huber((inp - tar) ** 2)
+            return self.pseudo_huber(sq_diff)
         elif self.H.loss_type == 'pseudo_l1':
-            per_elem = self.l1_loss(inp, tar) * self.H.huber_delta
+            return torch.sqrt(sq_diff + 1e-8) * self.H.huber_delta
         elif self.H.loss_type == 'mclure':
-            residual = inp - tar
-            per_elem = (residual ** 2) / (self.H.loss_scale**2 + residual ** 2)
+            return sq_diff / (self.H.loss_scale**2 + sq_diff)
         elif self.H.loss_type == 'welsch':
-            residual = inp - tar
-            per_elem = (1 - torch.exp(-(residual / self.H.loss_scale)**2))
-        elif self.H.loss_type == 'rmse':
-            l2_loss = (inp - tar).pow(2).flatten(1).mean(dim=1)
-            per_elem = torch.sqrt(l2_loss + 1e-8)
+            return 1 - torch.exp(-sq_diff / self.H.loss_scale**2)
         elif self.H.loss_type == 'cauchy':
-            per_elem = torch.log(1 + 0.5 * ((inp - tar) / self.H.loss_scale)**2)
+            return torch.log(1 + 0.5 * sq_diff / self.H.loss_scale**2)
         else:
-            per_elem = self.l2_loss(inp, tar)
+            return sq_diff
 
-        return per_elem.mean()
+    def get_lpips_loss(self, inp, tar, use_mean=True):
+        if inp.shape[2] < 32:
+            inp = F.interpolate(inp, size=(32, 32), mode='bicubic')
+            tar = F.interpolate(tar, size=(32, 32), mode='bicubic')
+        inp_feat, inp_shape = self.lpips_net(inp.float())
+        tar_feat, _ = self.lpips_net(tar.float())
+        res = 0
+        for i, g_feat in enumerate(inp_feat):
+            sq_diff = (g_feat - tar_feat[i]) ** 2
+            res = res + torch.sum(self.robust_fn(sq_diff), dim=1) / (inp_shape[i] ** 2)
+        return res.mean() if use_mean else res
+
+    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+        sq_diff = (inp - tar) ** 2
+        l2_loss = self.robust_fn(sq_diff).mean(dim=[1, 2, 3])
+        per_sample = self.H.l2_coef * l2_loss
+        if self.H.lpips_coef > 0:
+            per_sample = per_sample + self.H.lpips_coef * self.get_lpips_loss(inp, tar, use_mean=False)
+        return per_sample.mean() if use_mean else per_sample
     
     def resample_pool(self, gen, class_condition=None):
         local_pool_size = self.pool_size
@@ -298,10 +345,12 @@ class Sampler:
                         outputs = gen(cur_latents, class_tensor)
                     else:
                         outputs = gen(cur_latents)
-                    if self.H.search_type == 'l2':
+                    if self.H.search_type == 'lpips':
+                        proj = self.get_projected(outputs, False)
+                    elif self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
                     else:
-                        exit()
+                        raise ValueError(f'Unsupported search_type: {self.H.search_type}')
                     self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
 
         if self.num_classes > 0:
