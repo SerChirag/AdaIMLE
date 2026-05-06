@@ -204,16 +204,23 @@ def set_up_hyperparams(s=None):
 
 
 def restore_params(model, path, local_rank, mpi_size, map_ddp=True, map_cpu=False, strict=True):
-    state_dict = torch.load(distributed_maybe_download(path, local_rank, mpi_size), map_location='cpu')
-    if map_ddp:
-        new_state_dict = {}
-        l = len('module.')
-        for k in state_dict:
-            if k.startswith('module.'):
-                new_state_dict[k[l:]] = state_dict[k]
-            else:
-                new_state_dict[k] = state_dict[k]
-        state_dict = new_state_dict
+    if is_main_process():
+        state_dict = torch.load(distributed_maybe_download(path, local_rank, mpi_size), map_location='cpu')
+        if map_ddp:
+            new_state_dict = {}
+            l = len('module.')
+            for k in state_dict:
+                if k.startswith('module.'):
+                    new_state_dict[k[l:]] = state_dict[k]
+                else:
+                    new_state_dict[k] = state_dict[k]
+            state_dict = new_state_dict
+    else:
+        state_dict = None
+    if dist.is_available() and dist.is_initialized():
+        container = [state_dict]
+        dist.broadcast_object_list(container, src=0)
+        state_dict = container[0]
     model.load_state_dict(state_dict, strict=strict)
 
 

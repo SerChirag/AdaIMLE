@@ -27,14 +27,26 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 
 
+def _to_hwc_uint8(x):
+    """Convert [N, C, H, W] tensor or array to [N, H, W, C] uint8 numpy."""
+    if isinstance(x, torch.Tensor):
+        x = x.detach().cpu().numpy()
+    if x.ndim == 4 and x.shape[1] in (1, 3, 4):
+        x = x.transpose(0, 2, 3, 1)
+    x = np.clip((x + 1.0) * 127.5 if x.dtype != np.uint8 else x, 0, 255).astype(np.uint8)
+    return x
+
+
 def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):
     mb = shape[0]
     initial = initial[:mb].to(ema_imle.device)
     nns = sampler.sample(initial, ema_imle, None)
-    batches = [orig[:mb], nns]
+    orig_hwc = _to_hwc_uint8(orig[:mb])
+    batches = [orig_hwc, nns]
     n_rows = len(batches)
-    im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
-        [n_rows * shape[1], mb * shape[2], 3])
+    H, W = nns.shape[1], nns.shape[2]
+    im = np.concatenate(batches, axis=0).reshape((n_rows, mb, H, W, 3)).transpose([0, 2, 1, 3, 4]).reshape(
+        [n_rows * H, mb * W, 3])
 
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)
@@ -44,14 +56,16 @@ def generate_visualization(H, sampler, orig, initial, last_latents, latent_for_v
     mb = shape[0]
     initial = initial[:mb]
     last_latents = last_latents[:mb]
-    batches = [orig[:mb], sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
+    orig_hwc = _to_hwc_uint8(orig[:mb])
+    batches = [orig_hwc, sampler.sample(initial, imle, None), sampler.sample(last_latents, imle, None)]
 
     for t in range(H.num_rows_visualize):
         batches.append(sampler.sample(latent_for_visualization[t], imle, None))
 
     n_rows = len(batches)
-    im = np.concatenate(batches, axis=0).reshape((n_rows, mb, *shape[1:])).transpose([0, 2, 1, 3, 4]).reshape(
-        [n_rows * shape[1], mb * shape[2], 3])
+    H_img, W_img = batches[1].shape[1], batches[1].shape[2]
+    im = np.concatenate(batches, axis=0).reshape((n_rows, mb, H_img, W_img, 3)).transpose([0, 2, 1, 3, 4]).reshape(
+        [n_rows * H_img, mb * W_img, 3])
 
     logprint(f'printing samples to {fname}')
     imageio.imwrite(fname, im)

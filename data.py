@@ -71,6 +71,7 @@ def set_up_data(H):
     #     valid_data = ImageFolder(eval_dataset, transforms.ToTensor())
     #     untranspose = True
     train_len = None
+    float_input = False
     if H.dataset == 'stl10':
         train_data = trX
         for data_train in DataLoader(train_data, batch_size=len(train_data)):
@@ -80,13 +81,13 @@ def set_up_data(H):
         valid_data = train_data
         untranspose = False
         train_len = len(train_data)
-    
+
     elif H.dataset == 'lsun':
         train_data = trX
         valid_data = trX
-        train_len = train_data.ds.num_rows  
+        train_len = train_data.ds.num_rows
         untranspose = True
-    
+
     elif H.dataset == 'imagenet32':
         if trY is not None:
             train_data = TensorDataset(torch.as_tensor(trX).permute(0, 2, 3, 1), torch.as_tensor(trY, dtype=torch.long))
@@ -106,13 +107,11 @@ def set_up_data(H):
         train_len = len(train_data)
 
     else:
+        # ImageFolder: lazy, yields (CHW float [0,1], label) tuples — no eager RAM load
         train_data = trX
-        for data_train in DataLoader(train_data, batch_size=len(train_data)):
-            ds = torch.tensor(data_train[0] * 255, dtype=torch.uint8)
-            train_data = TensorDataset(ds.permute(0, 2, 3, 1))
-            break
         valid_data = train_data
-        untranspose = False
+        untranspose = True  # CHW -> HWC
+        float_input = True  # already [0,1] float, not uint8
         train_len = len(train_data)
     
         
@@ -128,14 +127,14 @@ def set_up_data(H):
         train_data = Subset(train_data, subset_indices)
 
     def preprocess_func(x):
-        nonlocal untranspose
-        'takes in a data example and returns the preprocessed input'
-        'as well as the input processed for the loss'
+        nonlocal untranspose, float_input
         if untranspose:
             x[0] = x[0].permute(0, 2, 3, 1)
         inp = x[0].to(device=device, non_blocking=True).float()
-        inp.mul_(1./127.5).add_(-1)
-        # Pixel-space branch: return (inp_normalized, inp_normalized) — same tensor used as target
+        if float_input:
+            inp.mul_(2.0).add_(-1)  # [0,1] -> [-1,1]
+        else:
+            inp.mul_(1./127.5).add_(-1)  # [0,255] uint8 -> [-1,1]
         return inp, inp
 
     return H, train_data, valid_data, preprocess_func
