@@ -28,13 +28,19 @@ def get_sample_for_visualization(data, preprocess_fn, num, dataset):
 
 
 def _to_hwc_uint8(x):
-    """Convert [N, C, H, W] tensor or array to [N, H, W, C] uint8 numpy."""
+    """Convert [N, C, H, W] tensor or array to [N, H, W, C] uint8 numpy.
+    Float inputs in [0, 1] or [-1, 1] are both supported."""
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().numpy()
     if x.ndim == 4 and x.shape[1] in (1, 3, 4):
         x = x.transpose(0, 2, 3, 1)
-    x = np.clip((x + 1.0) * 127.5 if x.dtype != np.uint8 else x, 0, 255).astype(np.uint8)
-    return x
+    if x.dtype == np.uint8:
+        return np.clip(x, 0, 255).astype(np.uint8)
+    if x.min() < -0.01:
+        x = (x + 1.0) * 127.5  # [-1, 1] -> [0, 255]
+    else:
+        x = x * 255.0  # [0, 1] -> [0, 255]
+    return np.clip(x, 0, 255).astype(np.uint8)
 
 
 def generate_for_NN(sampler, orig, initial, shape, ema_imle, fname, logprint):

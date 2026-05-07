@@ -123,6 +123,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latent_table.copy_(sampler.selected_latents)
             force_initial_resample = False
 
+        torch.cuda.empty_cache()
+
         viz_freq = getattr(H, 'viz_freq', 20)
         if (epoch % viz_freq == 0 and is_main_process()):
             latents = sampler.selected_latents[viz_indices_tensor]
