@@ -61,6 +61,13 @@ class Sampler:
         self.selected_dists[:] = np.inf
         self.selected_dists_tmp = torch.empty([sz], dtype=torch.float32)
 
+        self.ema_dists = torch.empty([sz], dtype=torch.float32)
+        self.ema_dists[:] = np.inf
+        self.ema_dists_corrected = torch.empty([sz], dtype=torch.float32)
+        self.ema_dists_corrected[:] = np.inf
+        self._ema_dist_step = 0
+        self.sample_weights = None
+
         self.temp_latent_rnds = torch.empty([self.H.imle_db_size, self.H.latent_dim], dtype=torch.float32)
 
         self.pool_latents = None
@@ -131,10 +138,11 @@ class Sampler:
         self.faiss_index_flat = faiss.index_cpu_to_gpu(self.faiss_res, dev_id, index_flat)
 
     def state_dict(self):
-        return {}
+        return {'ema_dists': self.ema_dists}
 
     def load_state_dict(self, state):
-        pass
+        if 'ema_dists' in state and state['ema_dists'].shape == self.ema_dists.shape:
+            self.ema_dists.copy_(state['ema_dists'])
 
     
     def get_l2_feature(self, inp, permute=True):
@@ -245,7 +253,28 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def _compute_sample_weights(self):
+        """Precompute per-sample loss weights over the full dataset after each EMA update."""
+        temp = getattr(self.H, 'dist_weight_temperature', -1.0)
+        if temp < 0.0:
+            self.sample_weights = None
+            return
+
+        N = self.sz
+        d = self.ema_dists_corrected.clone()
+        d[torch.isinf(d)] = 1e9
+
+        log_w = -d / temp
+        log_w = log_w - torch.logsumexp(log_w, dim=0)  # log softmax
+        self.sample_weights = (torch.exp(log_w) * N).detach()  # [N], sum = N
+
+    def get_loss_weights(self, indices):
+        """Return precomputed per-sample weights for a batch of dataset indices."""
+        if self.sample_weights is None:
+            return None
+        return self.sample_weights[indices.cpu()].to(indices.device)
+
+    def calc_loss(self, inp, tar, use_mean=True, logging=False, weights=None):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
         elif self.H.loss_type == 'pseudo_l1':
@@ -264,8 +293,15 @@ class Sampler:
         else:
             per_elem = self.l2_loss(inp, tar)
 
-        return per_elem.mean()
-    
+        if per_elem.dim() > 1:
+            per_sample = per_elem.flatten(1).mean(dim=1)
+        else:
+            per_sample = per_elem  # rmse is already [B]
+
+        if weights is not None:
+            return (per_sample * weights).mean()
+        return per_sample.mean()
+
     def resample_pool(self, gen, class_condition=None):
 
         # Determine local pool size
@@ -407,6 +443,29 @@ class Sampler:
         else:
             self._imle_sample_force_unconditional(gen)
 
+        temp = getattr(self.H, 'dist_weight_temperature', -1.0)
+        if temp >= 0.0:
+            if is_main_process():
+                decay = getattr(self.H, 'ema_dist_decay', 0.9)
+                first_call = self.ema_dists[0].item() == float('inf')
+                if first_call:
+                    self.ema_dists.copy_(self.selected_dists)
+                else:
+                    self.ema_dists.mul_(decay).add_(self.selected_dists, alpha=1.0 - decay)
+                self._ema_dist_step += 1
+                bias_correction = 1.0 - decay ** self._ema_dist_step
+                self.ema_dists_corrected.copy_(self.ema_dists / bias_correction)
+
+            comm_ema = self.ema_dists.to(self.device)
+            torch.distributed.broadcast(comm_ema, src=0)
+            self.ema_dists.copy_(comm_ema.cpu())
+
+            comm_ema_corr = self.ema_dists_corrected.to(self.device)
+            torch.distributed.broadcast(comm_ema_corr, src=0)
+            self.ema_dists_corrected.copy_(comm_ema_corr.cpu())
+
+            self._compute_sample_weights()
+
     def _imle_sample_force_unconditional(self, gen):
         """
         Optimized force resampling routine using FAISS for batched nearest-neighbor search.
@@ -446,7 +505,8 @@ class Sampler:
                 pool_feats = self.pool_samples_proj
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                local_dists, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                self.selected_dists.copy_(local_dists.cpu())
 
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz
@@ -493,6 +553,7 @@ class Sampler:
             self.sz, self.H.latent_dim,
             dtype=torch.float32, device=self.device
         )
+        comm_dists = torch.zeros(self.sz, dtype=torch.float32, device=self.device)
 
         n_local = len(self.local_classes)
         if n_local == 0:
@@ -546,9 +607,12 @@ class Sampler:
                     # Optimal 1-to-1 assignment: no pool latent shared across images.
                     _, col_ind = scipy.optimize.linear_sum_assignment(dists.cpu().numpy())
                     local_indices = torch.from_numpy(col_ind).to(self.device, dtype=torch.long)
+                    class_min_dists = dists[torch.arange(n_real, device=self.device), local_indices]
                 else:
                     local_indices = dists.argmin(dim=1)
+                    class_min_dists = dists[torch.arange(n_real, device=self.device), local_indices]
 
+                comm_dists[ds_start:ds_end] = class_min_dists
                 all_local_indices.append((local_indices, n_real))
                 new_latents = pool_latents.index_select(0, local_indices)  # float32, no precision loss
                 comm_latents[ds_start:ds_end] = new_latents
@@ -565,6 +629,8 @@ class Sampler:
 
         # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
         torch.distributed.all_reduce(comm_latents, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(comm_dists, op=torch.distributed.ReduceOp.SUM)
+        self.selected_dists.copy_(comm_dists.cpu())
         full_updated_latents = comm_latents.float()
 
         perturbation = self.H.imle_perturb_coef * torch.randn(

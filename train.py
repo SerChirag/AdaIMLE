@@ -44,12 +44,12 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler, sample_weights=None):
 
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, labels, train=True)
-        loss = loss_fn(px_z[-1], targets_bchw)
+        loss = loss_fn(px_z[-1], targets_bchw, weights=sample_weights)
         loss_measure = loss.detach().clone()
         num_resolutions = 1
 
@@ -195,10 +195,14 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             target_bchw = target_bchw.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
             latents = latents.to(device, non_blocking=True)
 
+            indices_dev = indices.to(device, non_blocking=True)
+            sample_weights = sampler.get_loss_weights(indices_dev)
+
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler,
+                                          sample_weights=sample_weights)
             
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
@@ -271,6 +275,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'unique_indices': sampler.unique_indices,
             'class_emb_norm': class_emb_norm,
         }
+
+        if getattr(H, 'dist_weight_temperature', -1.0) >= 0.0 and is_main_process():
+            finite = torch.isfinite(sampler.ema_dists)
+            if finite.any():
+                d = sampler.ema_dists[finite]
+                metrics['ema_dist_mean'] = d.mean().item()
+                metrics['ema_dist_std']  = d.std().item()
+                metrics['ema_dist_min']  = d.min().item()
+                metrics['ema_dist_max']  = d.max().item()
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))

@@ -276,7 +276,7 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--imle_db_topk', type=int, default=1)  # top-k for imle database search
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 
     parser.add_argument('--num_classes', type=int, default=0,
@@ -311,4 +311,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--cache_dir', type=str, default='./cache', help='Directory for on-disk caches (image tensors and latent projections).')
     parser.add_argument('--use_cache', default=True, type=lambda x: bool(strtobool(x)), help='Enable disk caching of image tensors and latent projections.')
     parser.add_argument('--cache_dataset_id', type=str, default='', help='Stable dataset identifier for cache keys. When set, replaces the absolute data_root path in the cache hash so caches are portable across machines with different dataset paths.')
+    parser.add_argument('--ema_dist_decay', type=float, default=0.9,
+        help='EMA decay for per-sample NN distances. Only used when dist_weight_temperature > 0.')
+    parser.add_argument('--dist_weight_temperature', type=float, default=-1.0,
+        help='Softmax temperature for distance-based loss weighting. -1 = disabled.')
     return parser
