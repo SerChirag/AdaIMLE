@@ -281,6 +281,15 @@ def add_imle_arguments(parser):
                         help='Sort queries by NN distance descending (farthest-NN-query first) during unique greedy matching. Default: ascending.')  # per-query sort direction in nn_search_batched
     parser.add_argument('--imle_match_fallback_mode', type=str, default='random', choices=['first', 'kth', 'random'],
                         help="Orphan target when a query's entire topk is already claimed: 'first'=nearest of topk (current behaviour), 'kth'=farthest within topk (toy winner), 'random'=uniform within topk.")  # fallback choice in nn_search_batched
+
+    # --- Bidirectional / reverse-direction IMLE loss (step 2) ---
+    parser.add_argument('--use_reverse_loss', default=False, type=lambda x: bool(strtobool(x)),
+                        help='Enable bidirectional IMLE: in addition to the forward IMLE loss, add a reverse-direction loss that pulls each random pool latent toward its nearest data point (unique matching). Unconditional only for now.')  # bidirectional feature flag
+    parser.add_argument('--reverse_factor', type=float, default=0.5,
+                        help='Size of the reverse latent pool relative to the dataset: K = ceil(reverse_factor * sz). Each pool latent gets matched to its nearest data point with unique matching (descending=True, fallback=kth, the toy winners).')  # reverse pool multiplier
+    parser.add_argument('--reverse_loss_strength', type=float, default=1.0,
+                        help='Weight on the reverse-direction loss: total = forward_loss + reverse_loss_strength * reverse_loss.')  # reverse loss weight
+
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 
     parser.add_argument('--num_classes', type=int, default=0,

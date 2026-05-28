@@ -38,7 +38,7 @@ class Sampler:
             # Global pool size not used in conditional path, but set for buffer-sizing compat
             self.pool_size = self.pool_size_per_class
         else:
-            self.pool_size = ceil(int(H.force_factor * sz) / H.imle_db_size) * H.imle_db_size
+            self.pool_size = int(H.force_factor * sz)
             self.local_classes = []
 
         self.preprocess_fn = preprocess_fn
@@ -109,6 +109,15 @@ class Sampler:
         self._local_pool_combined = None
         self._gathered_combined_main = None
         self._full_combined_main = None
+
+        # Reverse-pass outputs, populated by imle_sample_force(..., reverse=True):
+        #   reverse_latents          : (K, latent_dim) CPU float32 — the pool latents
+        #   reverse_target_indices   : (K,)            CPU int64   — nearest-data index per latent
+        # No dedicated reverse buffers — the same _local_pool_* / _gathered_combined_main /
+        # _full_combined_main are reused (resample_pool resizes them when K differs from
+        # the forward pool size).
+        self.reverse_latents = None
+        self.reverse_target_indices = None
 
         self.dataset_size = sz
         self.db_iter = 0
@@ -264,13 +273,23 @@ class Sampler:
         else:
             per_elem = self.l2_loss(inp, tar)
 
-        return per_elem.mean()
+        if use_mean:
+            return per_elem.mean()
+        # Per-sample loss (B,) — needed for direction-weighted bidirectional IMLE.
+        # The rmse branch above already produces (B,); other branches produce per-element tensors.
+        if per_elem.ndim > 1:
+            return per_elem.flatten(1).mean(dim=1)
+        return per_elem
     
-    def resample_pool(self, gen, class_condition=None):
+    def resample_pool(self, gen, class_condition=None, reverse=False):
 
-        # Determine local pool size
+        # Determine local pool size.
+        # reverse=True uses H.reverse_factor for the reverse-direction pool (bidirectional IMLE).
+        # Otherwise the forward pool size set in __init__ from H.force_factor is used.
         if self.num_classes > 0:
             local_pool_size = self.pool_size_per_class
+        elif reverse:
+            local_pool_size = ceil(int(self.H.reverse_factor * self.sz) / self.world_size)
         else:
             local_pool_size = ceil(self.pool_size / self.world_size)
 
@@ -336,8 +355,9 @@ class Sampler:
             if (self._full_combined_main is None or self._full_combined_main.shape[0] != full_pool_size):
                 self._full_combined_main = torch.empty((full_pool_size, combined_dim), dtype=torch.float32, device=self.device)
             torch.cat([c.to(torch.float32) for c in self._gathered_combined_main], dim=0, out=self._full_combined_main)
-            self.pool_latents = self._full_combined_main[:, :self.H.latent_dim]
-            self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:]
+            target_size = int(self.H.reverse_factor * self.sz) if reverse else self.pool_size
+            self.pool_latents      = self._full_combined_main[:target_size, :self.H.latent_dim]
+            self.pool_samples_proj = self._full_combined_main[:target_size, self.H.latent_dim:]
     
 
     def nn_search_batched(self, queries, dataset, descending=False, fallback_mode='first'):
@@ -424,26 +444,40 @@ class Sampler:
         return torch.from_numpy(assigned_d), torch.from_numpy(assigned_q)
 
 
-    def imle_sample_force(self, gen, to_update=None):
+    def imle_sample_force(self, gen, to_update=None, reverse=False):
         if self.num_classes > 0:
+            if reverse:
+                raise NotImplementedError(
+                    "Reverse loss with conditional generation (num_classes > 0) is not supported "
+                    "yet — it requires class-aware NN matching across per-class subpools."
+                )
             self._imle_sample_force_conditional(gen)
         else:
-            self._imle_sample_force_unconditional(gen)
+            self._imle_sample_force_unconditional(gen, reverse=reverse)
 
-    def _imle_sample_force_unconditional(self, gen):
+    def _imle_sample_force_unconditional(self, gen, reverse=False):
         """
         Optimized force resampling routine using FAISS for batched nearest-neighbor search.
-        In a DDP setting, each process contributes to the pool; rank 0 performs NN search,
-        adds perturbation, and broadcasts the result to all processes.
+        In a DDP setting, each process contributes to the pool; rank 0 performs NN search
+        and broadcasts the result to all processes.
+
+        reverse=False (default): forward IMLE — NN search picks each data point's nearest pool
+        latent; perturbed and broadcast as self.selected_latents.
+
+        reverse=True (bidirectional IMLE): NN search is in the opposite direction — for each
+        pool latent, its nearest data point. The pool latents and target indices are broadcast
+        and stored as self.reverse_latents / self.reverse_target_indices. Sort/fallback are
+        hardcoded to the toy winners (descending=True, kth) for the reverse pass.
         """
         if is_main_process():
             t1 = time.time()
-            print("Starting pool resampling...")
+            print(f"Starting {'reverse ' if reverse else ''}pool resampling...")
 
-        # Resample pool first (each process contributes its part);
-        # this updates self.pool_samples_proj and self.pool_latents.
+        # Resample pool first (each process contributes its part); this updates
+        # self.pool_samples_proj and self.pool_latents. Pool size differs by direction:
+        # forward uses H.force_factor, reverse uses H.reverse_factor.
         gen.eval()
-        self.resample_pool(gen)
+        self.resample_pool(gen, reverse=reverse)
         gen.train()
 
         if(is_main_process()):
@@ -451,7 +485,12 @@ class Sampler:
 
         torch.cuda.empty_cache()
 
-        self.selected_dists_tmp[:] = np.inf
+        # For the reverse pass, every rank needs to know K (the full reverse-pool size) up
+        # front so the broadcast-receive buffers can be allocated on non-rank-0 ranks.
+        if reverse:
+            K = int(self.H.reverse_factor * self.sz)
+        else:
+            self.selected_dists_tmp[:] = np.inf
 
         with torch.inference_mode():
 
@@ -468,39 +507,62 @@ class Sampler:
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj
 
-                # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, local_indices = self.nn_search_batched(
-                    local_ds_feats, pool_feats,
-                    descending=getattr(self.H, 'imle_match_descending', False),
-                    fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'first'),
-                )
+                if not reverse:
+                    # FORWARD: queries=data, candidates=pool. Existing behaviour.
+                    _, local_indices = self.nn_search_batched(
+                        local_ds_feats, pool_feats,
+                        descending=getattr(self.H, 'imle_match_descending', False),
+                        fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'first'),
+                    )
 
-                # get count of unique indices for logging
-                self.unique_indices = torch.unique(local_indices).numel() / self.sz
+                    # get count of unique indices for logging
+                    self.unique_indices = torch.unique(local_indices).numel() / self.sz
 
-                local_indices = local_indices.to(device=self.pool_latents.device, non_blocking=True)
-                new_latents = self.pool_latents.index_select(0, local_indices)
+                    local_indices = local_indices.to(device=self.pool_latents.device, non_blocking=True)
+                    new_latents = self.pool_latents.index_select(0, local_indices)
+                else:
+                    # REVERSE: queries=pool, candidates=data. For each pool latent, the
+                    # nearest data point. Toy-winner sort/fallback hardcoded for reverse.
+                    _, target_indices = self.nn_search_batched(
+                        pool_feats, local_ds_feats,
+                        descending=True,
+                        fallback_mode='kth',
+                    )
+                    rev_pool_latents   = self.pool_latents.contiguous()                  # (K, latent_dim) on device
+                    rev_comm_latents   = rev_pool_latents.to(self._comm_dtype)
+                    rev_target_indices = target_indices.to(self.device, non_blocking=True)
 
-            if is_main_process():
-                full_updated_latents = new_latents
-                perturbation = self.H.imle_perturb_coef * torch.randn(
-                    (self.sz, self.H.latent_dim),
-                    device=self.device,
-                    generator=self.generator_seed)
-                full_updated_latents += perturbation
-                comm_latents = full_updated_latents.to(self._comm_dtype)
+            if not reverse:
+                if is_main_process():
+                    full_updated_latents = new_latents
+                    perturbation = self.H.imle_perturb_coef * torch.randn(
+                        (self.sz, self.H.latent_dim),
+                        device=self.device,
+                        generator=self.generator_seed)
+                    full_updated_latents += perturbation
+                    comm_latents = full_updated_latents.to(self._comm_dtype)
+                else:
+                    comm_latents = torch.empty(self.sz, self.H.latent_dim, dtype=self._comm_dtype, device=self.device)
+
+                torch.distributed.broadcast(comm_latents, src=0)
+                full_updated_latents = comm_latents.to(torch.float32)
+
+                # Update last and current selected latents on all processes.
+                self.last_selected_latents.copy_(self.selected_latents)
+                self.selected_latents.copy_(full_updated_latents.cpu())
             else:
-                comm_latents = torch.empty(self.sz, self.H.latent_dim, dtype=self._comm_dtype, device=self.device)
-
-            torch.distributed.broadcast(comm_latents, src=0)
-            full_updated_latents = comm_latents.to(torch.float32)
-
-            # Update last and current selected latents on all processes.
-            self.last_selected_latents.copy_(self.selected_latents)
-            self.selected_latents.copy_(full_updated_latents.cpu())
+                # Reverse: no perturbation, no selected_latents update. Just broadcast
+                # the pool latents and target indices to every rank.
+                if not is_main_process():
+                    rev_comm_latents   = torch.empty(K, self.H.latent_dim, dtype=self._comm_dtype, device=self.device)
+                    rev_target_indices = torch.empty(K, dtype=torch.long, device=self.device)
+                torch.distributed.broadcast(rev_comm_latents,   src=0)
+                torch.distributed.broadcast(rev_target_indices, src=0)
+                self.reverse_latents        = rev_comm_latents.to(torch.float32).cpu()
+                self.reverse_target_indices = rev_target_indices.cpu()
 
             if is_main_process():
-                print(f"Force resampling took {time.time() - t1:.2f} seconds")
+                print(f"{'Reverse f' if reverse else 'F'}orce resampling took {time.time() - t1:.2f} seconds")
 
         self.faiss_index_flat.reset()
 

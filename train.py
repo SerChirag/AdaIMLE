@@ -44,36 +44,39 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
-
+def training_step_imle(H, targets_bchw, latents, class_labels, direction, imle, loss_fn, scaler):
+    """Single training step. Per-sample reconstruction loss across the output resolution and
+    each multi-res scale, weighted by `direction` (1.0 -> forward, 0.0 -> reverse). Forward
+    rows use weight 1; reverse rows use weight H.reverse_loss_strength. When
+    H.use_reverse_loss is off, every row in the batch has direction==1 and the math reduces
+    exactly to the forward-only loss.
+    """
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
-        px_z = imle(latents, labels, train=True)
-        loss = loss_fn(px_z[-1], targets_bchw)
-        loss_measure = loss.detach().clone()
-        num_resolutions = 1
-
-        if(H.use_multi_res):
-            
-            for i in range(2,len(px_z)-1):
+        px_z = imle(latents, class_labels, train=True)
+        # Per-sample loss at output resolution.
+        per_sample = loss_fn(px_z[-1], targets_bchw, use_mean=False)
+        if H.use_multi_res:
+            for i in range(2, len(px_z) - 1):
                 px_z_scale = px_z[i]
-
-                if(H.use_resize_right):
-                    targets_scale = resize_right.resize(targets_bchw, out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]), 
-                                                        interp_method=interp_methods.cubic, antialiasing =True)
+                if H.use_resize_right:
+                    targets_scale = resize_right.resize(
+                        targets_bchw,
+                        out_shape=(px_z_scale.shape[2], px_z_scale.shape[3]),
+                        interp_method=interp_methods.cubic, antialiasing=True,
+                    )
                 else:
-                    targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
-                                                  antialias=True, mode='bicubic', align_corners=H.align_corners)
-                
-
-                loss_scale = loss_fn(px_z_scale, targets_scale)
-                
-                loss.add_(loss_scale)
-                num_resolutions += 1
-
+                    targets_scale = F.interpolate(
+                        targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
+                        antialias=True, mode='bicubic', align_corners=H.align_corners,
+                    )
+                per_sample = per_sample + loss_fn(px_z_scale, targets_scale, use_mean=False)
+        # direction: 1.0 (forward) or 0.0 (reverse) -> weight 1 or reverse_loss_strength.
+        w = direction + (1.0 - direction) * H.reverse_loss_strength
+        loss = (w * per_sample).mean()
+        loss_measure = loss.detach().clone()
 
     loss = loss / (H.accumulation_steps)
-    
     scaler.scale(loss).backward()
     return loss_measure.detach()
 
@@ -118,13 +121,33 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         'mean_loss': mean_loss
     }
 
-    # Keep a single mutable latent table for the lifetime of DataLoader workers.
-    # Workers read this CPU shared-memory tensor, and we update it in-place after resampling.
-    latent_table = torch.empty((len(data_train), H.latent_dim), dtype=torch.float32)
-    latent_table.share_memory_()
-    latent_table.copy_(sampler.selected_latents)
+    # Single combined dataset for forward + (optional) reverse pairs.
+    #   rows [0, N)    -> forward pairs   (direction=1.0, target_idx=arange(N))
+    #   rows [N, N+K)  -> reverse pairs   (direction=0.0, target_idx from sampler.reverse_target_indices)
+    # When H.use_reverse_loss=False, K=0 and the dataset is bit-equivalent to the old
+    # forward-only setup. All three columns are CPU shared-memory tensors updated in-place
+    # after each resample so persistent DataLoader workers see the new content.
+    N = len(data_train)
+    K = int(H.reverse_factor * N) if H.use_reverse_loss else 0
+    total = N + K
 
-    comb_dataset = ZippedDataset(data_train, TensorDataset(latent_table))
+    combined_latents     = torch.empty((total, H.latent_dim), dtype=torch.float32)
+    combined_target_idx  = torch.empty((total,),              dtype=torch.long)
+    combined_direction   = torch.empty((total,),              dtype=torch.float32)
+    combined_latents.share_memory_()
+    combined_target_idx.share_memory_()
+    combined_direction.share_memory_()
+
+    # Forward segment [0:N] — direction stays 1.0; target_idx stays arange(N); latents copied
+    # from sampler.selected_latents now and after every forward resample.
+    combined_target_idx[:N].copy_(torch.arange(N))
+    combined_direction[:N].fill_(1.0)
+    combined_latents[:N].copy_(sampler.selected_latents)
+    # Reverse segment [N:N+K] — direction stays 0.0; target_idx and latents updated each resample.
+    if K > 0:
+        combined_direction[N:].fill_(0.0)
+
+    comb_dataset = TensorDataset(combined_target_idx, combined_latents, combined_direction)
     train_sampler = DistributedSampler(
         comb_dataset,
         shuffle=True,
@@ -148,13 +171,25 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         shuffle=False,
     )
 
+    if H.use_reverse_loss and is_main_process():
+        print(f"[reverse-loss] enabled: N={N} forward + K={K} reverse pairs, "
+              f"reverse_factor={H.reverse_factor}, reverse_loss_strength={H.reverse_loss_strength}")
+
     force_initial_resample = True  # Track the last epoch when resampling was done.
         
     while (epoch < H.num_epochs):
         # Update the IMLE force resampling every imle_force_resample epochs.
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
             sampler.imle_sample_force(imle)
-            latent_table.copy_(sampler.selected_latents)
+            combined_latents[:N].copy_(sampler.selected_latents)
+            if H.use_reverse_loss:
+                # Reverse direction reuses the same dispatcher (resample_pool + NN search
+                # with swapped args + broadcast). Updates sampler.reverse_latents and
+                # sampler.reverse_target_indices on all ranks; copy them into the reverse
+                # segment of the combined table in-place.
+                sampler.imle_sample_force(imle, reverse=True)
+                combined_latents[N:].copy_(sampler.reverse_latents)
+                combined_target_idx[N:].copy_(sampler.reverse_target_indices)
             force_initial_resample = False
 
 
@@ -180,25 +215,31 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         imle.zero_grad(set_to_none=True)
 
 
-        for cur, indices in data_loader:
-            latents = cur[1][0]
-            # cur[0] is (image_tensor, label_tensor) when num_classes > 0, else (image_tensor,)
-            labels = cur[0][1].to(device, non_blocking=True) if H.num_classes > 0 and len(cur[0]) > 1 else None
+        for target_idx_batch, latent_batch, direction_batch in data_loader:
+            target_idx_batch = target_idx_batch.to(device, non_blocking=True)
+            latents          = latent_batch.to(device, non_blocking=True)
+            direction        = direction_batch.to(device, non_blocking=True)
             _proj = sampler._dataset_proj_gpu if sampler._dataset_proj_gpu is not None else sampler.dataset_proj_torch.to(device, non_blocking=True)
-            flat_target = _proj.index_select(0, indices.to(device, non_blocking=True))
+            flat_target = _proj.index_select(0, target_idx_batch)
             target_bchw = flat_target.view(
                 flat_target.shape[0],
                 H.image_channels,
                 H.latent_spatial_size,
                 H.latent_spatial_size,
-            )
-            target_bchw = target_bchw.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
-            latents = latents.to(device, non_blocking=True)
+            ).contiguous(memory_format=torch.channels_last)
+
+            # Conditional case: derive class labels from the target data index. H.labels
+            # is (N,) int64 — for forward rows target_idx==data index; for reverse rows
+            # target_idx is the matched data point, whose class is still the right target.
+            class_labels = H.labels[target_idx_batch.cpu()].to(device, non_blocking=True) if H.num_classes > 0 else None
 
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+                loss = training_step_imle(
+                    H, target_bchw, latents, class_labels, direction,
+                    imle, sampler.calc_loss, scaler,
+                )
             
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
