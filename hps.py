@@ -277,6 +277,10 @@ def add_imle_arguments(parser):
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--imle_match_descending', default=False, type=lambda x: bool(strtobool(x)),
+                        help='Sort queries by NN distance descending (farthest-NN-query first) during unique greedy matching. Default: ascending.')  # per-query sort direction in nn_search_batched
+    parser.add_argument('--imle_match_fallback_mode', type=str, default='random', choices=['first', 'kth', 'random'],
+                        help="Orphan target when a query's entire topk is already claimed: 'first'=nearest of topk (current behaviour), 'kth'=farthest within topk (toy winner), 'random'=uniform within topk.")  # fallback choice in nn_search_batched
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 
     parser.add_argument('--num_classes', type=int, default=0,

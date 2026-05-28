@@ -340,8 +340,17 @@ class Sampler:
             self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:]
     
 
-    def nn_search_batched(self, queries, dataset):
-        """Exact L2 nearest-neighbour search via FAISS with optional hard-first greedy Top-K."""
+    def nn_search_batched(self, queries, dataset, descending=False, fallback_mode='first'):
+        """Exact L2 nearest-neighbour search via FAISS with optional hard-first greedy Top-K.
+
+        descending      : per-query sort direction. False = closest-NN queries first (default,
+                          matches previous "easy-first" behaviour); True = farthest-NN queries
+                          first ("hardest first").
+        fallback_mode   : orphan target when a query's entire topk has been claimed. One of:
+                          'first'  - nearest of topk (reproduces previous k=0 fallback);
+                          'kth'    - farthest within topk;
+                          'random' - uniform within topk.
+        """
         if isinstance(queries, np.ndarray):
             queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
         else:
@@ -375,28 +384,42 @@ class Sampler:
         Nq, K = D_np.shape
         Nd = dataset_t.shape[0]
 
-        # Sort all (query, candidate) pairs by distance ascending
-        q_ids = np.repeat(np.arange(Nq), K)
-        c_ids = I_np.flatten()
-        d_vals = D_np.flatten()
-        order = np.argsort(d_vals, kind='stable')
+        # Per-query order: FAISS returns each query's topk in ascending distance order, so
+        # D_np[:, 0] is each query's distance to its 1-NN.
+        #   argsort(D_np[:, 0])  -> closest-NN queries first  (default, descending=False)
+        #   argsort(-D_np[:, 0]) -> farthest-NN queries first (descending=True, hardest-first)
+        q_order = np.argsort(-D_np[:, 0] if descending else D_np[:, 0], kind='stable')
 
-        assigned_q = np.full(Nq, -1, dtype=np.int64)
+        assigned_q = np.full(Nq, -1, dtype=np.int64)        # candidate index for each query (-1 = orphan)
         assigned_d = np.full(Nq, np.inf, dtype=np.float32)
-        used_c = np.zeros(Nd, dtype=bool)
+        used_c = np.zeros(Nd, dtype=bool)                   # whether each candidate has been claimed
 
-        for pos in order:
-            q, c = q_ids[pos], c_ids[pos]
-            if assigned_q[q] == -1 and not used_c[c]:
-                assigned_q[q] = c
-                assigned_d[q] = d_vals[pos]
-                used_c[c] = True
+        # Greedy unique matching: walk queries in q_order; for each, scan its topk
+        # (already distance-sorted by FAISS) and take the first unused candidate.
+        for q in q_order:
+            for k in range(K):
+                c = int(I_np[q, k])
+                if not used_c[c]:
+                    assigned_q[q] = c
+                    assigned_d[q] = D_np[q, k]
+                    used_c[c] = True
+                    break
 
-        # Fallback: unassigned queries get their k=1 match
+        # Fallback for orphans (all topk candidates already claimed). All three modes assign
+        # an already-used candidate non-uniquely; only the k-index within the orphan's topk
+        # changes. 'first' reproduces the previous k=0 fallback exactly.
         unassigned = np.where(assigned_q == -1)[0]
         if len(unassigned) > 0:
-            assigned_q[unassigned] = I_np[unassigned, 0]
-            assigned_d[unassigned] = D_np[unassigned, 0]
+            if fallback_mode == 'first':
+                ks = np.zeros(unassigned.size, dtype=np.int64)            # nearest of topk
+            elif fallback_mode == 'kth':
+                ks = np.full(unassigned.size, K - 1, dtype=np.int64)      # farthest within topk
+            elif fallback_mode == 'random':
+                ks = np.random.randint(0, K, size=unassigned.size)        # uniform within topk
+            else:
+                raise ValueError(f"unknown fallback_mode: {fallback_mode!r}")
+            assigned_q[unassigned] = I_np[unassigned, ks]
+            assigned_d[unassigned] = D_np[unassigned, ks]
 
         return torch.from_numpy(assigned_d), torch.from_numpy(assigned_q)
 
@@ -446,7 +469,11 @@ class Sampler:
                 pool_feats = self.pool_samples_proj
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                _, local_indices = self.nn_search_batched(
+                    local_ds_feats, pool_feats,
+                    descending=getattr(self.H, 'imle_match_descending', False),
+                    fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'first'),
+                )
 
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz
