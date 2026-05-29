@@ -289,6 +289,8 @@ def add_imle_arguments(parser):
                         help='Size of the reverse latent pool relative to the dataset: K = ceil(reverse_factor * sz). Each pool latent gets matched to its nearest data point with unique matching (descending=True, fallback=kth, the toy winners).')  # reverse pool multiplier
     parser.add_argument('--reverse_loss_strength', type=float, default=1.0,
                         help='Weight on the reverse-direction loss: total = forward_loss + reverse_loss_strength * reverse_loss.')  # reverse loss weight
+    parser.add_argument('--reverse_rampup_epochs', type=int, default=0,
+                        help='Linearly ramp reverse_loss_strength from 0 to its target value over this many epochs. 0 = no rampup (backwards-compatible).')  # reverse loss warmup
 
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 

@@ -184,8 +184,15 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
               f"reverse_factor={H.reverse_factor}, reverse_loss_strength={H.reverse_loss_strength}")
 
     force_initial_resample = True  # Track the last epoch when resampling was done.
-        
+    reverse_loss_strength_final = H.reverse_loss_strength   # target value; ramp from 0 if requested
+
     while (epoch < H.num_epochs):
+        # Linearly ramp reverse_loss_strength from 0 → target over reverse_rampup_epochs.
+        # At epoch 0 the weight is 0 (pure forward IMLE); at epoch reverse_rampup_epochs it
+        # reaches the configured target and stays there. Works correctly on resume because
+        # `epoch` is restored from the checkpoint via starting_epoch.
+        if H.use_reverse_loss and H.reverse_rampup_epochs > 0:
+            H.reverse_loss_strength = min(1.0, epoch / H.reverse_rampup_epochs) * reverse_loss_strength_final
         # Update the IMLE force resampling every imle_force_resample epochs.
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
             sampler.imle_sample_force(imle)
