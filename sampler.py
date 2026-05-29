@@ -532,7 +532,7 @@ class Sampler:
                     rev_pool_latents   = self.pool_latents.contiguous()                  # (K, latent_dim) on device
                     rev_comm_latents   = rev_pool_latents.to(self._comm_dtype)
                     rev_target_indices = target_indices.to(self.device, non_blocking=True)
-                    self.unique_reverse_indices = torch.unique(target_indices).numel() / self.sz
+                    self.unique_reverse_indices = torch.unique(target_indices).numel() / K
 
             if not reverse:
                 if is_main_process():
