@@ -81,6 +81,14 @@ def training_step_imle(H, targets_bchw, latents, class_labels, direction, imle, 
     return loss_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
+    # Recompute total_iters to include reverse samples so the scheduler covers the full
+    # combined dataset. data.py sets H.total_iters using only N; with reverse loss the
+    # DataLoader iterates over N+K rows per epoch.
+    _N = len(data_train)
+    _K = int(H.reverse_factor * _N) if H.use_reverse_loss else 0
+    if _K > 0:
+        H.total_iters = H.num_epochs * ((_N + _K + H.global_batch_size - 1) // H.global_batch_size)
+
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
 
     H.ema_rate = torch.as_tensor(H.ema_rate)

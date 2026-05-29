@@ -512,7 +512,7 @@ class Sampler:
                     _, local_indices = self.nn_search_batched(
                         local_ds_feats, pool_feats,
                         descending=getattr(self.H, 'imle_match_descending', False),
-                        fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'first'),
+                        fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'random'),
                     )
 
                     # get count of unique indices for logging
@@ -525,8 +525,8 @@ class Sampler:
                     # nearest data point. Toy-winner sort/fallback hardcoded for reverse.
                     _, target_indices = self.nn_search_batched(
                         pool_feats, local_ds_feats,
-                        descending=True,
-                        fallback_mode='kth',
+                        descending=getattr(self.H, 'imle_match_descending', True),
+                        fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'random'),
                     )
                     rev_pool_latents   = self.pool_latents.contiguous()                  # (K, latent_dim) on device
                     rev_comm_latents   = rev_pool_latents.to(self._comm_dtype)
