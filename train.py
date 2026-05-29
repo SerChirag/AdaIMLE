@@ -217,6 +217,21 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                 viz_batch_original.shape, imle,
                                 f'{H.save_dir}/NN-samples_{epoch}-imle.png', logprint,
                                 condition=vis_labels)
+
+                if H.use_reverse_loss and sampler.reverse_latents is not None:
+                    K = sampler.reverse_latents.shape[0]
+                    n_rev_viz = min(H.num_images_visualize, K)
+                    rev_viz_idx = torch.linspace(0, K - 1, n_rev_viz, dtype=torch.long)
+                    rev_latents = sampler.reverse_latents[rev_viz_idx]
+                    rev_target_data_idx = sampler.reverse_target_indices[rev_viz_idx].tolist()
+                    rev_subset = torch.utils.data.Subset(data_train, rev_target_data_idx)
+                    rev_orig, _ = get_sample_for_visualization(rev_subset, preprocess_fn, n_rev_viz, H.dataset)
+                    rev_labels = H.labels[sampler.reverse_target_indices[rev_viz_idx]].to(device) if H.num_classes > 0 else None
+                    generate_for_NN(sampler, rev_orig, rev_latents,
+                                    rev_orig.shape, imle,
+                                    f'{H.save_dir}/NN-samples_{epoch}-reverse.png', logprint,
+                                    condition=rev_labels)
+
                 imle.train()
         # If using distributed sampler, set the epoch for shuffling
         train_sampler.set_epoch(epoch)
@@ -327,6 +342,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'unique_indices': sampler.unique_indices,
             'class_emb_norm': class_emb_norm,
         }
+        if H.use_reverse_loss:
+            metrics['unique_reverse_indices'] = sampler.unique_reverse_indices
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))

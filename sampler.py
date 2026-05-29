@@ -48,6 +48,7 @@ class Sampler:
         self.latent_lr = H.latent_lr
         self.sz = sz
         self.unique_indices = 0
+        self.unique_reverse_indices = 0
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
@@ -531,6 +532,7 @@ class Sampler:
                     rev_pool_latents   = self.pool_latents.contiguous()                  # (K, latent_dim) on device
                     rev_comm_latents   = rev_pool_latents.to(self._comm_dtype)
                     rev_target_indices = target_indices.to(self.device, non_blocking=True)
+                    self.unique_reverse_indices = torch.unique(target_indices).numel() / self.sz
 
             if not reverse:
                 if is_main_process():
