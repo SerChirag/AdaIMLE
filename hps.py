@@ -286,7 +286,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_reverse_loss', default=False, type=lambda x: bool(strtobool(x)),
                         help='Enable bidirectional IMLE: in addition to the forward IMLE loss, add a reverse-direction loss that pulls each random pool latent toward its nearest data point (unique matching). Unconditional only for now.')  # bidirectional feature flag
     parser.add_argument('--reverse_factor', type=float, default=0.5,
-                        help='Size of the reverse latent pool relative to the dataset: K = ceil(reverse_factor * sz). Each pool latent gets matched to its nearest data point with unique matching (descending=True, fallback=kth, the toy winners).')  # reverse pool multiplier
+                        help='Fraction of the reverse pool to keep for the reverse loss. The reverse pool is sampled at full size sz; after matching each pool latent to its nearest data point, the worst K = int(reverse_factor * sz) latents (largest NN distance) are kept. Lower = focus the reverse loss on the hardest latents.')  # worst-portion keep fraction
     parser.add_argument('--reverse_loss_strength', type=float, default=1.0,
                         help='Weight on the reverse-direction loss: total = forward_loss + reverse_loss_strength * reverse_loss.')  # reverse loss weight
     parser.add_argument('--reverse_rampup_epochs', type=int, default=0,

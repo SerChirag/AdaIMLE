@@ -290,7 +290,9 @@ class Sampler:
         if self.num_classes > 0:
             local_pool_size = self.pool_size_per_class
         elif reverse:
-            local_pool_size = ceil(int(self.H.reverse_factor * self.sz) / self.world_size)
+            # Reverse pool is sampled at full size sz; the worst int(reverse_factor*sz)
+            # latents are selected later in _imle_sample_force_unconditional.
+            local_pool_size = ceil(self.sz / self.world_size)
         else:
             local_pool_size = ceil(self.pool_size / self.world_size)
 
@@ -356,7 +358,7 @@ class Sampler:
             if (self._full_combined_main is None or self._full_combined_main.shape[0] != full_pool_size):
                 self._full_combined_main = torch.empty((full_pool_size, combined_dim), dtype=torch.float32, device=self.device)
             torch.cat([c.to(torch.float32) for c in self._gathered_combined_main], dim=0, out=self._full_combined_main)
-            target_size = int(self.H.reverse_factor * self.sz) if reverse else self.pool_size
+            target_size = self.sz if reverse else self.pool_size
             self.pool_latents      = self._full_combined_main[:target_size, :self.H.latent_dim]
             self.pool_samples_proj = self._full_combined_main[:target_size, self.H.latent_dim:]
     
@@ -524,15 +526,20 @@ class Sampler:
                 else:
                     # REVERSE: queries=pool, candidates=data. For each pool latent, the
                     # nearest data point. Toy-winner sort/fallback hardcoded for reverse.
-                    _, target_indices = self.nn_search_batched(
+                    target_dists, target_indices = self.nn_search_batched(
                         pool_feats, local_ds_feats,
                         descending=getattr(self.H, 'imle_match_descending', True),
                         fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'random'),
                     )
-                    rev_pool_latents   = self.pool_latents.contiguous()                  # (K, latent_dim) on device
+                    # Keep only the worst K pool latents: those with the largest NN
+                    # distance to their nearest data point. K = int(reverse_factor * sz)
+                    # matches the reverse-pair allocation in train.py.
+                    target_dists       = target_dists.to(self.device, non_blocking=True)
+                    worst_idx          = torch.topk(target_dists, K, largest=True).indices
+                    rev_pool_latents   = self.pool_latents.index_select(0, worst_idx).contiguous()  # (K, latent_dim)
+                    rev_target_indices = target_indices.to(self.device, non_blocking=True).index_select(0, worst_idx)
                     rev_comm_latents   = rev_pool_latents.to(self._comm_dtype)
-                    rev_target_indices = target_indices.to(self.device, non_blocking=True)
-                    self.unique_reverse_indices = torch.unique(target_indices).numel() / K
+                    self.unique_reverse_indices = torch.unique(rev_target_indices).numel() / K
 
             if not reverse:
                 if is_main_process():
