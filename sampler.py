@@ -45,6 +45,9 @@ class Sampler:
         self.l2_loss = torch.nn.MSELoss(reduction='none').to(self.device)
         self.l1_loss = torch.nn.L1Loss(reduction='none').to(self.device)
         self.H = H
+        # E-LatentLPIPS perceptual loss on latents (lazy-loaded on first use).
+        self.elatentlpips_weight = float(getattr(H, 'elatentlpips_weight', 0.0))
+        self._elatentlpips = None
         self.latent_lr = H.latent_lr
         self.sz = sz
         self.unique_indices = 0
@@ -245,6 +248,21 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
+    def _get_elatentlpips(self):
+        # Lazily construct the E-LatentLPIPS model the first time it's needed so
+        # runs that don't use it pay no download/VRAM cost.
+        if self._elatentlpips is None:
+            from elatentlpips import ELatentLPIPS
+            encoder = getattr(self.H, 'elatentlpips_encoder', 'sdxl')
+            augment = getattr(self.H, 'elatentlpips_augment', 'bg')
+            model = ELatentLPIPS(encoder=encoder, augment=augment).to(self.device).eval()
+            model.requires_grad_(False)
+            self._elatentlpips = model
+            if is_main_process():
+                print(f"\n[elatentlpips] Loaded encoder={encoder} augment={augment} "
+                      f"weight={self.elatentlpips_weight}\n")
+        return self._elatentlpips
+
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
@@ -264,7 +282,19 @@ class Sampler:
         else:
             per_elem = self.l2_loss(inp, tar)
 
-        return per_elem.mean()
+        loss = per_elem.mean()
+
+        # E-LatentLPIPS perceptual term on latents. inp/tar are already latents in
+        # the latent-IMLE branch, which is exactly what ELatentLPIPS expects. The
+        # VGG backbone runs in fp32, so disable autocast but keep grad flowing
+        # through inp/tar back to the generator.
+        if self.elatentlpips_weight > 0:
+            model = self._get_elatentlpips()
+            with autocast(device_type='cuda', enabled=False):
+                elp = model(inp.float(), tar.float(), normalize=False).mean()
+            loss = loss + self.elatentlpips_weight * elp
+
+        return loss
     
     def resample_pool(self, gen, class_condition=None):
 

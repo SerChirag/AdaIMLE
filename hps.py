@@ -256,7 +256,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
-    parser.add_argument('--autoencoder_type', type=str, default='kl', choices=['tiny', 'kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'vr-eq', 'eq-sdxl'])
+    parser.add_argument('--autoencoder_type', type=str, default='sdxl', choices=['tiny', 'kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'vr-eq', 'eq-sdxl', 'sdxl'])
     parser.add_argument('--autoencoder_name_or_path', type=str, default='')
     parser.add_argument('--autoencoder_subfolder', type=str, default='')
     parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
@@ -295,6 +295,12 @@ def add_imle_arguments(parser):
     parser.add_argument("--loss_type", default='l2',choices=["l2", "huber", "pseudo_l1", "cauchy", "mclure", "rmse", "welsch"], help="type of loss")
     parser.add_argument("--huber_delta", type=float, default=0.05, help="delta for huber loss")
     parser.add_argument("--loss_scale", type=float, default=4.0, help="scale for general robust losses, e.g. pseudo-huber, pseudo-l1, cauchy")
+    # E-LatentLPIPS perceptual loss on latents. Weight 0 disables it (default).
+    # The inputs to calc_loss in the latent-IMLE branch are already latents, so this
+    # term is applied directly to them. encoder must match the autoencoder's latent space.
+    parser.add_argument("--elatentlpips_weight", type=float, default=1.0, help="weight for E-LatentLPIPS perceptual loss on latents; 0 disables")
+    parser.add_argument("--elatentlpips_encoder", type=str, default='sdxl', choices=['sd15', 'sd21', 'sdxl', 'sd3', 'flux'], help="E-LatentLPIPS encoder; must match the autoencoder's latent space")
+    parser.add_argument("--elatentlpips_augment", type=str, default='bg', choices=['b', 'bg', 'bgc', 'bgco'], help="E-LatentLPIPS ensembling augmentation")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")

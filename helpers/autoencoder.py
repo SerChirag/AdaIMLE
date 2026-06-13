@@ -27,6 +27,9 @@ def load_autoencoder(H, device):
             model_path = 'Anzhc/MS-LC-EQ-D-VR_VAE'
         elif model_type == 'eq-sdxl':
             model_path = 'KBlueLeaf/EQ-SDXL-VAE'
+        elif model_type == 'sdxl':
+            # Stock SDXL VAE (4-channel). Matches elatentlpips encoder='sdxl'.
+            model_path = 'stabilityai/sdxl-vae'
         else:  # kl, eqvae, eq-vae
             model_path = 'zelaki/eq-vae'
 
@@ -41,7 +44,7 @@ def load_autoencoder(H, device):
             single_file_name = 'MS-LC-EQ-D-VR VAE.safetensors'
             single_file_path = hf_hub_download(model_path, single_file_name)
         ae = AutoencoderKL.from_single_file(single_file_path)
-    elif model_type in ('kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'eq-sdxl'):
+    elif model_type in ('kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'eq-sdxl', 'sdxl'):
         kwargs = {}
         if subfolder:
             kwargs['subfolder'] = subfolder
