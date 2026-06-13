@@ -363,7 +363,7 @@ class Sampler:
             self.pool_samples_proj = self._full_combined_main[:target_size, self.H.latent_dim:]
     
 
-    def nn_search_batched(self, queries, dataset, descending=False, fallback_mode='first'):
+    def nn_search_batched(self, queries, dataset, descending=False, fallback_mode='first', topk_override=None):
         """Exact L2 nearest-neighbour search via FAISS with optional hard-first greedy Top-K.
 
         descending      : per-query sort direction. False = closest-NN queries first (default,
@@ -391,7 +391,7 @@ class Sampler:
             queries_t = F.normalize(queries_t, dim=-1)
             dataset_t = F.normalize(dataset_t, dim=-1)
 
-        topk = getattr(self.H, 'imle_db_topk', 1)
+        topk = topk_override if topk_override is not None else getattr(self.H, 'imle_db_topk', 1)
 
         self.faiss_index_flat.reset()
         self.faiss_index_flat.add(dataset_t)
@@ -530,6 +530,7 @@ class Sampler:
                         pool_feats, local_ds_feats,
                         descending=getattr(self.H, 'imle_match_descending', True),
                         fallback_mode=getattr(self.H, 'imle_match_fallback_mode', 'random'),
+                        topk_override=getattr(self.H, 'reverse_db_topk', 1),
                     )
                     # Keep only the worst K pool latents: those with the largest NN
                     # distance to their nearest data point. K = int(reverse_factor * sz)

@@ -277,6 +277,8 @@ def add_imle_arguments(parser):
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
     parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--reverse_db_topk', type=int, default=1,
+                        help='Top-k for reverse-direction NN search (pool→data). Defaults to 1 (plain nearest-neighbour, no greedy matching) so distances reflect true coverage gaps.')
     parser.add_argument('--imle_match_descending', default=False, type=lambda x: bool(strtobool(x)),
                         help='Sort queries by NN distance descending (farthest-NN-query first) during unique greedy matching. Default: ascending.')  # per-query sort direction in nn_search_batched
     parser.add_argument('--imle_match_fallback_mode', type=str, default='random', choices=['first', 'kth', 'random'],
