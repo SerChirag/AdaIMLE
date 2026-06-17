@@ -184,8 +184,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latents = cur[1][0]
             # cur[0] is (image_tensor, label_tensor) when num_classes > 0, else (image_tensor,)
             labels = cur[0][1].to(device, non_blocking=True) if H.num_classes > 0 and len(cur[0]) > 1 else None
-            _proj = sampler._dataset_proj_gpu if sampler._dataset_proj_gpu is not None else sampler.dataset_proj_torch.to(device, non_blocking=True)
-            flat_target = _proj.index_select(0, indices.to(device, non_blocking=True))
+            # Optimization always happens in full latent space, independent of the search
+            # feature: dataset_target holds the full latent (for l2 this is the same buffer
+            # as dataset_proj; for elatentlpips dataset_proj is a projected search embedding).
+            _target = sampler._dataset_target_gpu if sampler._dataset_target_gpu is not None else sampler.dataset_target_torch.to(device, non_blocking=True)
+            flat_target = _target.index_select(0, indices.to(device, non_blocking=True))
             target_bchw = flat_target.view(
                 flat_target.shape[0],
                 H.image_channels,
@@ -344,7 +347,8 @@ def main():
     
     H, logprint = set_up_hyperparams()
     configure_runtime_performance(H, logprint)
-    H.search_type = 'l2'
+    if H.search_type != 'elatentlpips':
+        H.search_type = 'l2'
     H.lpips_coef = 0.0
     H.dino_coef = 0.0
     if H.l2_coef == 0.0:

@@ -253,7 +253,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--use_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use spatial noise
 
-    parser.add_argument('--search_type', type=str, default='lpips', choices=['lpips', 'l2', 'combined', 'vae']) # search type for nearest neighbour search
+    parser.add_argument('--search_type', type=str, default='l2', choices=['l2', 'elatentlpips']) # search type for nearest neighbour search
     parser.add_argument('--l2_search_downsample', type=float, default=1.0) # downsample factor for l2 search
 
     parser.add_argument('--autoencoder_type', type=str, default='sdxl', choices=['tiny', 'kl', 'eqvae', 'eq-vae', 'eq-vae-ema', 'vr-eq', 'eq-sdxl', 'sdxl'])
@@ -301,6 +301,14 @@ def add_imle_arguments(parser):
     parser.add_argument("--elatentlpips_weight", type=float, default=1.0, help="weight for E-LatentLPIPS perceptual loss on latents; 0 disables")
     parser.add_argument("--elatentlpips_encoder", type=str, default='sdxl', choices=['sd15', 'sd21', 'sdxl', 'sd3', 'flux'], help="E-LatentLPIPS encoder; must match the autoencoder's latent space")
     parser.add_argument("--elatentlpips_augment", type=str, default='bg', choices=['b', 'bg', 'bgc', 'bgco'], help="E-LatentLPIPS ensembling augmentation")
+    # When search_type='elatentlpips', the calibrated VGG features are reduced to a
+    # FAISS-searchable embedding via fixed-seed per-layer random projection
+    # (mirrors the lpips search in branch imle-pixel-fast-neurips26-inter).
+    # proj_dim is the TOTAL embedding dim, split across the 5 VGG layers:
+    #   proj_proportion=True  -> split proportional to each layer's flattened feature size
+    #   proj_proportion=False -> equal split across layers
+    parser.add_argument("--elatentlpips_proj_dim", type=int, default=800, help="total projected embedding dim for elatentlpips NN search")
+    parser.add_argument("--elatentlpips_proj_proportion", default=True, type=lambda x: bool(strtobool(x)), help="split proj_dim proportional to each VGG layer's feature size (else split equally)")
     
     # some metric args
     parser.add_argument("--space", choices=["z", "w"], help="space that PPL calculated with")

@@ -113,6 +113,10 @@ def latent_cache_key(
     num_classes: int = 0,
     sorted_by_class: bool = False,
     cache_dataset_id: str = '',
+    search_type: str = 'l2',
+    elatentlpips_encoder: str = '',
+    proj_dim: int = 0,
+    proj_proportion: bool = False,
 ) -> str:
     d = {
         'data_root':          cache_dataset_id if cache_dataset_id else os.path.abspath(data_root),
@@ -123,6 +127,12 @@ def latent_cache_key(
         'image_channels':     int(image_channels),
         'num_classes':        int(num_classes),
         'sorted_by_class':    bool(sorted_by_class),
+        # The stored feature depends on the search type + projection; keep distinct caches
+        # so an elatentlpips embedding never collides with the raw-latent l2 cache.
+        'search_type':        str(search_type),
+        'elatentlpips_encoder': str(elatentlpips_encoder),
+        'proj_dim':           int(proj_dim),
+        'proj_proportion':    bool(proj_proportion),
     }
     h = _stable_hash(d)
     return (

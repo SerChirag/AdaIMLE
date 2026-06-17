@@ -83,20 +83,25 @@ class Sampler:
         native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
         self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
 
-        if H.search_type != 'l2':
-            raise ValueError('This branch expects search_type=l2.')
+        if H.search_type not in ('l2', 'elatentlpips'):
+            raise ValueError('This branch expects search_type in {l2, elatentlpips}.')
 
         self.nn_search_batch = H.nn_search_batch
 
         self.l2_projection = None
+        # Per-layer random-projection matrices for elatentlpips search (built below).
+        self.projections = []
 
         fake = torch.zeros(1, H.image_channels, self.latent_spatial_size, self.latent_spatial_size, device=self.device)
 
         safe_barrier()
 
-        if(H.search_type == 'l2'):
+        if H.search_type == 'l2':
             interpolated = fake.reshape(fake.shape[0],-1)
             sum_dims = interpolated.shape[1]
+
+        elif H.search_type == 'elatentlpips':
+            sum_dims = self._build_elatentlpips_projections(fake)
 
         else:
             exit()
@@ -107,6 +112,12 @@ class Sampler:
         self.dataset_proj = None
         self.pool_samples_proj = None
         self._dataset_proj_gpu = None
+        # Full-latent optimization target, kept separate from the search feature.
+        # For l2 it aliases dataset_proj_torch (same data); for elatentlpips it is a
+        # distinct buffer of the full flattened latents. Populated in init_projection.
+        self.full_latent_dim = H.image_channels * self.latent_spatial_size * self.latent_spatial_size
+        self.dataset_target_torch = None
+        self._dataset_target_gpu = None
         self._local_pool_latents = None
         self._local_pool_proj = None
         self._local_pool_combined = None
@@ -148,13 +159,102 @@ class Sampler:
         # interpolated = F.normalize(interpolated, p=2, dim=1)
         return interpolated
 
+    def _build_elatentlpips_projections(self, fake):
+        """Build fixed-seed per-layer random-projection matrices that reduce the
+        calibrated VGG features to a FAISS-searchable embedding of total dim proj_dim.
+
+        Mirrors the lpips search in branch imle-pixel-fast-neurips26-inter: each layer's
+        flattened sqrt(w)-calibrated feature map (which keeps full spatial structure) is
+        projected by an F.normalize(randn) matrix, and the per-layer outputs are
+        concatenated. proj_dim is the TOTAL embedding dim; proj_proportion controls how it
+        is split across layers (proportional to each layer's flattened size, else equal).
+
+        Keeping spatial structure (vs. spatial-averaging) is what lets squared-L2 of the
+        embedding track the full calibrated E-LatentLPIPS distance rather than collapsing
+        spatially-varying differences.
+
+        Seeded from H.seed (NOT H.seed + rank) so every rank and every call builds
+        identical matrices — required for dataset/pool embeddings to be comparable."""
+        model = self._get_elatentlpips()
+        # Cache per-channel sqrt(w) from the learned 1x1-conv calibration heads.
+        # The heads are non-negative, so sqrt(w) is real and squared-L2 of sqrt(w)-scaled
+        # features matches the calibrated E-LatentLPIPS distance contribution.
+        self._elatentlpips_sqrt_w = []
+        for kk in range(model.L):
+            w = model.lins[kk].model[-1].weight.detach()  # (1, C, 1, 1), w >= 0
+            self._elatentlpips_sqrt_w.append(torch.sqrt(w.clamp(min=0.0)).to(self.device))
+
+        proj_dim = int(getattr(self.H, 'elatentlpips_proj_dim', 800))
+        proportion = bool(getattr(self.H, 'elatentlpips_proj_proportion', True))
+
+        with torch.inference_mode():
+            feats = self._elatentlpips_layer_features(fake.float())
+        flat_dims = [f.reshape(f.shape[0], -1).shape[1] for f in feats]  # C*H*W per layer
+
+        L = len(flat_dims)
+        # Split proj_dim across layers (branch logic): equal by default, or
+        # proportional to each layer's flattened feature size.
+        dims = [int(proj_dim * 1. / L) for _ in range(L)]
+        if proportion:
+            total = sum(flat_dims)
+            dims = [int(flat_dims[i] * (proj_dim / total)) for i in range(1, L)]
+            dims.insert(0, proj_dim - sum(dims))  # remainder to layer 0
+
+        # Fixed-seed generator so matrices are identical across ranks and calls.
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(int(self.H.seed))
+        self.projections = []
+        for in_dim, out_dim in zip(flat_dims, dims):
+            mat = F.normalize(torch.randn(in_dim, out_dim, device=self.device, generator=gen), p=2, dim=1)
+            self.projections.append(mat)
+
+        if is_main_process():
+            print(f"[elatentlpips-search] proj_dim={proj_dim} per-layer dims={dims} "
+                  f"(in dims={flat_dims}, proportional={proportion})")
+        return sum(dims)
+
+    def _elatentlpips_layer_features(self, latents):
+        """Run latents (NCHW, fp32) through the E-LatentLPIPS VGG and return the list of
+        per-layer sqrt(w)-calibrated, channel-normalized feature maps (full spatial)."""
+        from elatentlpips import normalize_tensor
+        model = self._get_elatentlpips()
+        outs = model.net.forward(latents.float())
+        feats = []
+        for kk in range(model.L):
+            f = normalize_tensor(outs[kk]) * self._elatentlpips_sqrt_w[kk]  # (N,C,H,W)
+            feats.append(f)
+        return feats
+
+    def get_elatentlpips_feature(self, inp, permute=True):
+        """Embedding for elatentlpips NN search: calibrated VGG features per layer,
+        flattened and randomly projected, then concatenated. Parallels get_l2_feature."""
+        if permute:
+            inp = inp.permute(0, 3, 1, 2)
+        feats = self._elatentlpips_layer_features(inp.float())
+        projected = [
+            torch.mm(feats[i].reshape(feats[i].shape[0], -1), self.projections[i])
+            for i in range(len(feats))
+        ]
+        return torch.cat(projected, dim=1)
+
 
     def init_projection(self, dataset):
 
         use_cache = bool(getattr(self.H, 'use_cache', True))
         cache_dir = getattr(self.H, 'cache_dir', './cache')
 
+        # For l2 the search feature IS the full flattened latent, so the optimization
+        # target aliases the same buffer (no extra memory / cache). For elatentlpips the
+        # search feature is a projected embedding, so the full latent target is a separate
+        # buffer that must be built (and cached) alongside it.
+        needs_separate_target = (self.H.search_type != 'l2')
+        if needs_separate_target:
+            self.dataset_target_torch = torch.empty([self.sz, self.full_latent_dim], dtype=torch.float32, device='cpu')
+        else:
+            self.dataset_target_torch = self.dataset_proj_torch  # alias
+
         cached = None
+        cached_target = None
         if use_cache:
             key = latent_cache_key(
                 data_root=self.H.data_root,
@@ -167,14 +267,37 @@ class Sampler:
                 num_classes=self.num_classes,
                 sorted_by_class=(self.num_classes > 0),
                 cache_dataset_id=getattr(self.H, 'cache_dataset_id', ''),
+                search_type=self.H.search_type,
+                elatentlpips_encoder=getattr(self.H, 'elatentlpips_encoder', ''),
+                proj_dim=getattr(self.H, 'elatentlpips_proj_dim', 0),
+                proj_proportion=getattr(self.H, 'elatentlpips_proj_proportion', False),
             )
             cached = load_latent_cache(cache_dir, key, expected_size=self.sz)
+            if needs_separate_target:
+                # Full-latent target uses an l2-keyed cache (search_type='l2'): it is the
+                # raw latent and is identical regardless of the search feature.
+                target_key = latent_cache_key(
+                    data_root=self.H.data_root,
+                    dataset_type=self.H.dataset,
+                    image_size=self.H.image_size,
+                    latent_spatial_size=self.latent_spatial_size,
+                    autoencoder_type=getattr(self.H, 'autoencoder_type', 'kl'),
+                    autoencoder_name_or_path=getattr(self.H, 'autoencoder_name_or_path', ''),
+                    image_channels=self.latent_channels,
+                    num_classes=self.num_classes,
+                    sorted_by_class=(self.num_classes > 0),
+                    cache_dataset_id=getattr(self.H, 'cache_dataset_id', ''),
+                    search_type='l2',
+                )
+                cached_target = load_latent_cache(cache_dir, target_key, expected_size=self.sz)
 
-        if cached is not None:
+        if cached is not None and (not needs_separate_target or cached_target is not None):
             if is_main_process():
                 print(f"[cache] Loaded latent projections from cache "
                       f"({cached.shape[0]} samples, dim={cached.shape[1]}).")
             self.dataset_proj_torch.copy_(cached)
+            if needs_separate_target:
+                self.dataset_target_torch.copy_(cached_target)
         else:
             ae_batch = getattr(self.H, 'ae_batch', self.H.imle_batch)
             dataloader = DataLoader(
@@ -188,13 +311,20 @@ class Sampler:
             with torch.inference_mode():
                 for ind, x in tqdm(enumerate(dataloader), total=len(dataloader), desc="Initializing"):
                     batch_slice = slice(ind * ae_batch, ind * ae_batch + x[0].shape[0])
+                    latent = self.preprocess_fn(x)[-1]
                     if self.H.search_type == 'l2':
-                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(self.preprocess_fn(x)[-1]).cpu()
+                        self.dataset_proj_torch[batch_slice] = self.get_l2_feature(latent).cpu()
+                    elif self.H.search_type == 'elatentlpips':
+                        self.dataset_proj_torch[batch_slice] = self.get_elatentlpips_feature(latent).cpu()
+                        # Full latent target (search-agnostic): same as get_l2_feature.
+                        self.dataset_target_torch[batch_slice] = self.get_l2_feature(latent).cpu()
                     else:
                         exit()
 
             if use_cache and is_main_process():
                 save_latent_cache(cache_dir, key, self.dataset_proj_torch)
+                if needs_separate_target:
+                    save_latent_cache(cache_dir, target_key, self.dataset_target_torch)
 
         # Pin host memory so per-batch H2D copies can use faster async transfer.
         if torch.cuda.is_available() and not self.dataset_proj_torch.is_pinned():
@@ -203,6 +333,14 @@ class Sampler:
             except RuntimeError as e:
                 if is_main_process():
                     print(f"Warning: could not pin dataset_proj_torch ({e}); continuing without pinned cache.")
+        # Re-alias target to proj after potential pin re-assignment (l2 only).
+        if self.H.search_type == 'l2':
+            self.dataset_target_torch = self.dataset_proj_torch
+        elif torch.cuda.is_available() and not self.dataset_target_torch.is_pinned():
+            try:
+                self.dataset_target_torch = self.dataset_target_torch.pin_memory()
+            except RuntimeError:
+                pass
 
         # Keep a torch tensor for fast indexed target lookup in training,
         # and a NumPy view for FAISS nearest-neighbor search.
@@ -223,6 +361,12 @@ class Sampler:
         # For unconditional: only rank 0 needs it.
         if self.num_classes > 0 or is_main_process():
             self._dataset_proj_gpu = self.dataset_proj_torch.to(self.device, non_blocking=True)
+            # Full-latent target on GPU for the optimization step. For l2 it aliases
+            # the proj GPU buffer (identical data); for elatentlpips it is distinct.
+            if self.H.search_type == 'l2':
+                self._dataset_target_gpu = self._dataset_proj_gpu
+            else:
+                self._dataset_target_gpu = self.dataset_target_torch.to(self.device, non_blocking=True)
 
     def sample(self, latents, gen, snoise=None, condition=None):
         with torch.inference_mode():
@@ -336,6 +480,10 @@ class Sampler:
                         outputs = gen(cur_latents)
                     if self.H.search_type == 'l2':
                         proj = self.get_l2_feature(outputs, False)
+                    elif self.H.search_type == 'elatentlpips':
+                        # Run the VGG in fp32 (disable autocast), matching calc_loss.
+                        with autocast(device_type='cuda', enabled=False):
+                            proj = self.get_elatentlpips_feature(outputs, False)
                     else:
                         exit()
                     self._local_pool_combined[batch_slice, self.H.latent_dim:].copy_(proj.to(self._comm_dtype))
@@ -554,7 +702,11 @@ class Sampler:
                 cur_classes = class_ids[start:end]
                 with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
                     outputs = gen(cur_latents, cur_classes)
-                    proj = self.get_l2_feature(outputs, False)
+                    if self.H.search_type == 'elatentlpips':
+                        with autocast(device_type='cuda', enabled=False):
+                            proj = self.get_elatentlpips_feature(outputs, False)
+                    else:
+                        proj = self.get_l2_feature(outputs, False)
                 self._local_pool_proj[start:end].copy_(proj.to(self._comm_dtype))
 
             # Per-class NN search using the fused buffers
