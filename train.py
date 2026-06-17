@@ -19,8 +19,8 @@ from helpers.train_helpers import (configure_runtime_performance, load_imle, loa
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
-from visual.utils import (generate_and_save, generate_for_NN,
-                          generate_visualization,
+from visual.utils import (generate_and_save, generate_and_save_smart,
+                          generate_for_NN, generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch import autocast
@@ -410,6 +410,17 @@ def main():
             
         #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
         #     print("FID: ", cur_fid)
+
+    elif H.mode == 'eval_fid_smart':
+        sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
+        safe_barrier()
+        if(is_main_process()):
+            print(f"Generating samples for FID with rejection (threshold={H.reject_threshold}, "
+                  f"patch_size={H.reject_patch_size}, max_attempts={H.reject_max_attempts})")
+
+        imle.eval()
+        generate_and_save_smart(H, imle, sampler, 50000)
+        safe_barrier()
 
     elif H.mode == 'interpolate':
         if(is_main_process()):

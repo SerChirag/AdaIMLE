@@ -144,6 +144,136 @@ def generate_and_save(H, imle, sampler, n_samp, subdir='fid'):
     
     imle.train()
 
+def _patch_max_sharpness_batch(imgs_uint8_rgb, patch_size):
+    """
+    Vectorized reproduction of filter_blurry_samples_patch.py:patch_sharpness_score.
+
+    Args:
+        imgs_uint8_rgb: ndarray of shape (B, H, W, 3), dtype uint8.
+        patch_size: non-overlapping patch side length.
+
+    Returns:
+        ndarray of shape (B,), float32. Per-image: max over non-overlapping patches
+        of the variance of the Laplacian (kernel [[0,1,0],[1,-4,1],[0,1,0]], reflect
+        boundary) of the grayscale image. Matches PIL convert('L') + scipy.ndimage.laplace.
+    """
+    from PIL import Image
+    from scipy.ndimage import laplace
+
+    B = imgs_uint8_rgb.shape[0]
+    out = np.empty(B, dtype=np.float32)
+    for i in range(B):
+        gray = np.array(Image.fromarray(imgs_uint8_rgb[i]).convert('L'), dtype=np.float32)
+        lap = laplace(gray)
+        h, w = lap.shape
+        nh, nw = h // patch_size, w // patch_size
+        if nh == 0 or nw == 0:
+            out[i] = float(lap.var())
+            continue
+        # Crop to multiple of patch_size, then reshape into (nh, nw, p, p) and take per-patch var.
+        lap = lap[:nh * patch_size, :nw * patch_size]
+        patches = lap.reshape(nh, patch_size, nw, patch_size).transpose(0, 2, 1, 3)
+        patch_vars = patches.reshape(nh * nw, patch_size * patch_size).var(axis=1)
+        out[i] = float(patch_vars.max())
+    return out
+
+
+def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
+    """
+    Like generate_and_save, but rejects samples whose patch-max grayscale Laplacian
+    variance score falls below H.reject_threshold and re-samples (new latent, same
+    class) up to H.reject_max_attempts times. After exhausting attempts, writes the
+    highest-scoring attempt seen.
+    """
+    rank = get_rank()
+    world_size = get_world_size()
+
+    save_dir = os.path.join(H.save_dir, subdir)
+
+    if is_main_process():
+        delete_content_of_dir(save_dir)
+
+    torch.distributed.barrier()
+
+    indices = list(range(rank, n_samp, world_size))
+    n_local = len(indices)
+    write_workers = _get_image_write_workers(H)
+
+    imle.eval()
+
+    num_classes = getattr(H, 'num_classes', 0)
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    threshold = float(H.reject_threshold)
+    patch_size = int(H.reject_patch_size)
+    max_attempts = int(H.reject_max_attempts)
+
+    # pending[k] = (global_index, attempts_so_far, best_score, best_img_or_None)
+    pending = [(idx, 0, -np.inf, None) for idx in indices]
+    accepted_count = 0
+    exhausted_count = 0
+    total_attempts = 0
+    log_every = max(1, n_local // 20)
+    next_log_at = log_every
+
+    with torch.inference_mode():
+        while pending:
+            cur = pending[:ae_batch]
+            pending = pending[ae_batch:]
+            cur_bs = len(cur)
+
+            latent_batch = torch.randn(
+                [cur_bs, H.latent_dim], dtype=torch.float32,
+                device=imle.device, generator=sampler.generator_seed,
+            )
+            if num_classes > 0:
+                condition = torch.tensor(
+                    [g_idx % num_classes for (g_idx, _, _, _) in cur],
+                    dtype=torch.long, device=imle.device,
+                )
+            else:
+                condition = None
+
+            samp = sampler.sample(latent_batch, imle, None, condition=condition)
+            scores = _patch_max_sharpness_batch(samp, patch_size)
+            total_attempts += cur_bs
+
+            path_and_imgs = []
+            for j in range(cur_bs):
+                g_idx, attempts, best_score, best_img = cur[j]
+                attempts += 1
+                score = float(scores[j])
+                if score > best_score:
+                    best_score = score
+                    best_img = samp[j]
+
+                if score >= threshold:
+                    path_and_imgs.append((os.path.join(save_dir, f'{g_idx}.png'), samp[j]))
+                    accepted_count += 1
+                elif attempts >= max_attempts:
+                    path_and_imgs.append((os.path.join(save_dir, f'{g_idx}.png'), best_img))
+                    accepted_count += 1
+                    exhausted_count += 1
+                else:
+                    pending.append((g_idx, attempts, best_score, best_img))
+
+            _parallel_write_pngs(path_and_imgs, write_workers)
+
+            if accepted_count >= next_log_at and is_main_process():
+                acc_rate = accepted_count / total_attempts if total_attempts else 0.0
+                print(f'[eval_fid_smart] rank0 progress: {accepted_count}/{n_local} accepted '
+                      f'({total_attempts} attempts, accept_rate={acc_rate:.3f}, '
+                      f'exhausted={exhausted_count})')
+                next_log_at += log_every
+
+    if is_main_process():
+        acc_rate = accepted_count / total_attempts if total_attempts else 0.0
+        print(f'[eval_fid_smart] rank0 done: {accepted_count}/{n_local} written '
+              f'({total_attempts} total attempts, accept_rate={acc_rate:.3f}, '
+              f'{exhausted_count} written from best-of-attempts after exhaustion)')
+
+    imle.train()
+
+
 def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
     # Get the current process rank and world size.
     

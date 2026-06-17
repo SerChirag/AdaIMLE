@@ -183,7 +183,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
     parser.add_argument('--class_emb_lr_mult', type=float, default=1.0)  # LR multiplier for class embedding (>1 to accelerate embedding norm growth)
-    parser.add_argument('--class_emb_init_std', type=float, default=0.5)  # std for class embedding initialization
+    parser.add_argument('--class_emb_init_std', type=float, default=0.9)  # std for class embedding initialization
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
@@ -228,6 +228,12 @@ def add_imle_arguments(parser):
     parser.add_argument('--image_size', type=int, default=256)  # image size of dataset -- possible to downsample the dataset
     parser.add_argument('--num_images_to_generate', type=int, default=100)
     parser.add_argument('--mode', type=str, default='train')  # mode of running, train, eval, reconstruct, generate
+
+    # eval_fid_smart: reject blurry samples based on patch-max grayscale Laplacian variance
+    # (matches filter_blurry_samples_patch.py). Higher score = sharper.
+    parser.add_argument('--reject_threshold', type=float, default=1500.0)
+    parser.add_argument('--reject_patch_size', type=int, default=32)
+    parser.add_argument('--reject_max_attempts', type=int, default=20)
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
     parser.add_argument('--zero_init', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
