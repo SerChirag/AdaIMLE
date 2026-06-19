@@ -269,6 +269,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'mean_loss': mean_loss,
             'curr_lr': optimizer.param_groups[0]['lr'],
             'unique_indices': sampler.unique_indices,
+            'avg_nn_score': sampler.avg_nn_score,
             'class_emb_norm': class_emb_norm,
         }
 

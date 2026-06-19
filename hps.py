@@ -90,7 +90,7 @@ fewshot = Hyperparams()
 fewshot.width = 384
 fewshot.lr = 0.0002
 fewshot.wd = 0.01
-fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x2,64m32,64x2,128m64,128x2,256m128'
+fewshot.dec_blocks = '1x4,4m1,4x4,8m4,8x4,16m8,16x3,32m16,32x5'
 # fewshot.dec_blocks = '1x2,4m1,4x3,8m4,8x4,16m8,16x9,32m16,32x21,64m32,64x13,128m64,128x7,256m128'
 fewshot.dataset = 'fewshot'
 fewshot.n_batch = 4
@@ -282,7 +282,8 @@ def add_imle_arguments(parser):
     parser.add_argument("--se_reduction", type=int, default=16, help="reduction factor for se block")
     parser.add_argument("--dropout_p", type=float, default=0.0, help="dropout rate for convnext block")
 
-    parser.add_argument('--imle_db_topk', type=int, default=10)  # top-k for imle database search
+    parser.add_argument('--imle_db_topk', type=int, default=1)  # top-k for imle database search
+    parser.add_argument('--search_top_k', type=int, default=1)  # forward-search k: among each datapoint's k nearest pool samples, assign the highest-scored (worst-covered) one. 1 = normal IMLE
     parser.add_argument('--faiss_use_cpu', default=False, type=lambda x: bool(strtobool(x)))  # use CPU FAISS IndexFlatL2 instead of GPU index
 
     parser.add_argument('--num_classes', type=int, default=0,

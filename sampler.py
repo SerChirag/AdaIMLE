@@ -48,6 +48,7 @@ class Sampler:
         self.latent_lr = H.latent_lr
         self.sz = sz
         self.unique_indices = 0
+        self.avg_nn_score = 0.0
         self.entire_ds = torch.arange(sz)
         self.selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
         self.last_selected_latents = torch.empty([sz, H.latent_dim], dtype=torch.float32)
@@ -340,8 +341,23 @@ class Sampler:
             self.pool_samples_proj = self._full_combined_main[:, self.H.latent_dim:]
     
 
-    def nn_search_batched(self, queries, dataset):
-        """Exact L2 nearest-neighbour search via FAISS with optional hard-first greedy Top-K."""
+    def nn_search(self, queries, dataset):
+        """Score-guided nearest-neighbour search via FAISS.
+
+        ``queries`` are the real datapoint features, ``dataset`` are the generated
+        pool-sample features. With ``search_top_k == 1`` this is plain IMLE: every
+        datapoint is assigned its single nearest pool sample.
+
+        With ``search_top_k > 1`` we first *score* each pool sample by the distance
+        to its own nearest datapoint (reverse search) — a high score marks a
+        poorly-covered / "bad" sample. We then take each datapoint's ``search_top_k``
+        nearest pool samples (forward search) and assign the one with the *highest*
+        score, steering supervision towards bad samples. The returned distance is the
+        forward datapoint→assigned-sample distance.
+
+        Returns ``(distances, indices, chosen_scores)`` where ``chosen_scores`` is the
+        per-datapoint score of the assigned pool sample (``None`` for ``top_k == 1``).
+        """
         if isinstance(queries, np.ndarray):
             queries_t = torch.from_numpy(np.ascontiguousarray(queries, dtype=np.float32)).to(self.device)
         else:
@@ -355,50 +371,39 @@ class Sampler:
         queries_t = queries_t.contiguous()
         dataset_t = dataset_t.contiguous()
 
-        if getattr(self.H, 'nn_search_normalize', False):
-            queries_t = F.normalize(queries_t, dim=-1)
-            dataset_t = F.normalize(dataset_t, dim=-1)
+        top_k = getattr(self.H, 'search_top_k', 1)
 
-        topk = getattr(self.H, 'imle_db_topk', 1)
+        if top_k <= 1:
+            self.faiss_index_flat.reset()
+            self.faiss_index_flat.add(dataset_t)
+            D, I = self.faiss_index_flat.search(queries_t, 1)
+            self.faiss_index_flat.reset()
+            return D.squeeze(1).to(torch.float32), I.squeeze(1).to(torch.long), None
 
+        # Reverse search: score each pool sample by distance to its nearest datapoint.
+        self.faiss_index_flat.reset()
+        self.faiss_index_flat.add(queries_t)
+        score_D, _ = self.faiss_index_flat.search(dataset_t, 1)
+        self.faiss_index_flat.reset()
+        pool_scores = score_D.squeeze(1).to(torch.float32)  # [Nd], higher = worse-covered
+
+        # Forward search: each datapoint's top_k nearest pool samples.
+        k = min(top_k, dataset_t.shape[0])
         self.faiss_index_flat.reset()
         self.faiss_index_flat.add(dataset_t)
-        D, I = self.faiss_index_flat.search(queries_t, min(topk, dataset_t.shape[0]))
+        D, I = self.faiss_index_flat.search(queries_t, k)  # [Nq, k]
         self.faiss_index_flat.reset()
 
-        if topk == 1:
-            return D.squeeze(1).to(torch.float32), I.squeeze(1).to(torch.long)
+        I = I.to(torch.long)
+        # Among each query's k candidates, pick the one with the highest score.
+        cand_scores = pool_scores[I.reshape(-1)].reshape(I.shape)  # [Nq, k]
+        best = cand_scores.argmax(dim=1)  # [Nq]
+        rows = torch.arange(I.shape[0], device=I.device)
+        chosen_idx = I[rows, best]
+        chosen_dist = D[rows, best].to(torch.float32)
+        chosen_scores = cand_scores[rows, best]
 
-        # Hard-first greedy assignment via numpy
-        D_np = D.cpu().numpy()
-        I_np = I.cpu().numpy()
-        Nq, K = D_np.shape
-        Nd = dataset_t.shape[0]
-
-        # Sort all (query, candidate) pairs by distance ascending
-        q_ids = np.repeat(np.arange(Nq), K)
-        c_ids = I_np.flatten()
-        d_vals = D_np.flatten()
-        order = np.argsort(d_vals, kind='stable')
-
-        assigned_q = np.full(Nq, -1, dtype=np.int64)
-        assigned_d = np.full(Nq, np.inf, dtype=np.float32)
-        used_c = np.zeros(Nd, dtype=bool)
-
-        for pos in order:
-            q, c = q_ids[pos], c_ids[pos]
-            if assigned_q[q] == -1 and not used_c[c]:
-                assigned_q[q] = c
-                assigned_d[q] = d_vals[pos]
-                used_c[c] = True
-
-        # Fallback: unassigned queries get their k=1 match
-        unassigned = np.where(assigned_q == -1)[0]
-        if len(unassigned) > 0:
-            assigned_q[unassigned] = I_np[unassigned, 0]
-            assigned_d[unassigned] = D_np[unassigned, 0]
-
-        return torch.from_numpy(assigned_d), torch.from_numpy(assigned_q)
+        return chosen_dist, chosen_idx, chosen_scores
 
 
     def imle_sample_force(self, gen, to_update=None):
@@ -445,11 +450,14 @@ class Sampler:
                 # Pool features (as computed from resample_pool).
                 pool_feats = self.pool_samples_proj
 
-                # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                # Perform NN search for the local chunk. Returns arrays of shape (local_size,).
+                _, local_indices, chosen_scores = self.nn_search(local_ds_feats, pool_feats)
 
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz
+
+                # log the average score of the picked NN samples (top_k > 1 only)
+                self.avg_nn_score = chosen_scores.mean().item() if chosen_scores is not None else 0.0
 
                 local_indices = local_indices.to(device=self.pool_latents.device, non_blocking=True)
                 new_latents = self.pool_latents.index_select(0, local_indices)
