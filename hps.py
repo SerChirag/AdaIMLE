@@ -234,6 +234,16 @@ def add_imle_arguments(parser):
     parser.add_argument('--reject_threshold', type=float, default=1500.0)
     parser.add_argument('--reject_patch_size', type=int, default=32)
     parser.add_argument('--reject_max_attempts', type=int, default=20)
+
+    # In-memory FID against precomputed reference stats (mu/sigma) in an npz file.
+    parser.add_argument('--fid_ref_npz', type=str, default='evaluation/VIRTUAL_imagenet256_labeled.npz',
+                        help="reference npz containing 'mu' and 'sigma' for FID")
+    parser.add_argument('--fid_inception_weights', type=str, default='',
+                        help="optional local path to pt_inception-2015-12-05-6726825d.pth (else auto-download)")
+    parser.add_argument('--fid_inception_batch', type=int, default=50,
+                        help="batch size for the Inception forward pass during FID feature extraction")
+    parser.add_argument('--fid_save_pt', default=False, type=lambda x: bool(strtobool(x)),
+                        help="also save per-rank Inception features to {save_dir}/fid_features_rank*.pt")
     
     parser.add_argument('--use_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle
     parser.add_argument('--zero_init', default=True, type=lambda x: bool(strtobool(x)))  # whether to use adaptive imle

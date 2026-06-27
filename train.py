@@ -20,6 +20,7 @@ from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process,
 from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_and_save_smart,
+                          compute_fid_smart,
                           generate_for_NN, generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
@@ -419,8 +420,10 @@ def main():
                   f"patch_size={H.reject_patch_size}, max_attempts={H.reject_max_attempts})")
 
         imle.eval()
-        generate_and_save_smart(H, imle, sampler, 50000)
+        fid = compute_fid_smart(H, imle, sampler, 50000)
         safe_barrier()
+        if(is_main_process()):
+            print(f"FID: {fid}")
 
     elif H.mode == 'interpolate':
         if(is_main_process()):

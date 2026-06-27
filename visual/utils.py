@@ -274,6 +274,157 @@ def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
     imle.train()
 
 
+def _all_gather_features(feats_local):
+    """
+    Gather variable-length (n_i, D) feature tensors from all ranks onto every rank and
+    concatenate. Returns the full (sum n_i, D) tensor on CPU. Single-process safe.
+    """
+    if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+        return feats_local
+    world_size = get_world_size()
+    if world_size == 1:
+        return feats_local
+
+    device = torch.device('cuda', torch.cuda.current_device())
+    feats_local = feats_local.to(device)
+
+    # Exchange per-rank counts so we can pad to a common length for all_gather.
+    local_n = torch.tensor([feats_local.shape[0]], device=device, dtype=torch.long)
+    counts = [torch.zeros_like(local_n) for _ in range(world_size)]
+    torch.distributed.all_gather(counts, local_n)
+    counts = [int(c.item()) for c in counts]
+    max_n = max(counts)
+
+    D = feats_local.shape[1]
+    padded = torch.zeros((max_n, D), device=device, dtype=feats_local.dtype)
+    padded[:feats_local.shape[0]] = feats_local
+    gathered = [torch.zeros((max_n, D), device=device, dtype=feats_local.dtype)
+                for _ in range(world_size)]
+    torch.distributed.all_gather(gathered, padded)
+
+    out = [gathered[r][:counts[r]] for r in range(world_size)]
+    return torch.cat(out, dim=0).cpu()
+
+
+def compute_fid_smart(H, imle, sampler, n_samp, subdir='fid'):
+    """
+    In-memory FID against the precomputed reference stats in H.fid_ref_npz.
+
+    Generates n_samp samples (with the same patch-sharpness rejection as
+    generate_and_save_smart), extracts Inception pool_3 features per rank, all-gathers
+    them to rank 0, and computes FID via helpers.fid_score. No PNGs are written.
+
+    Returns the FID float on the main process (None on other ranks).
+    """
+    from helpers.fid_score import (
+        get_inception_model, inception_features, compute_fid_from_features,
+    )
+
+    rank = get_rank()
+    world_size = get_world_size()
+
+    indices = list(range(rank, n_samp, world_size))
+    n_local = len(indices)
+
+    imle.eval()
+
+    num_classes = getattr(H, 'num_classes', 0)
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    threshold = float(H.reject_threshold)
+    patch_size = int(H.reject_patch_size)
+    max_attempts = int(H.reject_max_attempts)
+
+    # Local image buffer, lazily allocated once we know H/W from the first batch.
+    images = None
+
+    # local_slot[g_idx] -> position in `images`. indices are strided by world_size.
+    slot_of = {g_idx: k for k, g_idx in enumerate(indices)}
+
+    # pending[k] = (global_index, attempts_so_far, best_score, best_img_or_None)
+    pending = [(idx, 0, -np.inf, None) for idx in indices]
+    accepted_count = 0
+    exhausted_count = 0
+    total_attempts = 0
+    log_every = max(1, n_local // 20)
+    next_log_at = log_every
+
+    with torch.inference_mode():
+        while pending:
+            cur = pending[:ae_batch]
+            pending = pending[ae_batch:]
+            cur_bs = len(cur)
+
+            latent_batch = torch.randn(
+                [cur_bs, H.latent_dim], dtype=torch.float32,
+                device=imle.device, generator=sampler.generator_seed,
+            )
+            if num_classes > 0:
+                condition = torch.tensor(
+                    [g_idx % num_classes for (g_idx, _, _, _) in cur],
+                    dtype=torch.long, device=imle.device,
+                )
+            else:
+                condition = None
+
+            samp = sampler.sample(latent_batch, imle, None, condition=condition)
+            if images is None:
+                h, w = samp.shape[1], samp.shape[2]
+                images = np.empty((n_local, h, w, 3), dtype=np.uint8)
+            scores = _patch_max_sharpness_batch(samp, patch_size)
+            total_attempts += cur_bs
+
+            for j in range(cur_bs):
+                g_idx, attempts, best_score, best_img = cur[j]
+                attempts += 1
+                score = float(scores[j])
+                if score > best_score:
+                    best_score = score
+                    best_img = samp[j]
+
+                if score >= threshold:
+                    images[slot_of[g_idx]] = samp[j]
+                    accepted_count += 1
+                elif attempts >= max_attempts:
+                    images[slot_of[g_idx]] = best_img
+                    accepted_count += 1
+                    exhausted_count += 1
+                else:
+                    pending.append((g_idx, attempts, best_score, best_img))
+
+            if accepted_count >= next_log_at and is_main_process():
+                acc_rate = accepted_count / total_attempts if total_attempts else 0.0
+                print(f'[compute_fid_smart] rank0 progress: {accepted_count}/{n_local} accepted '
+                      f'({total_attempts} attempts, accept_rate={acc_rate:.3f}, '
+                      f'exhausted={exhausted_count})')
+                next_log_at += log_every
+
+    if is_main_process():
+        acc_rate = accepted_count / total_attempts if total_attempts else 0.0
+        print(f'[compute_fid_smart] rank0 done: {accepted_count}/{n_local} generated '
+              f'({total_attempts} total attempts, accept_rate={acc_rate:.3f}, '
+              f'{exhausted_count} best-of-attempts after exhaustion). Extracting features...')
+
+    imle.train()
+
+    # Per-rank Inception feature extraction, then gather to rank 0.
+    device = imle.device
+    fid_batch = int(getattr(H, 'fid_inception_batch', 50))
+    inception = get_inception_model(device, getattr(H, 'fid_inception_weights', None) or None)
+    feats_local = inception_features(images, inception, device, batch_size=fid_batch)
+
+    if getattr(H, 'fid_save_pt', False):
+        torch.save(feats_local, os.path.join(H.save_dir, f'fid_features_rank{rank}.pt'))
+
+    feats_all = _all_gather_features(feats_local)
+
+    fid = None
+    if is_main_process():
+        fid = compute_fid_from_features(feats_all, H.fid_ref_npz)
+        print(f'[compute_fid_smart] FID ({feats_all.shape[0]} samples): {fid}')
+
+    return fid
+
+
 def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
     # Get the current process rank and world size.
     
