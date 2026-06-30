@@ -33,6 +33,8 @@ def _parallel_write_pngs(path_and_imgs, max_workers):
         list(executor.map(_write_png, path_and_imgs, chunksize=16))
 
 def delete_content_of_dir(folder):
+    if not os.path.isdir(folder):
+        return
     for filename in os.listdir(folder):
         file_path = os.path.join(folder, filename)
         try:
@@ -189,9 +191,13 @@ def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
     world_size = get_world_size()
 
     save_dir = os.path.join(H.save_dir, subdir)
+    bad_samples_dir = os.path.join(H.save_dir, 'bad_samples')
 
     if is_main_process():
+        os.makedirs(save_dir, exist_ok=True)
         delete_content_of_dir(save_dir)
+        os.makedirs(bad_samples_dir, exist_ok=True)
+        delete_content_of_dir(bad_samples_dir)
 
     torch.distributed.barrier()
 
@@ -214,6 +220,9 @@ def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
     total_attempts = 0
     log_every = max(1, n_local // 20)
     next_log_at = log_every
+
+    # Counter of rejected (below-threshold) attempts whose decoded images were saved.
+    bad_count = 0
 
     with torch.inference_mode():
         while pending:
@@ -256,6 +265,14 @@ def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
                 else:
                     pending.append((g_idx, attempts, best_score, best_img))
 
+                # Save the decoded image (pixel space) of every rejected
+                # (below-threshold) attempt, regardless of resample/exhaustion.
+                if score < threshold:
+                    bad_path = os.path.join(
+                        bad_samples_dir, f'{g_idx}_attempt{attempts}.png')
+                    path_and_imgs.append((bad_path, samp[j]))
+                    bad_count += 1
+
             _parallel_write_pngs(path_and_imgs, write_workers)
 
             if accepted_count >= next_log_at and is_main_process():
@@ -265,11 +282,16 @@ def generate_and_save_smart(H, imle, sampler, n_samp, subdir='fid'):
                       f'exhausted={exhausted_count})')
                 next_log_at += log_every
 
+    torch.distributed.barrier()
+
     if is_main_process():
         acc_rate = accepted_count / total_attempts if total_attempts else 0.0
         print(f'[eval_fid_smart] rank0 done: {accepted_count}/{n_local} written '
               f'({total_attempts} total attempts, accept_rate={acc_rate:.3f}, '
               f'{exhausted_count} written from best-of-attempts after exhaustion)')
+        n_bad_files = len([f for f in os.listdir(bad_samples_dir) if f.endswith('.png')])
+        print(f'[eval_fid_smart] bad (below-threshold) sample images saved to '
+              f'{bad_samples_dir} ({n_bad_files} png file(s) across all ranks)')
 
     imle.train()
 

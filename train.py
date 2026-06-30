@@ -405,7 +405,7 @@ def main():
             print("Generating samples for FID")
 
         imle.eval()
-        generate_and_save(H, imle, sampler, 50000)
+        generate_and_save(H, imle, sampler, 1000)
         safe_barrier()        # if(is_main_process()):
             
         #     cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False)
@@ -419,7 +419,7 @@ def main():
                   f"patch_size={H.reject_patch_size}, max_attempts={H.reject_max_attempts})")
 
         imle.eval()
-        generate_and_save_smart(H, imle, sampler, 50000)
+        generate_and_save_smart(H, imle, sampler, 1000)
         safe_barrier()
 
     elif H.mode == 'interpolate':

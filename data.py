@@ -76,6 +76,20 @@ def set_up_data(H):
     )
     H.image_channels = latent_probe.shape[1]
 
+    # Eval-only modes never touch the training images: they only call
+    # sampler.sample(), and `len(data_train)` is used solely to size the
+    # (unused) IMLE pool. Skip the expensive ImageFolder decode entirely and
+    # hand back an empty dataset with a length that keeps pool-sizing valid.
+    if getattr(H, 'mode', 'train') in ('eval_fid', 'eval_fid_smart'):
+        num_classes = getattr(H, 'num_classes', 0)
+        stub_len = max(int(num_classes), 1)
+        H.labels = None
+        train_data = TensorDataset(torch.empty(stub_len, 0, dtype=torch.uint8))
+        H.global_batch_size = H.n_batch * get_world_size()
+        H.train_len = stub_len
+        H.total_iters = 0
+        return H, train_data, None, (lambda x: x), autoencoder
+
     train_len = None
     use_cache = bool(getattr(H, 'use_cache', True))
     cache_dir = getattr(H, 'cache_dir', './cache')
