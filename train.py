@@ -4,7 +4,6 @@ os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 import time
 from contextlib import nullcontext
 
-from comet_ml import Experiment, ExistingExperiment
 import imageio
 import torch
 from torch.utils.data.distributed import DistributedSampler
@@ -15,7 +14,7 @@ import torch.nn.functional as F
 from models import IMLE
 import numpy as np
 from data import set_up_data
-from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
+from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_comet, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
@@ -371,25 +370,7 @@ def main():
     experiment = None
     if(is_main_process()):
         print(H)
-        if H.use_comet and H.comet_api_key:
-            if(H.comet_experiment_key):
-                print("Resuming experiment")
-                experiment = ExistingExperiment(
-                    api_key=H.comet_api_key,
-                    previous_experiment=H.comet_experiment_key
-                )
-                experiment.log_parameters(H)
-
-            else:
-                experiment = Experiment(
-                    api_key=H.comet_api_key,
-                    project_name="adaptiveimle-ablation",
-                    workspace="serchirag",
-                )
-                experiment.set_name(H.comet_name)
-                experiment.log_parameters(H)
-        else:
-            experiment = None
+        experiment = set_up_comet(H, logprint)
 
         os.makedirs(f'{H.save_dir}/fid', exist_ok=True)
 
