@@ -181,5 +181,82 @@ def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
                 for k in range(2, len(samp)):
                     path_and_imgs.append((os.path.join(save_dir, f'{global_index}_{1 << k}.png'), samp[k][j]))
             _parallel_write_pngs(path_and_imgs, write_workers)
-    
+
     imle.train()
+
+
+def generate_activations(H, imle, sampler, n_samp):
+    """Generate `n_samp` samples and return their Inception activations in memory.
+
+    Unlike `generate_and_save`, this writes no PNGs to disk. Each rank generates
+    its shard, runs it through Inception immediately, and the 2048-dim features
+    are gathered onto rank 0. Returns an [n_samp, 2048] float64 array on rank 0
+    and None on other ranks.
+    """
+    from evaluate import load_inception_detector, compute_activations_from_images
+
+    rank = get_rank()
+    world_size = get_world_size()
+    device = imle.device
+
+    detector_net = load_inception_detector(device)
+
+    indices = list(range(rank, n_samp, world_size))
+    n_local = len(indices)
+
+    imle.eval()
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    local_feats = []
+    with torch.inference_mode():
+        for i in range(0, n_local, ae_batch):
+            current_batch_size = min(ae_batch, n_local - i)
+            latent_batch = torch.randn([current_batch_size, H.latent_dim], dtype=torch.float32,
+                                       device=device, generator=sampler.generator_seed)
+            # sampler.sample returns uint8 NHWC; Inception wants uint8 NCHW.
+            samp = sampler.sample(latent_batch, imle, None, condition=None)
+            samp = torch.from_numpy(samp).permute(0, 3, 1, 2).contiguous()
+            local_feats.append(compute_activations_from_images(samp, detector_net, device))
+    imle.train()
+
+    local_feats = np.concatenate(local_feats, axis=0) if local_feats else np.zeros((0, 2048), dtype=np.float64)
+
+    if world_size == 1:
+        return local_feats
+
+    # Gather variable-length per-rank feature arrays onto rank 0.
+    gathered = [None] * world_size
+    torch.distributed.all_gather_object(gathered, local_feats)
+    if not is_main_process():
+        return None
+    return np.concatenate(gathered, axis=0)
+
+
+def compute_reference_activations(H, real_image_path, device, cache_path=None):
+    """Compute (and cache) Inception activations for the real ImageFolder dataset.
+
+    Runs on the calling (rank-0) process only. If `cache_path` exists it is
+    loaded; otherwise the real images are pushed through Inception once and the
+    resulting [N, 2048] activations are saved to a single .npz file for reuse.
+    """
+    from evaluate import load_inception_detector, compute_activations_from_images
+    from training import dataset as _ds_module
+
+    if cache_path is not None and os.path.exists(cache_path):
+        with np.load(cache_path) as data:
+            return data['feat']
+
+    detector_net = load_inception_detector(device)
+    dataset_obj = _ds_module.ImageFolderDataset(path=real_image_path)
+    ref_batch = getattr(H, 'ae_batch', H.imle_batch)
+    data_loader = DataLoader(dataset_obj, batch_size=ref_batch, num_workers=4)
+
+    feats = []
+    with torch.inference_mode():
+        for images, _labels in data_loader:
+            feats.append(compute_activations_from_images(images, detector_net, device))
+    feats = np.concatenate(feats, axis=0)
+
+    if cache_path is not None:
+        os.makedirs(os.path.dirname(cache_path) or '.', exist_ok=True)
+        np.savez(cache_path, feat=feats)
+    return feats

@@ -8,7 +8,6 @@ import imageio
 import torch
 from torch.utils.data.distributed import DistributedSampler
 import torch.nn as nn
-from cleanfid import fid
 from torch.utils.data import DataLoader, TensorDataset
 import torch.nn.functional as F
 from models import IMLE
@@ -18,10 +17,13 @@ from helpers.train_helpers import (configure_runtime_performance, load_imle, loa
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
 from sampler import Sampler
 from visual.interpolate import random_interp
-from visual.utils import (generate_and_save, generate_for_NN,
+from visual.utils import (generate_and_save, generate_activations,
+                          compute_reference_activations, generate_for_NN,
                           generate_visualization,
                           get_sample_for_visualization)
-from helpers.improved_precision_recall import compute_prec_recall
+from evaluate import (calculate_inception_stats_from_activations,
+                      calculate_fid_from_inception_stats,
+                      calculate_precision_recall_from_activations)
 from torch import autocast
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -285,14 +287,23 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 metrics['ema_dist_max']  = d.max().item()
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
-            generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
-            safe_barrier()            
+            # Compute FID + precision/recall from in-memory Inception activations.
+            # No sample PNGs are written to disk; only the real-set reference
+            # activations are cached, in a single .npz, and reused across evals.
+            sample_feats = generate_activations(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
+            safe_barrier()
             if(is_main_process()):
                 if not H.autoencoder_decode_for_metrics:
                     metrics.update({'fid': float('nan'), 'best_fid': best_fid, 'precision': float('nan'), 'recall': float('nan')})
                 else:
-                    cur_fid = fid.compute_fid(f'{H.data_root}/img', f'{H.save_dir}/fid/', verbose=False, use_dataparallel=False, num_workers=0, device=device)
-                    precision, recall = compute_prec_recall(f'{H.data_root}/img', f'{H.save_dir}/fid/')
+                    ref_feats = compute_reference_activations(
+                        H, f'{H.data_root}/img', device,
+                        cache_path=os.path.join(H.save_dir, 'ref_activations.npz'))
+
+                    mu_ref, sigma_ref = calculate_inception_stats_from_activations(ref_feats, device=device, local=True)
+                    mu, sigma = calculate_inception_stats_from_activations(sample_feats, device=device, local=True)
+                    cur_fid = calculate_fid_from_inception_stats(mu, sigma, mu_ref, sigma_ref)
+                    precision, recall = calculate_precision_recall_from_activations(ref_feats, sample_feats)
                     if cur_fid < best_fid:
                         best_fid = cur_fid
 

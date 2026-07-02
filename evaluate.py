@@ -26,6 +26,42 @@ from multiprocessing.pool import ThreadPool
 
 #----------------------------------------------------------------------------
 
+_INCEPTION_URL = 'https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/metrics/inception-2015-12-05.pkl'
+_inception_net = None
+
+
+def load_inception_detector(device=torch.device('cuda')):
+    """Load (and cache) the StyleGAN3 Inception-v3 feature detector.
+
+    The network is loaded once per process and reused across every FID/PR
+    evaluation. Returns a module that accepts uint8 NCHW images and, with
+    return_features=True, yields the 2048-dim pool3 activations used for FID.
+    """
+    global _inception_net
+    if _inception_net is None:
+        with dnnlib.util.open_url(_INCEPTION_URL, verbose=(dist.get_rank() == 0)) as f:
+            _inception_net = pickle.load(f).to(device)
+    return _inception_net
+
+
+def compute_activations_from_images(images, detector_net, device=torch.device('cuda')):
+    """Run a batch of uint8 images through Inception and return 2048-dim features.
+
+    args:
+        images: uint8 tensor/array of shape [B, C, H, W] (C == 1 or 3).
+    returns:
+        np.ndarray of shape [B, 2048], dtype float64.
+    """
+    if not torch.is_tensor(images):
+        images = torch.as_tensor(images)
+    if images.shape[1] == 1:
+        images = images.repeat([1, 3, 1, 1])
+    with torch.inference_mode():
+        features = detector_net(images.to(device), return_features=True)
+    return features.cpu().numpy().astype(np.float64)
+
+#----------------------------------------------------------------------------
+
 def calculate_activations(
     image_path, num_expected=None, seed=0, max_batch_size=64,
     num_workers=3, prefetch_factor=2, device=torch.device('cuda'),
@@ -88,9 +124,14 @@ def calculate_activations(
 #----------------------------------------------------------------------------
 
 def calculate_inception_stats_from_activations(
-    activations, batch_size=64, device=torch.device('cuda')
+    activations, batch_size=64, device=torch.device('cuda'), local=False
 ):
-    safe_barrier()    
+    # `local=True` skips the barrier + all_reduce: use it when `activations`
+    # already holds the full set on a single process (e.g. rank-0 FID during
+    # training). `local=False` keeps the sharded-across-ranks behaviour used by
+    # the `evaluate.py calc` command.
+    if not local:
+        safe_barrier()
     data_num, feature_dim = activations.shape
     mu = torch.zeros([feature_dim], dtype=torch.float64, device=device)
     sigma = torch.zeros([feature_dim, feature_dim], dtype=torch.float64, device=device)
@@ -98,10 +139,11 @@ def calculate_inception_stats_from_activations(
         activations_batch = torch.tensor(activations[i*batch_size: (i+1)*batch_size], dtype=torch.float64, device=device)
         mu += activations_batch.sum(0)
         sigma += activations_batch.T @ activations_batch
-    
+
     # Calculate grand totals.
-    torch.distributed.all_reduce(mu)
-    torch.distributed.all_reduce(sigma)
+    if not local:
+        torch.distributed.all_reduce(mu)
+        torch.distributed.all_reduce(sigma)
 
     mu /= data_num
     sigma -= mu.ger(mu) * data_num
