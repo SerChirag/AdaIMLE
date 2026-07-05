@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import imageio
 import os
+import math
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from helpers.utils import is_main_process, get_rank, get_world_size
@@ -421,6 +422,157 @@ def compute_fid_smart(H, imle, sampler, n_samp, subdir='fid'):
     if is_main_process():
         fid = compute_fid_from_features(feats_all, H.fid_ref_npz)
         print(f'[compute_fid_smart] FID ({feats_all.shape[0]} samples): {fid}')
+
+    return fid
+
+
+def _roundtrip_cost_batch(samp_uint8_nhwc, autoencoder, lpips_fn, device):
+    """VAE round-trip reconstruction cost for a batch of generated samples.
+
+    samp_uint8_nhwc: (B, H, W, 3) uint8 [0,255], exactly what sampler.sample returns
+    (already VAE-decoded to pixel space). We re-encode and re-decode it and measure how
+    much it changed -- off-manifold samples reconstruct poorly (high cost).
+
+    Returns (lpips (B,), mse (B,)) as float64 numpy arrays; MSE is on the 0-255 scale.
+    """
+    from helpers.autoencoder import encode_images_to_latents, decode_latents_to_images
+
+    x0 = torch.from_numpy(np.ascontiguousarray(samp_uint8_nhwc)).to(device)
+    x0 = x0.permute(0, 3, 1, 2).float() / 127.5 - 1.0            # [-1,1] NCHW
+    z = encode_images_to_latents(autoencoder, x0, target_spatial=None)
+    x1 = decode_latents_to_images(autoencoder, z, latent_spatial=None)   # clamped [-1,1]
+    lp = lpips_fn(x0, x1).float().cpu().numpy().astype(np.float64)
+    s = 127.5
+    mse = (((x0 + 1) * s - (x1 + 1) * s) ** 2).mean([1, 2, 3]).cpu().numpy().astype(np.float64)
+    return lp, mse
+
+
+def compute_fid_smart_roundtrip(H, imle, sampler, target, subdir='fid'):
+    """
+    In-memory FID against the precomputed reference stats in H.fid_ref_npz, with samples
+    filtered by VAE round-trip reconstruction cost.
+
+    Unlike compute_fid_smart (which resamples each slot until it passes a sharpness
+    threshold), this OVERSAMPLES: it generates n_over = ceil(target / keep_frac) samples,
+    scores each by round-trip cost (both LPIPS and MSE are computed and logged; rejection
+    is by H.roundtrip_metric), and keeps the target lowest-cost samples GLOBALLY across
+    ranks. FID is then computed over the kept set. No PNGs are written.
+
+    The global keep-best-K uses a cost quantile: per-sample costs are all-gathered so every
+    rank computes an identical threshold (the K-th smallest cost) and keeps its local
+    samples with cost <= threshold. The kept count is >= target, exceeding it only by the
+    number of samples exactly tied at the K-th-smallest cost (typically 0 for continuous
+    LPIPS/MSE). Exact-K tie-breaking is possible but omitted for simplicity.
+
+    Returns the FID float on the main process (None on other ranks).
+    """
+    from helpers.fid_score import (
+        get_inception_model, inception_features, compute_fid_from_features,
+    )
+    from helpers.lpips_vgg import load_lpips_vgg
+
+    rank = get_rank()
+    world_size = get_world_size()
+
+    metric = getattr(H, 'roundtrip_metric', 'lpips')
+    keep_frac = float(getattr(H, 'roundtrip_keep_frac', 0.8333))
+    n_over = math.ceil(target / keep_frac)
+
+    indices = list(range(rank, n_over, world_size))
+    n_local = len(indices)
+
+    imle.eval()
+
+    num_classes = getattr(H, 'num_classes', 0)
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    device = imle.device
+
+    lpips_fn = load_lpips_vgg(device, getattr(H, 'roundtrip_lpips_path', 'lpips/weights/v0.1/vgg.pth'))
+
+    # Local image buffer, lazily allocated once we know H/W from the first batch.
+    images = None
+    lpips_local = np.empty(n_local, dtype=np.float64)
+    mse_local = np.empty(n_local, dtype=np.float64)
+
+    accepted_count = 0
+    log_every = max(1, n_local // 20)
+    next_log_at = log_every
+
+    with torch.inference_mode():
+        for i in range(0, n_local, ae_batch):
+            cur = indices[i:i + ae_batch]
+            cur_bs = len(cur)
+
+            latent_batch = torch.randn(
+                [cur_bs, H.latent_dim], dtype=torch.float32,
+                device=device, generator=sampler.generator_seed,
+            )
+            if num_classes > 0:
+                condition = torch.tensor(
+                    [g_idx % num_classes for g_idx in cur],
+                    dtype=torch.long, device=device,
+                )
+            else:
+                condition = None
+
+            samp = sampler.sample(latent_batch, imle, None, condition=condition)
+            if images is None:
+                h, w = samp.shape[1], samp.shape[2]
+                images = np.empty((n_local, h, w, 3), dtype=np.uint8)
+            lp, ms = _roundtrip_cost_batch(samp, sampler.autoencoder, lpips_fn, device)
+            images[i:i + cur_bs] = samp
+            lpips_local[i:i + cur_bs] = lp
+            mse_local[i:i + cur_bs] = ms
+            accepted_count += cur_bs
+
+            if accepted_count >= next_log_at and is_main_process():
+                print(f'[compute_fid_smart_roundtrip] rank0 progress: {accepted_count}/{n_local} scored')
+                next_log_at += log_every
+
+    imle.train()
+
+    # Global keep-best-K: all-gather per-sample costs so every rank computes the same cut.
+    cost_local = lpips_local if metric == 'lpips' else mse_local
+    lpips_all = _all_gather_features(torch.from_numpy(lpips_local).float().view(-1, 1)).view(-1).numpy()
+    mse_all = _all_gather_features(torch.from_numpy(mse_local).float().view(-1, 1)).view(-1).numpy()
+    cost_all = lpips_all if metric == 'lpips' else mse_all
+
+    K = min(target, cost_all.shape[0])
+    thresh = float(np.partition(cost_all, K - 1)[K - 1])
+    keep_mask = cost_local <= thresh
+    kept_images = images[keep_mask]
+
+    # True global kept count (>= target by boundary ties).
+    kept_local = int(keep_mask.sum())
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        t = torch.tensor([kept_local], device=device)
+        torch.distributed.all_reduce(t)
+        kept_global = int(t.item())
+    else:
+        kept_global = kept_local
+
+    if is_main_process():
+        print(f'[compute_fid_smart_roundtrip] metric={metric} target={target} '
+              f'oversample={n_over} kept={kept_global} (thresh={thresh:.5f})')
+        print(f'[compute_fid_smart_roundtrip]   lpips: min/med/max = '
+              f'{lpips_all.min():.5f}/{np.median(lpips_all):.5f}/{lpips_all.max():.5f}   '
+              f'mse: min/med/max = {mse_all.min():.2f}/{np.median(mse_all):.2f}/{mse_all.max():.2f}')
+        print('[compute_fid_smart_roundtrip] Extracting features...')
+
+    # Per-rank Inception feature extraction, then gather to rank 0.
+    fid_batch = int(getattr(H, 'fid_inception_batch', 50))
+    inception = get_inception_model(device, getattr(H, 'fid_inception_weights', None) or None)
+    feats_local = inception_features(kept_images, inception, device, batch_size=fid_batch)
+
+    if getattr(H, 'fid_save_pt', False):
+        torch.save(feats_local, os.path.join(H.save_dir, f'fid_features_rank{rank}.pt'))
+
+    feats_all = _all_gather_features(feats_local)
+
+    fid = None
+    if is_main_process():
+        fid = compute_fid_from_features(feats_all, H.fid_ref_npz)
+        print(f'[compute_fid_smart_roundtrip] FID ({feats_all.shape[0]} samples): {fid}')
 
     return fid
 

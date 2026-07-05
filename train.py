@@ -2,6 +2,7 @@ import os
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
 import time
+import math
 from contextlib import nullcontext
 
 from comet_ml import Experiment, ExistingExperiment
@@ -20,7 +21,7 @@ from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process,
 from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_and_save_smart,
-                          compute_fid_smart,
+                          compute_fid_smart, compute_fid_smart_roundtrip,
                           generate_for_NN, generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
@@ -421,6 +422,20 @@ def main():
 
         imle.eval()
         fid = compute_fid_smart(H, imle, sampler, 50000)
+        safe_barrier()
+        if(is_main_process()):
+            print(f"FID: {fid}")
+
+    elif H.mode == 'eval_fid_smart_roundtrip':
+        sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
+        safe_barrier()
+        if(is_main_process()):
+            n_over = math.ceil(H.roundtrip_target / H.roundtrip_keep_frac)
+            print(f"Generating {n_over} samples, keeping best {H.roundtrip_target} "
+                  f"by round-trip {H.roundtrip_metric} (keep_frac={H.roundtrip_keep_frac})")
+
+        imle.eval()
+        fid = compute_fid_smart_roundtrip(H, imle, sampler, H.roundtrip_target)
         safe_barrier()
         if(is_main_process()):
             print(f"FID: {fid}")

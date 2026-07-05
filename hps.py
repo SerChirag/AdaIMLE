@@ -235,6 +235,18 @@ def add_imle_arguments(parser):
     parser.add_argument('--reject_patch_size', type=int, default=32)
     parser.add_argument('--reject_max_attempts', type=int, default=20)
 
+    # eval_fid_smart_roundtrip: oversample, then keep the best-K by VAE round-trip
+    # reconstruction cost (encode->decode a generated image, measure how much it changed).
+    parser.add_argument('--roundtrip_metric', type=str, default='lpips', choices=['lpips', 'mse'],
+                        help="which round-trip cost to reject by (both are always computed and logged)")
+    parser.add_argument('--roundtrip_keep_frac', type=float, default=0.8333,
+                        help="fraction of the oversample to keep (best-K by cost). Generates "
+                             "ceil(roundtrip_target / keep_frac) samples, keeps the target lowest-cost.")
+    parser.add_argument('--roundtrip_target', type=int, default=50000,
+                        help="number of kept samples FID is computed over")
+    parser.add_argument('--roundtrip_lpips_path', type=str, default='lpips/weights/v0.1/vgg.pth',
+                        help="repo-local LPIPS-VGG lin-layer weights (no download)")
+
     # In-memory FID against precomputed reference stats (mu/sigma) in an npz file.
     parser.add_argument('--fid_ref_npz', type=str, default='evaluation/VIRTUAL_imagenet256_labeled.npz',
                         help="reference npz containing 'mu' and 'sigma' for FID")
