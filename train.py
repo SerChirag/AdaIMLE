@@ -157,6 +157,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             latent_table.copy_(sampler.selected_latents)
             force_initial_resample = False
 
+            # One-shot dump of per-datapoint NN distances from this single resample
+            # round, then exit. Used for plotting the NN-distance histogram.
+            if getattr(H, 'dump_nn_dists', None):
+                safe_barrier()
+                if is_main_process():
+                    dists = sampler.selected_dists.detach().cpu().numpy()
+                    out_path = H.dump_nn_dists
+                    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+                    np.save(out_path, dists)
+                    logprint(f'Saved {dists.shape[0]} NN distances to {out_path} '
+                             f'(min={dists.min():.4f} mean={dists.mean():.4f} max={dists.max():.4f})')
+                safe_barrier()
+                return
+
 
         if (epoch % H.viz_freq == 0 and is_main_process()):
             latents = sampler.selected_latents[viz_indices_tensor]

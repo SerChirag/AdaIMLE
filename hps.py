@@ -315,4 +315,7 @@ def add_imle_arguments(parser):
         help='EMA decay for per-sample NN distances. Only used when dist_weight_temperature > 0.')
     parser.add_argument('--dist_weight_temperature', type=float, default=-1.0,
         help='Softmax temperature for distance-based loss weighting. -1 = disabled.')
+    parser.add_argument('--dump_nn_dists', type=str, default=None,
+        help='If set, save the per-datapoint NN distances from the first resample round '
+             'to this path (.npy) and exit. Used for plotting the NN-distance histogram.')
     return parser
