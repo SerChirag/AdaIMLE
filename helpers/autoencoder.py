@@ -112,3 +112,32 @@ def decode_latents_to_images(autoencoder, latents_chw, latent_spatial=None):
         images = _extract_sample(decoded)
 
     return torch.clamp(images, -1.0, 1.0)
+
+
+def decode_latents_to_images_differentiable(autoencoder, latents_chw, latent_spatial=None):
+    """Decode latents to RGB, nominally [-1, 1], while keeping the graph intact.
+
+    ``decode_latents_to_images`` runs under ``inference_mode``, whose outputs can never
+    take part in autograd. This variant exists so a pixel-space loss can backpropagate
+    through the frozen decoder into whatever produced ``latents_chw``. The autoencoder's
+    own parameters stay frozen via ``requires_grad_(False)`` in ``load_autoencoder``;
+    only the activations are retained.
+
+    Unlike the inference variant, the output is NOT clamped: clamping zeroes the gradient
+    wherever the decoder overshoots [-1, 1], which early in training is exactly where the
+    loss most needs to push back. Callers wanting a displayable image should clamp; callers
+    feeding a perceptual loss should not.
+    """
+    if autoencoder is None:
+        return latents_chw
+
+    latents = latents_chw
+    if latent_spatial is not None and (latents.shape[-2], latents.shape[-1]) != tuple(latent_spatial):
+        latents = F.interpolate(latents, size=latent_spatial, mode='bicubic', align_corners=False)
+    if latents.is_cuda and latents.ndim == 4:
+        latents = latents.contiguous(memory_format=torch.channels_last)
+
+    scaling_factor = getattr(autoencoder, '_cached_scaling_factor', 1.0)
+    with _fp32_vae_context(latents):
+        decoded = autoencoder.decode((latents / scaling_factor).float())
+    return _extract_sample(decoded)

@@ -1,4 +1,5 @@
 from math import ceil
+import os
 import time
 
 import numpy as np
@@ -15,8 +16,10 @@ from torch import autocast
 import faiss
 import faiss.contrib.torch_utils
 from tqdm import tqdm
-from helpers.autoencoder import load_autoencoder, encode_images_to_latents, decode_latents_to_images
+from helpers.autoencoder import (load_autoencoder, encode_images_to_latents, decode_latents_to_images,
+                                 decode_latents_to_images_differentiable)
 from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
+from helpers.lpips_vgg import load_lpips_vgg
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn, autoencoder=None):
@@ -79,6 +82,17 @@ class Sampler:
         fake_rgb = torch.zeros(1, 3, H.image_size, H.image_size, device=self.device)
         native_latents = encode_images_to_latents(self.autoencoder, fake_rgb, target_spatial=None)
         self.autoencoder_native_latent_size = (native_latents.shape[-2], native_latents.shape[-1])
+
+        # Perceptual loss in decoder (pixel) space. Only built when actually used, since
+        # it pulls a VGG16 into VRAM and forces a differentiable decode every step.
+        self.lpips_coef = float(getattr(H, 'lpips_coef', 0.0))
+        self.lpips_net = None
+        if self.lpips_coef > 0.0:
+            lpips_path = os.path.join(getattr(H, 'lpips_path', './lpips'), 'weights/v0.1/vgg.pth')
+            self.lpips_net = load_lpips_vgg(self.device, lin_path=lpips_path)
+            if is_main_process():
+                print(f'\n[lpips] Decoder-space LPIPS-VGG enabled (coef={self.lpips_coef}), '
+                      f'weights from {lpips_path}\n')
 
         if H.search_type != 'l2':
             raise ValueError('This branch expects search_type=l2.')
@@ -265,7 +279,31 @@ class Sampler:
             per_elem = self.l2_loss(inp, tar)
 
         return per_elem.mean()
-    
+
+    def calc_lpips_loss(self, inp, tar):
+        """LPIPS between the decoded prediction and the decoded target latent.
+
+        ``inp`` and ``tar`` are BCHW latents at ``latent_spatial_size``. Only ``inp``'s
+        decode is differentiable: ``tar`` is a fixed property of the dataset image, so
+        decoding it under ``no_grad`` keeps the backward graph to a single decoder pass.
+
+        VGG expects fp32, and the decoder is forced out of autocast anyway, so the whole
+        term runs at full precision regardless of the ambient autocast context.
+        """
+        if self.lpips_net is None:
+            return torch.zeros((), device=inp.device, dtype=torch.float32)
+
+        with torch.no_grad():
+            img_tar = decode_latents_to_images_differentiable(
+                self.autoencoder, tar.detach(), self.autoencoder_native_latent_size)
+            img_tar = img_tar.clamp(-1.0, 1.0)
+
+        img_inp = decode_latents_to_images_differentiable(
+            self.autoencoder, inp, self.autoencoder_native_latent_size)
+
+        with autocast(device_type='cuda', enabled=False):
+            return self.lpips_net(img_inp.float(), img_tar.float()).mean()
+
     def resample_pool(self, gen, class_condition=None):
 
         # Determine local pool size
