@@ -100,6 +100,35 @@ class ConvNeXtBlock(nn.Module):
 
         return x
 
+class AttnBlock(nn.Module):
+    def __init__(self, dim, H, res, num_heads, expansion=4):
+        super().__init__()
+        assert dim % num_heads == 0, f"width {dim} not divisible by heads {num_heads} at res {res}"
+        self.res = res
+        # reuse existing norm choice (rmsnorm default, eps from hp)
+        Norm = nn.RMSNorm if H.convnext_norm == 'rmsnorm' else nn.LayerNorm
+        self.norm1 = Norm(dim, eps=H.convnext_norm_eps)
+        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.norm2 = Norm(dim, eps=H.convnext_norm_eps)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, expansion * dim),
+            nn.GELU(approximate='tanh'),
+            nn.Linear(expansion * dim, dim),
+        )
+        # learned per-resolution positional table
+        self.pos = nn.Parameter(torch.zeros(1, res * res, dim))
+        trunc_normal_(self.pos, std=.02)
+
+    def forward(self, x):
+        # x: B,C,H,W  (same signature as ConvNeXtBlock)
+        B, C, H, W = x.shape
+        t = x.flatten(2).transpose(1, 2)        # B, H*W, C
+        t = t + self.pos
+        h = self.norm1(t)
+        t = t + self.attn(h, h, h, need_weights=False)[0]
+        t = t + self.mlp(self.norm2(t))
+        return t.transpose(1, 2).reshape(B, C, H, W).contiguous(memory_format=torch.channels_last)
+
 class DecBlock(nn.Module):
     def __init__(self, H, res, mixin, n_blocks):
         super().__init__()
@@ -115,11 +144,8 @@ class DecBlock(nn.Module):
             self.proj = nn.Identity()
 
         self.adaIN = AdaptiveInstanceNorm(width, H.latent_dim)
-        self.resnet = ConvNeXtBlock(width, H, kernel_size=7, 
-                                    expansion=H.convnext_expansion, 
-                                    use_se=H.use_se,
-                                    reduction=H.se_reduction,
-                                    dropout=H.dropout_p)
+        self.resnet = AttnBlock(width, H, res=res, num_heads=H.attn_heads,
+                                expansion=H.convnext_expansion)
 
         self.residual_ratio = nn.Parameter(torch.tensor(H.residual_ratio))
         self.residual_type = H.residual_type  # 'normal' or 'convex'

@@ -270,11 +270,21 @@ def load_imle(H, logprint):
     ddp_dev = torch.cuda.current_device()
 
     if(is_dist_avail_and_initialized()):
-        imle = DDP(imle, device_ids=[ddp_dev], 
-                    output_device=ddp_dev,
-                    gradient_as_bucket_view=True,
-                    static_graph=True
-                    )
+        # With single-res supervision (use_multi_res=False), the intermediate output
+        # heads (resnets.8/16) are never in the loss graph, so their params get no grad.
+        # static_graph=True forbids that; fall back to find_unused_parameters=True.
+        if getattr(H, 'use_multi_res', True):
+            imle = DDP(imle, device_ids=[ddp_dev],
+                        output_device=ddp_dev,
+                        gradient_as_bucket_view=True,
+                        static_graph=True
+                        )
+        else:
+            imle = DDP(imle, device_ids=[ddp_dev],
+                        output_device=ddp_dev,
+                        gradient_as_bucket_view=True,
+                        find_unused_parameters=True
+                        )
     
     if(H.compile):
         imle = torch.compile(imle)

@@ -315,6 +315,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--comet_experiment_key', type=str, default='')
 
     parser.add_argument("--convnext_expansion", type=int, default=4, help="expansion factor for convnext")
+    parser.add_argument("--attn_heads", type=int, default=8, help="number of self-attention heads in decoder AttnBlock")
     parser.add_argument("--convnext_norm", default='rmsnorm',choices=["layernorm", "rmsnorm"], help="norm type for convnext block")
     parser.add_argument("--convnext_norm_eps", type=float, default=1e-3, help="epsilon for convnext norm")
     parser.add_argument("--use_convnext_bias", default=True, type=lambda x: bool(strtobool(x)))  # whether to use se block
