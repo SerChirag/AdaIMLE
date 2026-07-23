@@ -100,6 +100,38 @@ class ConvNeXtBlock(nn.Module):
 
         return x
 
+class QKNormAttention(nn.Module):
+    """Multi-head self-attention with per-head QK L2-normalization and a learnable
+    temperature. nn.MultiheadAttention's default init gives attention-logit std ~0.5,
+    which softmaxes to near-uniform (dead) attention at init. QK-norm makes the logit
+    scale init-independent (cos-similarity in [-1,1] * learnable temp), so attention is
+    selective from step one. Core dot-product uses SDPA to stay fast."""
+    def __init__(self, dim, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.qkv = nn.Linear(dim, 3 * dim)
+        self.proj = nn.Linear(dim, dim)
+        # learnable per-head temperature; init so max logit ~= sqrt(head_dim)-ish range.
+        # log-space param, init to log(1/0.07)~ClIP-style; softmax over unit-norm q,k.
+        self.logit_scale = nn.Parameter(torch.full((num_heads, 1, 1), float(np.log(1.0 / 0.07))))
+        self.max_logit_scale = float(np.log(1.0 / 0.01))
+
+    def forward(self, x):
+        # x: B, N, C
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]          # each B, heads, N, head_dim
+        # per-head L2-normalize q,k -> dot product is cosine similarity in [-1,1]
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
+        scale = self.logit_scale.clamp(max=self.max_logit_scale).exp()   # heads,1,1
+        # SDPA with scale=1 (we pre-scaled via temperature on normalized q)
+        out = F.scaled_dot_product_attention(q * scale, k, v, scale=1.0)  # B, heads, N, head_dim
+        out = out.transpose(1, 2).reshape(B, N, C)
+        return self.proj(out)
+
+
 class AttnBlock(nn.Module):
     def __init__(self, dim, H, res, num_heads, expansion=4):
         super().__init__()
@@ -108,7 +140,7 @@ class AttnBlock(nn.Module):
         # reuse existing norm choice (rmsnorm default, eps from hp)
         Norm = nn.RMSNorm if H.convnext_norm == 'rmsnorm' else nn.LayerNorm
         self.norm1 = Norm(dim, eps=H.convnext_norm_eps)
-        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.attn = QKNormAttention(dim, num_heads)
         self.norm2 = Norm(dim, eps=H.convnext_norm_eps)
         self.mlp = nn.Sequential(
             nn.Linear(dim, expansion * dim),
@@ -124,8 +156,7 @@ class AttnBlock(nn.Module):
         B, C, H, W = x.shape
         t = x.flatten(2).transpose(1, 2)        # B, H*W, C
         t = t + self.pos
-        h = self.norm1(t)
-        t = t + self.attn(h, h, h, need_weights=False)[0]
+        t = t + self.attn(self.norm1(t))
         t = t + self.mlp(self.norm2(t))
         return t.transpose(1, 2).reshape(B, C, H, W).contiguous(memory_format=torch.channels_last)
 
