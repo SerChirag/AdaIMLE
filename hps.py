@@ -247,6 +247,26 @@ def add_imle_arguments(parser):
     parser.add_argument('--roundtrip_lpips_path', type=str, default='lpips/weights/v0.1/vgg.pth',
                         help="repo-local LPIPS-VGG lin-layer weights (no download)")
 
+    # generate_smart_roundtrip: reject-and-save. Keep resampling until roundtrip_target
+    # accepted samples are written to disk, rejecting any with round-trip cost > threshold.
+    parser.add_argument('--roundtrip_reject_threshold', type=float, default=0.1,
+                        help="reject a sample if its round-trip cost (roundtrip_metric) exceeds this")
+    parser.add_argument('--roundtrip_max_oversample', type=float, default=10.0,
+                        help="per-rank safety cap: generate at most ceil(quota * this) samples "
+                             "before giving up on reaching the accepted quota")
+    parser.add_argument('--roundtrip_save_subdir', type=str, default='fid',
+                        help="where to write accepted samples (generate_smart_roundtrip / "
+                             "generate_per_class_roundtrip modes): a relative path is placed under "
+                             "save_dir; an ABSOLUTE path is used verbatim, so you can write "
+                             "anywhere, even outside the repo")
+
+    # generate_per_class_roundtrip: reject-and-save, one folder per class.
+    parser.add_argument('--per_class_count', type=int, default=20,
+                        help="number of round-trip-accepted samples to save per class")
+    parser.add_argument('--per_class_classes', type=int, nargs='+', default=None,
+                        help="class ids to generate for (space-separated); if unset, all "
+                             "num_classes classes are used")
+
     # In-memory FID against precomputed reference stats (mu/sigma) in an npz file.
     parser.add_argument('--fid_ref_npz', type=str, default='evaluation/VIRTUAL_imagenet256_labeled.npz',
                         help="reference npz containing 'mu' and 'sigma' for FID")

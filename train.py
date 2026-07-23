@@ -22,6 +22,8 @@ from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_and_save_smart,
                           compute_fid_smart, compute_fid_smart_roundtrip,
+                          generate_and_save_smart_roundtrip,
+                          generate_and_save_per_class_roundtrip,
                           generate_for_NN, generate_visualization,
                           get_sample_for_visualization)
 from helpers.improved_precision_recall import compute_prec_recall
@@ -439,6 +441,32 @@ def main():
         safe_barrier()
         if(is_main_process()):
             print(f"FID: {fid}")
+
+    elif H.mode == 'generate_smart_roundtrip':
+        sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
+        safe_barrier()
+        if(is_main_process()):
+            print(f"Generating and saving {H.roundtrip_target} samples, rejecting round-trip "
+                  f"{H.roundtrip_metric} > {H.roundtrip_reject_threshold} "
+                  f"(max_oversample={H.roundtrip_max_oversample})")
+
+        imle.eval()
+        generate_and_save_smart_roundtrip(H, imle, sampler, H.roundtrip_target,
+                                          subdir=H.roundtrip_save_subdir)
+        safe_barrier()
+
+    elif H.mode == 'generate_per_class_roundtrip':
+        sampler = Sampler(H, len(data_train), preprocess_fn, autoencoder=autoencoder)
+        safe_barrier()
+        if(is_main_process()):
+            n_cls = len(H.per_class_classes) if H.per_class_classes else H.num_classes
+            print(f"Generating {H.per_class_count} samples for each of {n_cls} classes, "
+                  f"rejecting round-trip {H.roundtrip_metric} > {H.roundtrip_reject_threshold}")
+
+        imle.eval()
+        generate_and_save_per_class_roundtrip(H, imle, sampler,
+                                              subdir=H.roundtrip_save_subdir)
+        safe_barrier()
 
     elif H.mode == 'interpolate':
         if(is_main_process()):

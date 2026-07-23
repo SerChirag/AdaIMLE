@@ -6,7 +6,7 @@ import os
 import math
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from helpers.utils import is_main_process, get_rank, get_world_size
+from helpers.utils import is_main_process, get_rank, get_world_size, safe_barrier
 
 
 def _get_image_write_workers(H):
@@ -575,6 +575,199 @@ def compute_fid_smart_roundtrip(H, imle, sampler, target, subdir='fid'):
         print(f'[compute_fid_smart_roundtrip] FID ({feats_all.shape[0]} samples): {fid}')
 
     return fid
+
+
+def generate_and_save_smart_roundtrip(H, imle, sampler, target, subdir='fid'):
+    """
+    Rejection-sample by VAE round-trip cost and save the accepted samples to disk.
+
+    Unlike compute_fid_smart_roundtrip (oversample + keep-best-K by cost quantile, no PNGs),
+    this keeps resampling until `target` accepted samples have been WRITTEN to disk, rejecting
+    any sample whose round-trip cost (H.roundtrip_metric, either LPIPS or MSE) exceeds
+    H.roundtrip_reject_threshold. No FID is computed.
+
+    Distributed: the target is split across ranks so each rank owns a contiguous block of
+    output filenames (0.png .. target-1.png globally, renumbered over accepted samples). Each
+    rank resamples independently until its quota is met or it has generated
+    ceil(quota * H.roundtrip_max_oversample) samples (a safety cap against an unreachable
+    threshold); if the cap is hit first it saves what it has and warns.
+    """
+    from helpers.lpips_vgg import load_lpips_vgg
+
+    rank = get_rank()
+    world_size = get_world_size()
+
+    metric = getattr(H, 'roundtrip_metric', 'lpips')
+    threshold = float(H.roundtrip_reject_threshold)
+    max_oversample = float(getattr(H, 'roundtrip_max_oversample', 10.0))
+
+    # An absolute subdir is used verbatim (write anywhere, e.g. outside the repo);
+    # a relative one is placed under save_dir.
+    save_dir = subdir if os.path.isabs(subdir) else os.path.join(H.save_dir, subdir)
+    if is_main_process():
+        os.makedirs(save_dir, exist_ok=True)
+        delete_content_of_dir(save_dir)
+    safe_barrier()
+
+    # Split target into contiguous per-rank blocks so filenames stay globally sequential.
+    quota = target // world_size + (1 if rank < target % world_size else 0)
+    base = (target // world_size) * rank + min(rank, target % world_size)
+    gen_cap = math.ceil(quota * max_oversample)
+
+    imle.eval()
+
+    num_classes = getattr(H, 'num_classes', 0)
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    device = imle.device
+    write_workers = _get_image_write_workers(H)
+
+    lpips_fn = load_lpips_vgg(device, getattr(H, 'roundtrip_lpips_path', 'lpips/weights/v0.1/vgg.pth'))
+
+    accepted = 0
+    generated = 0
+    rejected = 0
+
+    with torch.inference_mode():
+        while accepted < quota and generated < gen_cap:
+            cur_bs = min(ae_batch, gen_cap - generated)
+
+            latent_batch = torch.randn(
+                [cur_bs, H.latent_dim], dtype=torch.float32,
+                device=device, generator=sampler.generator_seed,
+            )
+            if num_classes > 0:
+                condition = torch.tensor(
+                    [(base + accepted + j) % num_classes for j in range(cur_bs)],
+                    dtype=torch.long, device=device,
+                )
+            else:
+                condition = None
+
+            samp = sampler.sample(latent_batch, imle, None, condition=condition)
+            lp, ms = _roundtrip_cost_batch(samp, sampler.autoencoder, lpips_fn, device)
+            cost = lp if metric == 'lpips' else ms
+
+            path_and_imgs = []
+            for j in range(cur_bs):
+                generated += 1
+                if cost[j] > threshold:
+                    rejected += 1
+                    continue
+                path_and_imgs.append((os.path.join(save_dir, f'{base + accepted}.png'), samp[j]))
+                accepted += 1
+                if accepted >= quota:
+                    break
+            _parallel_write_pngs(path_and_imgs, write_workers)
+
+            if is_main_process():
+                print(f'[generate_and_save_smart_roundtrip] rank0 progress: '
+                      f'accepted {accepted}/{quota}, generated {generated} (rejected {rejected})')
+
+    imle.train()
+
+    if accepted < quota and is_main_process():
+        print(f'[generate_and_save_smart_roundtrip] WARNING rank0: hit generation cap '
+              f'({gen_cap}) before reaching quota ({accepted}/{quota}). Consider raising '
+              f'--roundtrip_reject_threshold or --roundtrip_max_oversample.')
+
+    safe_barrier()
+    if is_main_process():
+        print(f'[generate_and_save_smart_roundtrip] metric={metric} thresh={threshold} '
+              f'saved to {save_dir}')
+
+
+def generate_and_save_per_class_roundtrip(H, imle, sampler, subdir='per_class'):
+    """
+    Rejection-sample by VAE round-trip cost, PER CLASS, into one folder per class.
+
+    For each requested class (H.per_class_classes, or all num_classes if unset) this keeps
+    resampling that class's conditional until H.per_class_count accepted samples have been
+    written, rejecting any sample whose round-trip cost (H.roundtrip_metric) exceeds
+    H.roundtrip_reject_threshold. Output layout:
+
+        <base>/class_<cls:04d>/0.png, 1.png, ...
+
+    where <base> is subdir verbatim if absolute, else save_dir/subdir.
+
+    Distributed: whole classes are striped across ranks (rank r handles classes[r::world]),
+    so each class folder is owned by exactly one rank and no filename coordination is needed.
+    Per class, generation is capped at ceil(per_class_count * H.roundtrip_max_oversample) to
+    avoid looping forever on an unreachable threshold (warns and saves what it has).
+    """
+    from helpers.lpips_vgg import load_lpips_vgg
+
+    rank = get_rank()
+    world_size = get_world_size()
+
+    metric = getattr(H, 'roundtrip_metric', 'lpips')
+    threshold = float(H.roundtrip_reject_threshold)
+    max_oversample = float(getattr(H, 'roundtrip_max_oversample', 10.0))
+    count = int(H.per_class_count)
+
+    num_classes = getattr(H, 'num_classes', 0)
+    classes = getattr(H, 'per_class_classes', None)
+    if not classes:
+        classes = list(range(num_classes))
+    classes = sorted(set(int(c) for c in classes))
+
+    base_dir = subdir if os.path.isabs(subdir) else os.path.join(H.save_dir, subdir)
+    if is_main_process():
+        os.makedirs(base_dir, exist_ok=True)
+        print(f'[per_class_roundtrip] {len(classes)} classes x {count} samples each, '
+              f'metric={metric} thresh={threshold} -> {base_dir}')
+    safe_barrier()
+
+    my_classes = classes[rank::world_size]
+    gen_cap = math.ceil(count * max_oversample)
+
+    imle.eval()
+
+    ae_batch = getattr(H, 'ae_batch', H.imle_batch)
+    device = imle.device
+    write_workers = _get_image_write_workers(H)
+
+    lpips_fn = load_lpips_vgg(device, getattr(H, 'roundtrip_lpips_path', 'lpips/weights/v0.1/vgg.pth'))
+
+    with torch.inference_mode():
+        for cls in my_classes:
+            cls_dir = os.path.join(base_dir, f'class_{cls:04d}')
+            os.makedirs(cls_dir, exist_ok=True)
+            delete_content_of_dir(cls_dir)
+
+            accepted = 0
+            generated = 0
+            while accepted < count and generated < gen_cap:
+                cur_bs = min(ae_batch, gen_cap - generated)
+
+                latent_batch = torch.randn(
+                    [cur_bs, H.latent_dim], dtype=torch.float32,
+                    device=device, generator=sampler.generator_seed,
+                )
+                condition = torch.full([cur_bs], cls, dtype=torch.long, device=device)
+
+                samp = sampler.sample(latent_batch, imle, None, condition=condition)
+                lp, ms = _roundtrip_cost_batch(samp, sampler.autoencoder, lpips_fn, device)
+                cost = lp if metric == 'lpips' else ms
+
+                path_and_imgs = []
+                for j in range(cur_bs):
+                    generated += 1
+                    if cost[j] > threshold:
+                        continue
+                    path_and_imgs.append((os.path.join(cls_dir, f'{accepted}.png'), samp[j]))
+                    accepted += 1
+                    if accepted >= count:
+                        break
+                _parallel_write_pngs(path_and_imgs, write_workers)
+
+            status = 'ok' if accepted >= count else 'CAPPED'
+            print(f'[per_class_roundtrip] rank{rank} class {cls:04d}: '
+                  f'{accepted}/{count} accepted (generated {generated}) [{status}]')
+
+    imle.train()
+    safe_barrier()
+    if is_main_process():
+        print(f'[per_class_roundtrip] done -> {base_dir}')
 
 
 def generate_and_save2(H, imle, sampler, n_samp, subdir='fid'):
