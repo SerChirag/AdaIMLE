@@ -49,7 +49,8 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler,
+                       ema_imle=None, tr_latents=None, tr_labels=None, lambda_tr=0.0):
 
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
@@ -76,11 +77,29 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
+        # Trust region. Drift is scored with the same sampler.calc_loss the IMLE term uses, and
+        # under tr_multi_res over the same resolutions, so both sides of the total are on one
+        # scale and lambda_tr reads directly as a fraction of the main loss. No target resizing
+        # is needed here -- the two nets emit matching resolutions by construction.
+        tr_loss_measure = None
+        if tr_latents is not None:
+            tr_train = bool(H.tr_multi_res)
+            with torch.no_grad():
+                ref_out = ema_imle(tr_latents, tr_labels, train=tr_train)
+            live_out = imle(tr_latents, tr_labels, train=tr_train)
+            if tr_train:
+                tr_loss = loss_fn(live_out[-1], ref_out[-1].detach())
+                for i in range(2, len(live_out) - 1):
+                    tr_loss = tr_loss + loss_fn(live_out[i], ref_out[i].detach())
+            else:
+                tr_loss = loss_fn(live_out, ref_out.detach())
+            tr_loss_measure = tr_loss.detach().clone()
+            loss = loss + lambda_tr * tr_loss
 
     loss = loss / (H.accumulation_steps)
-    
+
     scaler.scale(loss).backward()
-    return loss_measure.detach()
+    return loss_measure.detach(), tr_loss_measure
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
@@ -96,6 +115,20 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     if sam is not None and is_main_process():
         logprint(f'SAM enabled: rho={H.sam_rho}, adaptive={H.sam_adaptive}, '
                  f'start_epoch={H.sam_start_epoch}, freq={H.sam_freq}')
+
+    # Trust region. set_seed gives every rank the same global RNG, so a dedicated per-rank
+    # stream is what makes the ranks draw different latents -- otherwise all of them anchor
+    # the same k points each step and the extra GPUs buy no coverage.
+    trust_region = bool(getattr(H, 'use_trust_region', False))
+    tr_k = max(1, int(round(H.n_batch * H.tr_k_frac))) if trust_region else 0
+    tr_generator = None
+    if trust_region:
+        tr_generator = torch.Generator(device=device)
+        tr_generator.manual_seed(H.seed + get_rank())
+        if is_main_process():
+            logprint(f'Trust region enabled: lambda_max={H.tr_lambda_max}, k={tr_k}/step/gpu, '
+                     f'loss={H.loss_type}, multi_res={H.tr_multi_res}, '
+                     f'ramped linearly to lambda_max over {H.num_epochs} epochs')
 
     load_sampler_state(H, sampler, logprint)
 
@@ -162,18 +195,22 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     force_initial_resample = True  # Track the last epoch when resampling was done.
     opt_step_count = 0
 
-    def optimizer_step(micro_batches, sam_active):
+    def optimizer_step(micro_batches, sam_active, lambda_tr=0.0):
         """Steps the optimizer, optionally re-evaluating the gradient at w + e_w first."""
         nonlocal opt_step_count
         # First-pass grads are already accumulated (and all-reduced) at this point.
         if sam_active and sam.ascent_step():
             imle.zero_grad(set_to_none=True)
             last = len(micro_batches) - 1
-            for j, (mb_target, mb_latents, mb_labels) in enumerate(micro_batches):
+            # The replayed latents are the ones buffered on the first pass, not fresh draws:
+            # SAM's second pass has to see the identical minibatch, trust-region latents included.
+            for j, (mb_target, mb_latents, mb_labels, mb_tr_latents, mb_tr_labels) in enumerate(micro_batches):
                 sync = (j == last) or not hasattr(imle, 'no_sync')
                 with nullcontext() if sync else imle.no_sync():
                     training_step_imle(H, mb_target, mb_latents, mb_labels, imle,
-                                       sampler.calc_loss, scaler)
+                                       sampler.calc_loss, scaler,
+                                       ema_imle=ema_imle, tr_latents=mb_tr_latents,
+                                       tr_labels=mb_tr_labels, lambda_tr=lambda_tr)
             sam.restore()  # step from w, using grad L(w + e_w)
 
         scaler.unscale_(optimizer)  # Unscale gradients before clipping
@@ -210,7 +247,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if(is_main_process()):
             start_time = time.time()
 
+        # lambda_tr ramps linearly across the whole run: near zero while theta_ref is still
+        # near-random and the network should be moving fast, at lambda_max by the final epoch.
+        lambda_tr = H.tr_lambda_max * min(1.0, epoch / max(1, H.num_epochs)) if trust_region else 0.0
+
         epoch_loss_sum = torch.zeros((), device=device)  # Accumulate on device to avoid per-step host syncs.
+        epoch_tr_loss_sum = torch.zeros((), device=device)
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
@@ -239,22 +281,36 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             target_bchw = target_bchw.to(device, non_blocking=True).contiguous(memory_format=torch.channels_last)
             latents = latents.to(device, non_blocking=True)
 
+            # Drawn every step even while lambda_tr is still 0, so the autograd graph keeps the
+            # same shape across iterations -- DDP is built with static_graph=True.
+            if trust_region:
+                tr_latents = torch.randn(tr_k, H.latent_dim, device=device, generator=tr_generator)
+                tr_labels = torch.randint(0, H.num_classes, (tr_k,), device=device,
+                                          generator=tr_generator) if H.num_classes > 0 else None
+            else:
+                tr_latents, tr_labels = None, None
+
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
+                loss, tr_loss = training_step_imle(H, target_bchw, latents, labels, imle,
+                                                   sampler.calc_loss, scaler,
+                                                   ema_imle=ema_imle, tr_latents=tr_latents,
+                                                   tr_labels=tr_labels, lambda_tr=lambda_tr)
 
             if sam_window_active:
-                micro_batches.append((target_bchw, latents, labels))
+                micro_batches.append((target_bchw, latents, labels, tr_latents, tr_labels))
 
             epoch_loss_sum.add_(loss)
+            if tr_loss is not None:
+                epoch_tr_loss_sum.add_(tr_loss)
             epoch_iter_count += 1
 
             accum_counter += 1
 
             # When we have accumulated enough mini-batches, perform the step.
             if accum_counter % H.accumulation_steps == 0:
-                optimizer_step(micro_batches, sam_window_active)
+                optimizer_step(micro_batches, sam_window_active, lambda_tr)
 
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
@@ -289,7 +345,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
-            optimizer_step(micro_batches, sam_window_active)
+            optimizer_step(micro_batches, sam_window_active, lambda_tr)
 
         epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
@@ -297,7 +353,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
         mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
-        
+
+        mean_tr_loss = epoch_tr_loss_sum.item() / max(1, epoch_iter_count)  # this rank's average; logging only
+
         base_model = imle.module if hasattr(imle, 'module') else imle
         class_emb_norm = base_model.decoder.class_embedding.weight.norm(dim=1).mean().item() if hasattr(base_model.decoder, 'class_embedding') else 0.0
         metrics = {
@@ -308,6 +366,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         }
         if sam is not None:
             metrics['sam_grad_norm'] = sam.last_grad_norm
+        if trust_region:
+            metrics['tr_loss'] = mean_tr_loss
+            metrics['lambda_tr'] = lambda_tr
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))
