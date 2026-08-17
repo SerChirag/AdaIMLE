@@ -18,6 +18,7 @@ import numpy as np
 from data import set_up_data
 from helpers.train_helpers import (configure_runtime_performance, load_imle, load_opt, load_sampler_state, save_model, set_up_hyperparams, update_ema, set_seed)
 from helpers.utils import ZippedDataset, init_distributed_mode, is_main_process, get_world_size, get_rank, safe_barrier
+from helpers.sam import SAM
 from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_and_save_smart,
@@ -90,6 +91,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     safe_barrier()
     device = torch.device("cuda", torch.cuda.current_device())
 
+    # SAM is built after load_opt so it inherits any requires_grad_(False) done there.
+    sam = SAM(imle.parameters(), rho=H.sam_rho, adaptive=H.sam_adaptive) if H.sam else None
+    if sam is not None and is_main_process():
+        logprint(f'SAM enabled: rho={H.sam_rho}, adaptive={H.sam_adaptive}, '
+                 f'start_epoch={H.sam_start_epoch}, freq={H.sam_freq}')
+
     load_sampler_state(H, sampler, logprint)
 
     epoch = starting_epoch
@@ -153,7 +160,32 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     )
 
     force_initial_resample = True  # Track the last epoch when resampling was done.
-        
+    opt_step_count = 0
+
+    def optimizer_step(micro_batches, sam_active):
+        """Steps the optimizer, optionally re-evaluating the gradient at w + e_w first."""
+        nonlocal opt_step_count
+        # First-pass grads are already accumulated (and all-reduced) at this point.
+        if sam_active and sam.ascent_step():
+            imle.zero_grad(set_to_none=True)
+            last = len(micro_batches) - 1
+            for j, (mb_target, mb_latents, mb_labels) in enumerate(micro_batches):
+                sync = (j == last) or not hasattr(imle, 'no_sync')
+                with nullcontext() if sync else imle.no_sync():
+                    training_step_imle(H, mb_target, mb_latents, mb_labels, imle,
+                                       sampler.calc_loss, scaler)
+            sam.restore()  # step from w, using grad L(w + e_w)
+
+        scaler.unscale_(optimizer)  # Unscale gradients before clipping
+        torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        scheduler.step()
+        imle.zero_grad(set_to_none=True)
+        update_ema(imle.module, ema_imle, H.ema_rate)
+        opt_step_count += 1
+
+
     while (epoch < H.num_epochs):
         # Update the IMLE force resampling every imle_force_resample epochs.
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
@@ -182,9 +214,17 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
+        sam_window_active = False
+        micro_batches = []
 
 
         for cur, indices in data_loader:
+            if accum_counter % H.accumulation_steps == 0:
+                # Start of an accumulation window: decide once, so buffering is consistent.
+                sam_window_active = (sam is not None
+                                     and epoch >= H.sam_start_epoch
+                                     and opt_step_count % max(1, H.sam_freq) == 0)
+                micro_batches = []
             latents = cur[1][0]
             # cur[0] is (image_tensor, label_tensor) when num_classes > 0, else (image_tensor,)
             labels = cur[0][1].to(device, non_blocking=True) if H.num_classes > 0 and len(cur[0]) > 1 else None
@@ -203,7 +243,10 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
                 loss = training_step_imle(H, target_bchw, latents, labels, imle, sampler.calc_loss, scaler)
-            
+
+            if sam_window_active:
+                micro_batches.append((target_bchw, latents, labels))
+
             epoch_loss_sum.add_(loss)
             epoch_iter_count += 1
 
@@ -211,14 +254,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
             # When we have accumulated enough mini-batches, perform the step.
             if accum_counter % H.accumulation_steps == 0:
-                scaler.unscale_(optimizer)  # Unscale gradients before clipping
-                torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
-                imle.zero_grad(set_to_none=True)
-                update_ema(imle.module, ema_imle, H.ema_rate)
-            
+                optimizer_step(micro_batches, sam_window_active)
+
             if iterate % H.iters_per_images == 0:
                 if(is_main_process()):
                     imle.eval()
@@ -252,14 +289,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                 safe_barrier()
         
         if accum_counter % H.accumulation_steps != 0:
-            scaler.unscale_(optimizer)  # Unscale gradients before clipping
-            torch.nn.utils.clip_grad_norm_(imle.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            imle.zero_grad(set_to_none=True)
-            update_ema(imle.module, ema_imle, H.ema_rate)
-        
+            optimizer_step(micro_batches, sam_window_active)
+
         epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
@@ -275,6 +306,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'unique_indices': sampler.unique_indices,
             'class_emb_norm': class_emb_norm,
         }
+        if sam is not None:
+            metrics['sam_grad_norm'] = sam.last_grad_norm
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, len(data_train) * H.fid_factor))

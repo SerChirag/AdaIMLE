@@ -196,6 +196,12 @@ def add_imle_arguments(parser):
     parser.add_argument('--residual_type', type=str, default='convex', choices=['normal', 'convex'])
 
     parser.add_argument('--accumulation_steps', type=int, default=1)  # accumulation steps
+
+    parser.add_argument('--sam', default=False, type=lambda x: bool(strtobool(x)))  # sharpness-aware minimization (doubles fwd/bwd cost per step)
+    parser.add_argument('--sam_rho', type=float, default=0.05)  # SAM neighbourhood radius
+    parser.add_argument('--sam_adaptive', default=False, type=lambda x: bool(strtobool(x)))  # ASAM: scale the perturbation elementwise by |w|
+    parser.add_argument('--sam_start_epoch', type=int, default=0)  # epoch to switch SAM on (plain steps before it)
+    parser.add_argument('--sam_freq', type=int, default=1)  # apply SAM every k-th optimizer step; 1 = every step
     parser.add_argument('--num_comp_indices', type=int, default=2)  # dci number of components
     parser.add_argument('--num_simp_indices', type=int, default=7)  # dci number of simplices
     parser.add_argument('--imle_db_size', type=int, default=1024)  # imle database size
