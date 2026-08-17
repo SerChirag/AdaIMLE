@@ -4,6 +4,8 @@ import numpy as np
 import imageio
 import os
 import shutil
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from helpers.utils import is_main_process, get_rank, get_world_size
 
@@ -42,6 +44,23 @@ def delete_content_of_dir(folder):
                 shutil.rmtree(file_path)
         except Exception as e:
             print('Failed to delete %s. Reason: %s' % (file_path, e))
+
+def async_reset_dir(folder):
+    """Atomically swap `folder` for a fresh empty directory and delete the old
+    contents in a background thread. The rename is instant, so the live path
+    is ready for the next writer immediately and callers never block on
+    deleting a large batch of files (e.g. FID sample dumps)."""
+    stale = f'{folder}_stale_{time.time_ns()}'
+    if os.path.isdir(folder):
+        os.rename(folder, stale)
+    os.makedirs(folder, exist_ok=True)
+    if os.path.isdir(stale):
+        def _cleanup():
+            try:
+                shutil.rmtree(stale)
+            except Exception as e:
+                print('Failed to delete %s. Reason: %s' % (stale, e))
+        threading.Thread(target=_cleanup, daemon=True).start()
 
 def get_sample_for_visualization(data, preprocess_fn, num, dataset):
     for x in DataLoader(data, batch_size=num):

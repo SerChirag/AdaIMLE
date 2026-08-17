@@ -243,7 +243,9 @@ class Sampler:
 
     
     def pseudo_huber(self, diff):
-        return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
+        # Uses loss_scale as the transition parameter (delta) so that huber is
+        # swept with the same --loss_scale flag as cauchy/mclure/welsch.
+        return 2.0 * self.H.loss_scale**2 * (torch.sqrt(1 + (diff / (self.H.loss_scale)**2)) - 1)
 
     def calc_loss(self, inp, tar, use_mean=True, logging=False):
         if self.H.loss_type == 'huber':

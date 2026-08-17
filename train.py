@@ -21,7 +21,7 @@ from sampler import Sampler
 from visual.interpolate import random_interp
 from visual.utils import (generate_and_save, generate_and_save_smart,
                           generate_for_NN, generate_visualization,
-                          get_sample_for_visualization)
+                          get_sample_for_visualization, async_reset_dir)
 from helpers.improved_precision_recall import compute_prec_recall
 from torch import autocast
 import torch.distributed as dist
@@ -291,6 +291,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                         logprint(f'Saving model best fid {best_fid} @ {iterate} to {fp}')
                         logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
                         save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
+
+                async_reset_dir(f'{H.save_dir}/fid')
 
             safe_barrier()
 
