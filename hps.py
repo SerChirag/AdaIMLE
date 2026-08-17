@@ -153,6 +153,9 @@ def add_imle_arguments(parser):
     parser.add_argument('--restore_scaler_path', type=str, default=None)  # restore optimizer from scheduler
     parser.add_argument('--restore_sampler_path', type=str, default=None)  # restore RS-IMLE sampler state from matching checkpoint
 
+    parser.add_argument('--resume', default=False, type=lambda x: bool(strtobool(x)))  # autofill all restore paths + comet key from latest checkpoint in save_dir
+    parser.add_argument('--resume_point', type=str, default='latest')  # checkpoint prefix to resume from (e.g. latest, best_fid, iter-50000)
+
     parser.add_argument('--restore_latent_path', type=str, default=None)  # restore nearest neighbour latent codes from checkpoint
     parser.add_argument('--restore_threshold_path', type=str, default=None)  # restore nearest neighbour thresholds, i.e., \tau_i, from checkpoint
     parser.add_argument('--ema_rate', type=float, default=0.999)  # exponential moving average rate

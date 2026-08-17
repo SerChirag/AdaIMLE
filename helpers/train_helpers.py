@@ -194,6 +194,116 @@ def set_seed(seed):
 
     
 
+def read_comet_key_from_log(log_path):
+    """Return the last comet_experiment_key logged in a jsonl, or None."""
+    if not log_path or not os.path.exists(log_path):
+        return None
+    key = None
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get('comet_experiment_key'):
+                    key = entry['comet_experiment_key']
+    except OSError:
+        return None
+    return key
+
+
+def set_up_comet(H, logprint):
+    """Create or resume a comet experiment and return it (or None).
+
+    On new-experiment creation the key is logged into log.jsonl so that a later
+    --resume run can recover it (via read_comet_key_from_log / apply_resume).
+    """
+    if not (H.use_comet and H.comet_api_key):
+        return None
+
+    # Imported lazily so train_helpers has no hard comet_ml dependency.
+    from comet_ml import Experiment, ExistingExperiment
+
+    if H.comet_experiment_key:
+        logprint('Resuming experiment')
+        experiment = ExistingExperiment(
+            api_key=H.comet_api_key,
+            previous_experiment=H.comet_experiment_key,
+        )
+        experiment.log_parameters(H)
+    else:
+        experiment = Experiment(
+            api_key=H.comet_api_key,
+            project_name="adaptiveimle-ablation",
+            workspace="serchirag",
+        )
+        experiment.set_name(H.comet_name)
+        experiment.log_parameters(H)
+        # Persist the key into the jsonl so future --resume runs recover it.
+        logprint(comet_experiment_key=experiment.get_key())
+
+    return experiment
+
+
+def apply_resume(H, logprint):
+    """Autofill restore paths and comet key from a checkpoint in H.save_dir.
+
+    Only runs when --resume is set. Fills each H.restore_* field from the
+    <save_dir>/<resume_point>-* checkpoint written by save_model(), but never
+    overrides a path the user passed explicitly. A missing checkpoint (no
+    <prefix>-model.th) is a silent no-op so training starts fresh.
+    """
+    if not H.resume:
+        return
+
+    prefix = H.resume_point
+    base = os.path.join(H.save_dir, prefix)
+    model_path = f'{base}-model.th'
+    if not os.path.exists(model_path):
+        logprint(f'--resume: no checkpoint at {model_path}; starting fresh')
+        return
+
+    # (attribute name, checkpoint suffix). The attribute is only filled when the
+    # user left it at its None default, so explicit flags win.
+    path_map = [
+        ('restore_path',           '-model.th'),
+        ('restore_ema_path',       '-model-ema.th'),
+        ('restore_optimizer_path', '-opt.th'),
+        ('restore_scheduler_path', '-sched.th'),
+        ('restore_scaler_path',    '-scaler.th'),
+        ('restore_log_path',       '-log.jsonl'),
+        ('restore_sampler_path',   '-sampler.th'),
+    ]
+
+    filled = []
+    for attr, suffix in path_map:
+        if H.get(attr) is not None:
+            continue  # user passed it explicitly
+        candidate = f'{base}{suffix}'
+        if os.path.exists(candidate):
+            H[attr] = candidate
+            filled.append(attr)
+        else:
+            logprint(f'--resume: skipping {attr}, file missing: {candidate}')
+
+    # Comet key: recover from a comet_experiment_key entry logged into the
+    # jsonl on experiment creation. Prefer the checkpoint's -log.jsonl sidecar
+    # (set above), falling back to the live save_dir/log.jsonl.
+    if not H.comet_experiment_key:
+        for log_path in (H.get('restore_log_path'), os.path.join(H.save_dir, 'log.jsonl')):
+            key = read_comet_key_from_log(log_path)
+            if key:
+                H.comet_experiment_key = key
+                filled.append('comet_experiment_key')
+                break
+
+    logprint(f'--resume: resuming from prefix "{prefix}", autofilled: {filled}')
+
+
 def set_up_hyperparams(s=None):
     H = Hyperparams()
     parser = argparse.ArgumentParser()
@@ -202,6 +312,7 @@ def set_up_hyperparams(s=None):
     setup_save_dirs(H)
     set_seed(H.seed)
     logprint = logger(H.logdir)
+    apply_resume(H, logprint)
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
     torch.cuda.manual_seed(H.seed)
