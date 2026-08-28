@@ -55,19 +55,31 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
         num_resolutions = 1
 
         if(H.use_multi_res):
-            
-            for i in range(2,len(px_z)-1):
-                px_z_scale = px_z[i]
 
-                targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]), 
+            for i in range(len(px_z)-1):
+                px_z_scale = px_z[i]
+                # Skip unprojected low-res taps (Identity, res < 8): their channel
+                # count is `width`, not image_channels, so they can't be scored
+                # against the target. Previously this loop hardcoded range(2, ...)
+                # assuming exactly two sub-8 stages; the channel guard makes it
+                # correct for any pyramid, including ones that drop res 1 / 4.
+                if px_z_scale.shape[1] != targets_bchw.shape[1]:
+                    continue
+
+                targets_scale = F.interpolate(targets_bchw, size=(px_z_scale.shape[2], px_z_scale.shape[3]),
                                               antialias=True, mode='bicubic', align_corners=H.align_corners)
                 
 
                 loss_scale = loss_fn(px_z_scale, targets_scale)
-                
+
                 loss.add_(loss_scale)
                 num_resolutions += 1
 
+    # 'sum' (default): every resolution contributes at full weight.
+    # 'mean': average over resolutions, so the objective is invariant to how
+    # many pyramid levels the decoder exposes.
+    if getattr(H, 'multi_res_reduce', 'mean') == 'mean':
+        loss = loss / num_resolutions
 
     loss = loss / (H.accumulation_steps)
 

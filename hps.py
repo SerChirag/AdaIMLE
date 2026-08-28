@@ -299,6 +299,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--use_stopgrad_for_intermediate', default=False, type=lambda x: bool(strtobool(x)))  # whether to use stopgrad for intermediate targets
 
     parser.add_argument('--multi_res_scales', default='', type=str)  # extra multi-res dimension
+    parser.add_argument('--multi_res_reduce', type=str, default='mean', choices=['sum', 'mean'])  # combine per-resolution multi-res losses by sum (each full weight) or mean (divide by #resolutions)
 
     # parser.add_argument('--use_splatter_snoise', default=False, type=lambda x: bool(strtobool(x)))  # whether to use splatter snoise
 
