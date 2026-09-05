@@ -45,7 +45,8 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
+def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
+    loss_fn = sampler.calc_loss
 
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
@@ -81,10 +82,18 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, loss_fn, scaler):
     if getattr(H, 'multi_res_reduce', 'mean') == 'mean':
         loss = loss / num_resolutions
 
+    # Perceptual term on the full-resolution output only, in decoder space. Kept outside
+    # the autocast block: it decodes through the frozen VAE and runs VGG, both in fp32.
+    lpips_measure = torch.zeros((), device=loss.device)
+    if H.lpips_coef > 0.0:
+        lpips_loss = sampler.calc_lpips_loss(px_z[-1], targets_bchw)
+        lpips_measure = lpips_loss.detach().clone()
+        loss = loss.float() + H.lpips_coef * lpips_loss
+
     loss = loss / (H.accumulation_steps)
 
     scaler.scale(loss).backward()
-    return loss_measure.detach()
+    return loss_measure.detach(), lpips_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
@@ -206,6 +215,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             start_time = time.time()
 
         epoch_loss_sum = torch.zeros((), device=device)  # Accumulate on device to avoid per-step host syncs.
+        epoch_lpips_sum = torch.zeros((), device=device)
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
@@ -225,10 +235,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss = training_step_imle(H, target_bchw, latents, labels, imle,
-                                          sampler.calc_loss, scaler)
+                loss, lpips_loss = training_step_imle(H, target_bchw, latents, labels,
+                                                     imle, sampler, scaler)
 
             epoch_loss_sum.add_(loss)
+            epoch_lpips_sum.add_(lpips_loss)
             epoch_iter_count += 1
 
             accum_counter += 1
@@ -274,10 +285,12 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(epoch_lpips_sum, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
-        mean_loss = epoch_loss_tensor.item() / total_batches_tensor.item()
+        total_batches = total_batches_tensor.item()
+        mean_loss = epoch_loss_tensor.item() / total_batches
 
         base_model = imle.module if hasattr(imle, 'module') else imle
         class_emb_norm = base_model.decoder.class_embedding.weight.norm(dim=1).mean().item() if hasattr(base_model.decoder, 'class_embedding') else 0.0
@@ -287,6 +300,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'unique_indices': sampler.unique_indices,
             'class_emb_norm': class_emb_norm,
         }
+        if H.lpips_coef > 0.0:
+            metrics['mean_lpips'] = epoch_lpips_sum.item() / total_batches
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, train_len * H.fid_factor))
@@ -361,7 +376,6 @@ def main():
     H, logprint = set_up_hyperparams()
     configure_runtime_performance(H, logprint)
     H.search_type = 'l2'
-    H.lpips_coef = 0.0
     H.dino_coef = 0.0
     if H.l2_coef == 0.0:
         H.l2_coef = 1.0
