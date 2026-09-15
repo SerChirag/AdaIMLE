@@ -214,6 +214,17 @@ def add_imle_arguments(parser):
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # decoder-space LPIPS loss coefficient; pass 0 to disable (skips the VAE decode + VGG each step)
+    parser.add_argument('--lpips_robust_type', type=str, default='none',
+                         choices=['none', 'huber', 'mclure', 'welsch', 'cauchy'],
+                         help="Saturating transform applied to the per-sample LPIPS distance before "
+                              "it's averaged into the loss, so a latent contested between two very "
+                              "different real targets isn't pulled toward their perceptual average. "
+                              "'none' (default) reproduces the original unbounded LPIPS loss exactly.")
+    parser.add_argument('--lpips_loss_scale', type=float, default=0.15,
+                         help="Saturation scale for --lpips_robust_type. LPIPS-VGG distances are "
+                              "typically O(0.01-0.3), a different range than --loss_scale (tuned for "
+                              "raw latent residuals), hence the separate knob. Unused when "
+                              "--lpips_robust_type is 'none'.")
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
     parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)

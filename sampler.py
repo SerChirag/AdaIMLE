@@ -280,6 +280,38 @@ class Sampler:
 
         return per_elem.mean()
 
+    def _robust_lpips(self, d):
+        """Optional saturating transform on the per-sample LPIPS distance ``d`` (>= 0).
+
+        Mirrors calc_loss's robust residual transforms, but scaled for LPIPS' own numeric
+        range (H.lpips_loss_scale) rather than H.loss_scale, since LPIPS-VGG distances are
+        typically O(0.01-0.3) -- a different range than raw latent residuals.
+
+        Purpose: without this, a latent contested between two very different real targets
+        (its nearest-neighbor assignment keeps flipping between them across rounds) gets an
+        unbounded perceptual pull toward each in turn, which a squared-error-like loss
+        resolves by settling on their average -- a blurry "double exposure". A saturating
+        transform caps how hard a single far-off target can pull, so the network is freer to
+        commit to one target instead of compromising between them.
+
+        H.lpips_robust_type == 'none' (the default) returns ``d`` unchanged, so default
+        behavior -- and every existing config that doesn't set this flag -- is unaffected.
+        """
+        robust_type = getattr(self.H, 'lpips_robust_type', 'none') or 'none'
+        if robust_type == 'none':
+            return d
+        scale = self.H.lpips_loss_scale
+        if robust_type == 'mclure':
+            return (d ** 2) / (scale ** 2 + d ** 2)
+        elif robust_type == 'welsch':
+            return 1 - torch.exp(-(d / scale) ** 2)
+        elif robust_type == 'cauchy':
+            return torch.log(1 + 0.5 * (d / scale) ** 2)
+        elif robust_type == 'huber':
+            return self.pseudo_huber(d ** 2)
+        else:
+            raise ValueError(f'Unknown lpips_robust_type: {robust_type}')
+
     def calc_lpips_loss(self, inp, tar):
         """LPIPS between the decoded prediction and the decoded target latent.
 
@@ -302,7 +334,8 @@ class Sampler:
             self.autoencoder, inp, self.autoencoder_native_latent_size)
 
         with autocast(device_type='cuda', enabled=False):
-            return self.lpips_net(img_inp.float(), img_tar.float()).mean()
+            per_sample = self.lpips_net(img_inp.float(), img_tar.float())  # (B,), >= 0
+            return self._robust_lpips(per_sample).mean()
 
     def resample_pool(self, gen, class_condition=None):
 
