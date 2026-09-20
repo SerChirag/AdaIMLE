@@ -82,6 +82,13 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
     if getattr(H, 'multi_res_reduce', 'mean') == 'mean':
         loss = loss / num_resolutions
 
+    # Weight on the latent-space term itself, so it can be traded off against the
+    # perceptual term below. `loss_measure` is captured unweighted above, which keeps
+    # the logged mean_loss comparable across different --latent_loss_coef settings.
+    latent_coef = getattr(H, 'latent_loss_coef', 1.0)
+    if latent_coef != 1.0:
+        loss = loss * latent_coef
+
     # Perceptual term on the full-resolution output only, in decoder space. Kept outside
     # the autocast block: it decodes through the frozen VAE and runs VGG, both in fp32.
     lpips_measure = torch.zeros((), device=loss.device)

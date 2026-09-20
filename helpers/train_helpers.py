@@ -313,6 +313,9 @@ def set_up_hyperparams(s=None):
     set_seed(H.seed)
     logprint = logger(H.logdir)
     apply_resume(H, logprint)
+    if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and H.lpips_coef == 0.0:
+        raise ValueError('--latent_loss_coef and --lpips_coef are both 0: the training loss '
+                         'would be identically zero and no gradients would flow.')
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
     torch.cuda.manual_seed(H.seed)

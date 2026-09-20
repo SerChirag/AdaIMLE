@@ -213,6 +213,10 @@ def add_imle_arguments(parser):
     parser.add_argument('--lpips_net', type=str, default='vgg')  # lpips network type
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
+    parser.add_argument('--latent_loss_coef', type=float, default=1.0,
+                         help="Weight on the latent-space reconstruction loss (--loss_type), the term "
+                              "that --lpips_coef is traded off against. Pass 0 to train on the "
+                              "decoder-space LPIPS term alone.")
     parser.add_argument('--lpips_coef', type=float, default=1.0)  # decoder-space LPIPS loss coefficient; pass 0 to disable (skips the VAE decode + VGG each step)
     parser.add_argument('--lpips_robust_type', type=str, default='none',
                          choices=['none', 'huber', 'mclure', 'welsch', 'cauchy'],

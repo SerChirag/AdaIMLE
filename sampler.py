@@ -91,7 +91,8 @@ class Sampler:
             lpips_path = os.path.join(getattr(H, 'lpips_path', './lpips'), 'weights/v0.1/vgg.pth')
             self.lpips_net = load_lpips_vgg(self.device, lin_path=lpips_path)
             if is_main_process():
-                print(f'\n[lpips] Decoder-space LPIPS-VGG enabled (coef={self.lpips_coef}), '
+                print(f'\n[lpips] Decoder-space LPIPS-VGG enabled (coef={self.lpips_coef}, '
+                      f'latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}), '
                       f'weights from {lpips_path}\n')
 
         if H.search_type != 'l2':
