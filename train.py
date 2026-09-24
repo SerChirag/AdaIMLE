@@ -309,6 +309,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         }
         if H.lpips_coef > 0.0:
             metrics['mean_lpips'] = epoch_lpips_sum.item() / total_batches
+        if sampler.use_rs_imle:
+            metrics['rs_reject_pct'] = sampler.rs_reject_pct
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, train_len * H.fid_factor))

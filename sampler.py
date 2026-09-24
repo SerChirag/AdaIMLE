@@ -125,6 +125,13 @@ class Sampler:
         self._gathered_combined_main = None
         self._full_combined_main = None
 
+        # RS-IMLE (see --use_rs_imle): fixed rejection radius epsilon.
+        self.use_rs_imle = bool(getattr(H, 'use_rs_imle', False))
+        self.rs_radius = float(getattr(H, 'rs_radius', 0.0))
+        if self.use_rs_imle and self.rs_radius <= 0.0:
+            raise ValueError('--use_rs_imle needs --rs_radius > 0.')
+        self.rs_reject_pct = 0.0
+
         self.dataset_size = sz
         self.db_iter = 0
         self.generator_seed = torch.Generator(device=self.device)         
@@ -431,6 +438,47 @@ class Sampler:
             queries_t = F.normalize(queries_t, dim=-1)
             dataset_t = F.normalize(dataset_t, dim=-1)
 
+        # RS-IMLE: drop pool samples within epsilon of any data point, search the rest,
+        # then map indices back into the full pool.
+        rs_index_map = None
+        if self.use_rs_imle:
+            dataset_t, rs_index_map = self._rs_filter_pool_faiss(queries_t, dataset_t)
+
+        D, I = self._nn_search_faiss(queries_t, dataset_t)
+        if rs_index_map is not None:
+            I = rs_index_map.index_select(0, I.to(rs_index_map.device)).to(I.device)
+        return D, I
+
+    def _rs_filter_pool_faiss(self, queries_t, dataset_t):
+        """
+        Unconditional RS-IMLE rejection. Each data point marks its rs_knn_ignore nearest samples
+        that fall inside epsilon, so this approximates "within epsilon of any data point" (exact
+        whenever no data point has more than rs_knn_ignore samples inside its ball).
+        Returns (kept pool, map kept -> original index) or (pool, None) if nothing was rejected.
+        """
+        Nd = dataset_t.shape[0]
+        k = int(min(max(1, int(self.H.rs_knn_ignore)), Nd))
+        self.faiss_index_flat.reset()
+        self.faiss_index_flat.add(dataset_t)
+        Dk, Ik = self.faiss_index_flat.search(queries_t, k)  # squared L2
+        self.faiss_index_flat.reset()
+
+        close = Dk < self.rs_radius ** 2
+        reject = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
+        reject[Ik[close].long()] = True
+        n_rejected = int(reject.sum().item())
+        if n_rejected == Nd:
+            # Everything rejected: epsilon is too big, fall back to plain IMLE this round.
+            n_rejected = 0
+            reject.zero_()
+        self.rs_reject_pct = 100.0 * n_rejected / Nd
+
+        if n_rejected == 0:
+            return dataset_t, None
+        keep_idx = torch.nonzero(~reject, as_tuple=False).squeeze(1)
+        return dataset_t.index_select(0, keep_idx).contiguous(), keep_idx
+
+    def _nn_search_faiss(self, queries_t, dataset_t):
         topk = getattr(self.H, 'imle_db_topk', 1)
 
         self.faiss_index_flat.reset()
@@ -599,6 +647,7 @@ class Sampler:
 
             # Per-class NN search using the fused buffers
             all_local_indices = []
+            rs_stats = torch.zeros(2, dtype=torch.float64, device=self.device)  # [rejected, pool total]
             for i, class_id in enumerate(self.local_classes):
                 start_pool = i * self.pool_size_per_class
                 end_pool   = start_pool + self.pool_size_per_class
@@ -611,6 +660,18 @@ class Sampler:
                 n_real = ds_end - ds_start
                 class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
                 dists = torch.cdist(class_ds_feats, pool_feats)  # [n_real, pool_size]
+
+                if self.use_rs_imle:
+                    # Exact RS-IMLE rejection: drop every sample within epsilon of any image in the class.
+                    reject = dists.min(dim=0).values < self.rs_radius  # [pool_size]
+                    n_rej = int(reject.sum().item())
+                    if n_rej == reject.numel():
+                        n_rej = 0  # everything rejected: fall back to plain IMLE for this class
+                    else:
+                        # Large finite value (not inf) so linear_sum_assignment still accepts the matrix.
+                        dists = dists.masked_fill(reject.unsqueeze(0), float(dists.max()) + 1e6)
+                    rs_stats[0] += n_rej
+                    rs_stats[1] += reject.numel()
 
                 if self.H.imle_db_topk is not None and self.H.imle_db_topk > 1:
                     # Optimal 1-to-1 assignment: no pool latent shared across images.
@@ -635,6 +696,11 @@ class Sampler:
 
         # all_reduce(SUM): each rank only wrote its local_classes slices (zeros elsewhere)
         torch.distributed.all_reduce(comm_latents, op=torch.distributed.ReduceOp.SUM)
+        if self.use_rs_imle:
+            torch.distributed.all_reduce(rs_stats, op=torch.distributed.ReduceOp.SUM)
+            self.rs_reject_pct = 100.0 * rs_stats[0].item() / max(rs_stats[1].item(), 1.0)
+            if is_main_process():
+                print(f"[rs-imle] epsilon={self.rs_radius} rejected {self.rs_reject_pct:.2f}% of pool")
         full_updated_latents = comm_latents.float()
 
         perturbation = self.H.imle_perturb_coef * torch.randn(
