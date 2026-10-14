@@ -39,3 +39,4 @@ transfer/
 transfer-narval/*
 transfer_rebuttal/*
 *.zip
+evaluation/tf-eval-env/*
