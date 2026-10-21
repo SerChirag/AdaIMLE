@@ -351,7 +351,6 @@ def add_imle_arguments(parser):
     # data point to its nearest surviving sample.
     parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--rs_radius', type=float, default=0.0)  # fixed rejection radius epsilon
-    parser.add_argument('--rs_knn_ignore', type=int, default=20)  # unconditional path only: top-k per data point checked against epsilon (conditional path is exact)
 
     parser.add_argument('--num_classes', type=int, default=0,
                         help='Number of classes for conditional generation. 0 = unconditional.')

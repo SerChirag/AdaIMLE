@@ -451,21 +451,18 @@ class Sampler:
 
     def _rs_filter_pool_faiss(self, queries_t, dataset_t):
         """
-        Unconditional RS-IMLE rejection. Each data point marks its rs_knn_ignore nearest samples
-        that fall inside epsilon, so this approximates "within epsilon of any data point" (exact
-        whenever no data point has more than rs_knn_ignore samples inside its ball).
+        Unconditional RS-IMLE rejection (exact). Search 1: index the data points and find each pool
+        sample's nearest data point; reject every sample within epsilon of any data point.
+        The actual NN search (search 2) then runs on the surviving pool.
         Returns (kept pool, map kept -> original index) or (pool, None) if nothing was rejected.
         """
         Nd = dataset_t.shape[0]
-        k = int(min(max(1, int(self.H.rs_knn_ignore)), Nd))
         self.faiss_index_flat.reset()
-        self.faiss_index_flat.add(dataset_t)
-        Dk, Ik = self.faiss_index_flat.search(queries_t, k)  # squared L2
+        self.faiss_index_flat.add(queries_t)
+        D1, _ = self.faiss_index_flat.search(dataset_t, 1)  # squared L2, [Nd, 1]
         self.faiss_index_flat.reset()
 
-        close = Dk < self.rs_radius ** 2
-        reject = torch.zeros(Nd, dtype=torch.bool, device=dataset_t.device)
-        reject[Ik[close].long()] = True
+        reject = (D1.squeeze(1) < self.rs_radius ** 2).to(dataset_t.device)
         n_rejected = int(reject.sum().item())
         if n_rejected == Nd:
             # Everything rejected: epsilon is too big, fall back to plain IMLE this round.
@@ -668,8 +665,11 @@ class Sampler:
                     if n_rej == reject.numel():
                         n_rej = 0  # everything rejected: fall back to plain IMLE for this class
                     else:
-                        # Large finite value (not inf) so linear_sum_assignment still accepts the matrix.
-                        dists = dists.masked_fill(reject.unsqueeze(0), float(dists.max()) + 1e6)
+                        # Add (not replace) a large finite offset: survivors always win, but rejected samples
+                        # keep their order, so a real forced onto one (fewer survivors than reals under the
+                        # 1-to-1 assignment) falls back to its nearest sample -- its own copy -- instead of
+                        # an arbitrary tie-break. Finite (not inf) so linear_sum_assignment accepts the matrix.
+                        dists = dists + (float(dists.max()) + 1e6) * reject.unsqueeze(0)
                     rs_stats[0] += n_rej
                     rs_stats[1] += reject.numel()
 
