@@ -41,7 +41,9 @@ class DinoSpatial(nn.Module):
             p.requires_grad_(False)
 
     def _tokens(self, x):
-        x = (x.clamp(-1, 1) + 1) / 2
+        # No clamp: it would zero the gradient wherever the (unclamped, differentiable) decode
+        # overshoots [-1, 1], exactly where the loss should push back. Same as LPIPSvgg.
+        x = (x + 1) / 2
         if x.shape[-1] != self.size or x.shape[-2] != self.size:
             x = F.interpolate(x, size=(self.size, self.size), mode='bicubic', antialias=True, align_corners=False)
         x = (x - self.mean) / self.std
