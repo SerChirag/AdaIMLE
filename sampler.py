@@ -20,6 +20,7 @@ from helpers.autoencoder import (load_autoencoder, encode_images_to_latents, dec
                                  decode_latents_to_images_differentiable)
 from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
 from helpers.lpips_vgg import load_lpips_vgg
+from helpers.dino_spatial import load_dino_spatial
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn, autoencoder=None):
@@ -94,6 +95,19 @@ class Sampler:
                 print(f'\n[lpips] Decoder-space LPIPS-VGG enabled (coef={self.lpips_coef}, '
                       f'latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}), '
                       f'weights from {lpips_path}\n')
+
+        # Alternative perceptual loss: spatial DINO patch tokens (--dino_coef). Either this or
+        # LPIPS, not both (enforced in set_up_hyperparams): each costs a differentiable decode.
+        self.dino_coef = float(getattr(H, 'dino_coef', 0.0))
+        self.dino_net = None
+        if self.dino_coef > 0.0:
+            dino_path = getattr(H, 'dino_path', 'facebook/dinov2-base')
+            self.dino_net = load_dino_spatial(self.device, path=dino_path, size=int(getattr(H, 'dino_size', 224)))
+            if is_main_process():
+                print(f'\n[dino] Decoder-space spatial DINO loss enabled (coef={self.dino_coef}, '
+                      f'latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}, '
+                      f'weights from {dino_path}, {self.dino_net.size}px, skipping {self.dino_net.num_skip} '
+                      f'CLS/register tokens)\n')
 
         if H.search_type != 'l2':
             raise ValueError('This branch expects search_type=l2.')
@@ -320,19 +334,12 @@ class Sampler:
         else:
             raise ValueError(f'Unknown lpips_robust_type: {robust_type}')
 
-    def calc_lpips_loss(self, inp, tar):
-        """LPIPS between the decoded prediction and the decoded target latent.
+    def _decode_pair(self, inp, tar):
+        """Decode the prediction and target latents (BCHW at ``latent_spatial_size``) to images.
 
-        ``inp`` and ``tar`` are BCHW latents at ``latent_spatial_size``. Only ``inp``'s
-        decode is differentiable: ``tar`` is a fixed property of the dataset image, so
-        decoding it under ``no_grad`` keeps the backward graph to a single decoder pass.
-
-        VGG expects fp32, and the decoder is forced out of autocast anyway, so the whole
-        term runs at full precision regardless of the ambient autocast context.
+        Only ``inp``'s decode is differentiable: ``tar`` is a fixed property of the dataset image,
+        so decoding it under ``no_grad`` keeps the backward graph to a single decoder pass.
         """
-        if self.lpips_net is None:
-            return torch.zeros((), device=inp.device, dtype=torch.float32)
-
         with torch.no_grad():
             img_tar = decode_latents_to_images_differentiable(
                 self.autoencoder, tar.detach(), self.autoencoder_native_latent_size)
@@ -340,10 +347,31 @@ class Sampler:
 
         img_inp = decode_latents_to_images_differentiable(
             self.autoencoder, inp, self.autoencoder_native_latent_size)
+        return img_inp, img_tar
 
+    def calc_lpips_loss(self, inp, tar):
+        """LPIPS between the decoded prediction and the decoded target latent.
+
+        VGG expects fp32, and the decoder is forced out of autocast anyway, so the whole
+        term runs at full precision regardless of the ambient autocast context.
+        """
+        if self.lpips_net is None:
+            return torch.zeros((), device=inp.device, dtype=torch.float32)
+
+        img_inp, img_tar = self._decode_pair(inp, tar)
         with autocast(device_type='cuda', enabled=False):
             per_sample = self.lpips_net(img_inp.float(), img_tar.float())  # (B,), >= 0
             return self._robust_lpips(per_sample).mean()
+
+    def calc_dino_loss(self, inp, tar):
+        """Spatial DINO distance (helpers/dino_spatial.py) between the decoded prediction and the
+        decoded target latent. Same decode path as calc_lpips_loss; fp32, outside autocast."""
+        if self.dino_net is None:
+            return torch.zeros((), device=inp.device, dtype=torch.float32)
+
+        img_inp, img_tar = self._decode_pair(inp, tar)
+        with autocast(device_type='cuda', enabled=False):
+            return self.dino_net(img_inp.float(), img_tar.float()).mean()
 
     def resample_pool(self, gen, class_condition=None):
 

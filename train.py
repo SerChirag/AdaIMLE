@@ -89,18 +89,23 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
     if latent_coef != 1.0:
         loss = loss * latent_coef
 
-    # Perceptual term on the full-resolution output only, in decoder space. Kept outside
-    # the autocast block: it decodes through the frozen VAE and runs VGG, both in fp32.
-    lpips_measure = torch.zeros((), device=loss.device)
+    # Perceptual term on the full-resolution output only, in decoder space: LPIPS-VGG or
+    # spatial DINOv2 (one or the other). Kept outside the autocast block: it decodes through
+    # the frozen VAE and runs the perceptual net, both in fp32.
+    perc_measure = torch.zeros((), device=loss.device)
     if H.lpips_coef > 0.0:
         lpips_loss = sampler.calc_lpips_loss(px_z[-1], targets_bchw)
-        lpips_measure = lpips_loss.detach().clone()
+        perc_measure = lpips_loss.detach().clone()
         loss = loss.float() + H.lpips_coef * lpips_loss
+    elif H.dino_coef > 0.0:
+        dino_loss = sampler.calc_dino_loss(px_z[-1], targets_bchw)
+        perc_measure = dino_loss.detach().clone()
+        loss = loss.float() + H.dino_coef * dino_loss
 
     loss = loss / (H.accumulation_steps)
 
     scaler.scale(loss).backward()
-    return loss_measure.detach(), lpips_measure.detach()
+    return loss_measure.detach(), perc_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
@@ -222,7 +227,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             start_time = time.time()
 
         epoch_loss_sum = torch.zeros((), device=device)  # Accumulate on device to avoid per-step host syncs.
-        epoch_lpips_sum = torch.zeros((), device=device)
+        epoch_perc_sum = torch.zeros((), device=device)
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
@@ -242,11 +247,11 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss, lpips_loss = training_step_imle(H, target_bchw, latents, labels,
+                loss, perc_loss = training_step_imle(H, target_bchw, latents, labels,
                                                      imle, sampler, scaler)
 
             epoch_loss_sum.add_(loss)
-            epoch_lpips_sum.add_(lpips_loss)
+            epoch_perc_sum.add_(perc_loss)
             epoch_iter_count += 1
 
             accum_counter += 1
@@ -292,7 +297,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(epoch_lpips_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(epoch_perc_sum, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
@@ -308,7 +313,9 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'class_emb_norm': class_emb_norm,
         }
         if H.lpips_coef > 0.0:
-            metrics['mean_lpips'] = epoch_lpips_sum.item() / total_batches
+            metrics['mean_lpips'] = epoch_perc_sum.item() / total_batches
+        elif H.dino_coef > 0.0:
+            metrics['mean_dino'] = epoch_perc_sum.item() / total_batches
         if sampler.use_rs_imle:
             metrics['rs_reject_pct'] = sampler.rs_reject_pct
 
@@ -385,7 +392,6 @@ def main():
     H, logprint = set_up_hyperparams()
     configure_runtime_performance(H, logprint)
     H.search_type = 'l2'
-    H.dino_coef = 0.0
     if H.l2_coef == 0.0:
         H.l2_coef = 1.0
     H, data_train, data_valid_or_test, preprocess_fn, autoencoder = set_up_data(H)

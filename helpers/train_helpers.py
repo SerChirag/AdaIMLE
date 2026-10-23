@@ -313,8 +313,11 @@ def set_up_hyperparams(s=None):
     set_seed(H.seed)
     logprint = logger(H.logdir)
     apply_resume(H, logprint)
-    if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and H.lpips_coef == 0.0:
-        raise ValueError('--latent_loss_coef and --lpips_coef are both 0: the training loss '
+    if H.lpips_coef > 0.0 and getattr(H, 'dino_coef', 0.0) > 0.0:
+        raise ValueError('--lpips_coef and --dino_coef are both > 0: use one perceptual loss '
+                         '(e.g. --lpips_coef 0 --dino_coef 1 for DINO).')
+    if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and H.lpips_coef == 0.0 and getattr(H, 'dino_coef', 0.0) == 0.0:
+        raise ValueError('--latent_loss_coef, --lpips_coef and --dino_coef are all 0: the training loss '
                          'would be identically zero and no gradients would flow.')
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)

@@ -230,7 +230,12 @@ def add_imle_arguments(parser):
                               "raw latent residuals), hence the separate knob. Unused when "
                               "--lpips_robust_type is 'none'.")
     parser.add_argument('--l2_coef', type=float, default=0.1)  # l2 loss coefficient
-    parser.add_argument('--dino_coef', type=float, default=1.0)  # l2 loss coefficient
+    parser.add_argument('--dino_coef', type=float, default=0.0,
+                        help="Decoder-space spatial DINOv2 loss coefficient (helpers/dino_spatial.py: 1 - cos "
+                             "between last-layer patch tokens, averaged over positions). Alternative to "
+                             "LPIPS -- use one or the other, e.g. --lpips_coef 0 --dino_coef 1.")
+    parser.add_argument('--dino_path', type=str, default='facebook/dinov2-base')  # HF id or local snapshot dir; facebook/dinov2-with-registers-base has cleaner patch maps
+    parser.add_argument('--dino_size', type=int, default=224)  # input resolution for --dino_coef; multiple of the patch size (224 for DINOv2/14, 256 for DINOv3/16)
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
