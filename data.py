@@ -12,6 +12,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 
 from helpers.utils import get_world_size
+from dit_models import Z_DIM as DIT_Z_DIM
 from models import parse_layer_string
 from torchvision.datasets import CIFAR10, STL10
 from helpers.autoencoder import load_autoencoder, encode_images_to_latents
@@ -23,7 +24,9 @@ def set_up_data(H):
     blocks = parse_layer_string(H.dec_blocks)
     H.block_res = [s[0] for s in blocks]
     H.res = sorted(set([s[0] for s in blocks if s[0] <= H.max_hierarchy]))
-    H.latent_spatial_size = max(H.block_res)
+    # --latent_spatial_size overrides the size implied by --dec_blocks (the DiT has no dec_blocks).
+    assert H.arch != 'dit' or H.latent_spatial_size, '--arch dit needs --latent_spatial_size (e.g. 32)'
+    H.latent_spatial_size = H.latent_spatial_size or max(H.block_res)
 
     # trX: image array (NHWC uint8 or similar); trY: label array or None
     trY = None
@@ -75,6 +78,9 @@ def set_up_data(H):
         target_spatial=(H.latent_spatial_size, H.latent_spatial_size),
     )
     H.image_channels = latent_probe.shape[1]
+    if H.arch == 'dit':
+        H.latent_dim = DIT_Z_DIM        # s27's z is (N, 128): 16 conditioning tokens x 8
+        print(f'[dit] {H.dit_model}: latent_dim set to {H.latent_dim}')
 
     train_len = None
     use_cache = bool(getattr(H, 'use_cache', True))

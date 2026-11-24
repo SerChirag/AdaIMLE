@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from mapping_network import AdaptiveInstanceNorm, MappingNetwork
+from dit_models import IMLEDiT_models
 from helpers.imle_helpers import get_1x1
 from collections import defaultdict
 import numpy as np
@@ -203,10 +204,18 @@ class Decoder(nn.Module):
         else:
             return targets[-1]
 
+def build_dit(H):
+    """Classic s27 IMLE DiT (dit_models.py) on the latent grid; H.latent_dim is set to its z size in set_up_data."""
+    model = IMLEDiT_models[H.dit_model](input_size=H.latent_spatial_size, in_channels=H.image_channels,
+                                        num_classes=H.num_classes or 0)
+    assert model.latent_dim == H.latent_dim, f'IMLEDiT latent_dim {model.latent_dim} != H.latent_dim {H.latent_dim}'
+    return model
+
+
 class IMLE(nn.Module):
     def __init__(self, H):
         super().__init__()
-        self.decoder = Decoder(H)
+        self.decoder = build_dit(H) if H.arch == 'dit' else Decoder(H)
 
     def forward(self, latents, condition=None, train=False):
         return self.decoder.forward(latents, condition, train)

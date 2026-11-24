@@ -141,6 +141,8 @@ def add_imle_arguments(parser):
     parser.add_argument('--hparam_sets', '--hps', type=str)  # e.g. 'fewshot'
     parser.add_argument('--enc_blocks', type=str, default=None)  # specify encoder blocks, e.g. '1x2,4m1,4x4,8m4,8x5,16m8,16x8,32m16,32x5,64m32,64x4,128m64,128x4,256m128'
     parser.add_argument('--dec_blocks', type=str, default=None)  # specify decoder blocks, e.g. '256x4,128m64,128x4,64m32,64x4,32m16,32x5,16m8,16x8,8m4,8x5,4m1,4x4,1x2'
+    parser.add_argument('--arch', type=str, default='convnext', choices=['convnext', 'dit'])  # dit: the classic s27 IMLE DiT (dit_models.py); needs --latent_spatial_size
+    parser.add_argument('--dit_model', type=str, default='IMLEDiT-S/2')  # key into dit_models.IMLEDiT_models; s27 is IMLEDiT-S/2
     parser.add_argument('--width', type=int, default=512)  # width of encoder and decoder convs
     parser.add_argument('--custom_width_str', type=str, default='')  # custom width for each block
     parser.add_argument('--bottleneck_multiple', type=float, default=0.25)  # coefficient width of bottleneck layers, e.g. 0.25 means 1/4 of width
