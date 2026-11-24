@@ -19,21 +19,34 @@ def create_npz_from_folder(folder, n_samples, seed=42):
     rng.shuffle(files)
     files = files[:n_samples]
 
-    imgs = []
+    # Preallocate from the first image's shape: for 30k 256x256x3 images the
+    # list + np.stack route peaks at twice the final array (~12 GB).
+    arr = None
+    shape = None
+    for i, path in enumerate(tqdm.tqdm(files, desc=f"Loading {len(files)} images")):
+        a = np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8)
+        if arr is None:
+            shape = a.shape
+            arr = np.empty((len(files),) + shape, dtype=np.uint8)
+        elif a.shape != shape:
+            raise ValueError(f"{path} has shape {a.shape}, expected {shape}")
+        arr[i] = a
 
-    ## Add tqdm progress bar to show the progress of loading images
-    for path in tqdm.tqdm(files, desc=f"Loading {n_samples} images"):
-        img = Image.open(path).convert("RGB")
-        arr = np.asarray(img, dtype=np.uint8)
-        imgs.append(arr)
+    return arr
 
-    return np.stack(imgs, axis=0)
+jobs = [
+    # ('/localscratch/cva19/celeba_comb', '/localscratch/cva19/eval_refs/celeba_ref_30000.npz', 30000),
+    # ('/localscratch/cva19/shortcut_results/celebd/128/samples',
+    #  '/localscratch/cva19/eval_refs/celebd_128_samples_49984.npz', 49984),
+    ('/localscratch/cva19/shortcut_results/celebd/1/samples',
+     '/localscratch/cva19/eval_refs/celebd_1_samples_49984.npz', 49984),
+]
 
-subset = [50000]
-
-for n in subset:
-    out_path = f'/localscratch/cva19/latent_vamp/evaluation/imagenet_novamp.npz'
-    array = create_npz_from_folder('/localscratch/cva19/latent_vamp/new-vanilla-results/imagenet256-mclure-mark2-novamp-embmult10x/train/fid', n)
+for folder, out_path, n in jobs:
+    if os.path.exists(out_path):
+        print(f'Skipping {out_path} (exists)')
+        continue
+    array = create_npz_from_folder(folder, n)
     np.savez(out_path, arr_0=array)
-    print(f'Saved {n} samples to {out_path}')
+    print(f'Saved {array.shape} to {out_path}')
     del array

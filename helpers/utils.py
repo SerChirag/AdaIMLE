@@ -41,8 +41,10 @@ def init_distributed_mode(timeout_sec=4800):
         rank = 0
         world_size = 1
         local_rank = 0
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "12355"
+        # setdefault: a script can export its own MASTER_PORT, so two single-GPU runs can
+        # share a machine (each binds its port for the process group).
+        os.environ.setdefault("MASTER_ADDR", "localhost")
+        os.environ.setdefault("MASTER_PORT", "12355")
         distributed = False
 
     if torch.cuda.is_available():

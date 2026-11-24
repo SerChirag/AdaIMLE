@@ -39,3 +39,9 @@ transfer/
 transfer-narval/*
 transfer_rebuttal/*
 *.zip
+bad_samples_decoded/*
+confidence_split/*
+decoded_images/*
+roundtrip_out/*
+vae_roundtrip_out/*
+roundtrip_lpips_out_125/*
