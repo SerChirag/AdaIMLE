@@ -403,7 +403,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         print("Training complete. Saving final model.")
         fp = os.path.join(H.save_dir, 'final')
         logprint(f'Saving final model@ {iterate} to {fp}')
-        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler)
+        # Wait for the (daemon) save thread: the process exits right after, which would cut the files short.
+        save_model(fp, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=sampler).join()
     safe_barrier()
 
 def main():

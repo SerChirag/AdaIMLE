@@ -126,6 +126,7 @@ def save_model(path, imle, ema_imle, optimizer, scheduler, scaler, H, sampler=No
         daemon=True,
     )
     t.start()
+    return t
 
 
 def accumulate_stats(stats, frequency):
