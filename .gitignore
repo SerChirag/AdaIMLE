@@ -45,3 +45,4 @@ decoded_images/*
 roundtrip_out/*
 vae_roundtrip_out/*
 roundtrip_lpips_out_125/*
+latent_mae_weights

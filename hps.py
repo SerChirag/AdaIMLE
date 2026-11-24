@@ -1,3 +1,4 @@
+import os
 from distutils.util import strtobool
 
 HPARAMS_REGISTRY = {}
@@ -243,7 +244,8 @@ def add_imle_arguments(parser):
                              "per-feature normalized distance over the latent MAE-ResNet's 85 drift-loss "
                              "features, no decode). Needs sd-vae-ft-mse latents (--autoencoder_type kl "
                              "--autoencoder_name_or_path stabilityai/sd-vae-ft-mse). Alternative to LPIPS/DINO.")
-    parser.add_argument('--mae_path', type=str, default='/home/cva19/Desktop/drifting/weights/mae_latent_256.pt')  # converted checkpoint; mae_latent_640.pt is the stronger (2.1B-param) one
+    parser.add_argument('--mae_path', type=str,  # converted checkpoint, looked up next to this file by default
+                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'latent_mae_weights', 'mae_latent_256.pt'))
     parser.add_argument('--mae_res', type=str, default='32',
                         help="Comma-separated output resolutions that get the --mae_coef term, e.g. '16,32'. "
                              "Lower-res taps are scored like the multi-res L2 (against the bicubic-downsampled "
