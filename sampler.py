@@ -21,6 +21,7 @@ from helpers.autoencoder import (load_autoencoder, encode_images_to_latents, dec
 from helpers.cache_utils import latent_cache_key, load_latent_cache, save_latent_cache
 from helpers.lpips_vgg import load_lpips_vgg
 from helpers.dino_spatial import load_dino_spatial
+from helpers.mae_feature import load_mae_feature_loss
 
 class Sampler:
     def __init__(self, H, sz, preprocess_fn, autoencoder=None):
@@ -108,6 +109,23 @@ class Sampler:
                       f'latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}, '
                       f'weights from {dino_path}, {self.dino_net.size}px, skipping {self.dino_net.num_skip} '
                       f'CLS/register tokens)\n')
+
+        # Latent-space alternative: Drifting's latent MAE-ResNet features (--mae_coef), optionally
+        # also as the NN-search distance (--mae_search). No decode, but only meaningful on the
+        # sd-vae-ft-mse latents it was trained on (enforced in set_up_hyperparams).
+        self.mae_coef = float(getattr(H, 'mae_coef', 0.0))
+        self.mae_search = bool(getattr(H, 'mae_search', False))
+        if self.mae_search and self.num_classes > 0:
+            raise ValueError('--mae_search is only implemented for the unconditional force resample.')
+        self.mae_net = None
+        if self.mae_coef > 0.0 or self.mae_search:
+            self.mae_net = load_mae_feature_loss(self.device, H.mae_path)
+            if getattr(H, 'mae_bf16', False):
+                self.mae_net.to(torch.bfloat16)   # only ever called under autocast
+            if is_main_process():
+                print(f'\n[mae] Latent-space Drifting MAE features enabled (loss coef={self.mae_coef}, '
+                      f'search={self.mae_search}, latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}, '
+                      f'weights from {H.mae_path})\n')
 
         if H.search_type != 'l2':
             raise ValueError('This branch expects search_type=l2.')
@@ -373,6 +391,16 @@ class Sampler:
         with autocast(device_type='cuda', enabled=False):
             return self.dino_net(img_inp.float(), img_tar.float()).mean()
 
+    def calc_mae_loss(self, inp, tar):
+        """Drifting latent-MAE feature distance (helpers/mae_feature.py) between the predicted and
+        target latents directly -- no decode. The MAE runs under the training autocast dtype (the
+        official extractor is bf16); the per-feature loss itself is fp32."""
+        if self.mae_net is None:
+            return torch.zeros((), device=inp.device, dtype=torch.float32)
+
+        with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
+            return self.mae_net(inp, tar.detach())
+
     def resample_pool(self, gen, class_condition=None):
 
         # Determine local pool size
@@ -510,7 +538,25 @@ class Sampler:
         self.faiss_index_flat.add(dataset_t)
         D, I = self.faiss_index_flat.search(queries_t, min(topk, dataset_t.shape[0]))
         self.faiss_index_flat.reset()
+        return self._assign_topk(D, I, dataset_t.shape[0])
 
+    def nn_search_mae(self, queries, dataset):
+        """nn_search_batched with the latent-MAE feature distance (--mae_search) instead of L2.
+        ``queries`` are the data latents (fixed: featurized once), ``dataset`` the pool, both
+        flattened NCHW as in get_l2_feature. Same top-k + hard-first greedy assignment."""
+        shape = (-1, self.latent_channels, self.latent_spatial_size, self.latent_spatial_size)
+        with autocast(device_type='cuda', dtype=self.H.amp_dtype_torch):
+            if self.mae_net.tar_feats is None:
+                self.mae_net.set_targets(queries.to(self.device).float().view(shape))
+            dist = self.mae_net.pairwise_dist(dataset.to(self.device).float().view(shape)).T  # (Nq, Npool)
+        topk = getattr(self.H, 'imle_db_topk', 1)
+        D, I = torch.topk(dist, min(topk, dist.shape[1]), dim=1, largest=False)
+        return self._assign_topk(D, I, dist.shape[1])
+
+    def _assign_topk(self, D, I, Nd):
+        """(Nq, K) candidate distances / pool indices -> one pool index per query: the nearest for
+        K == 1, else hard-first greedy over the candidates so queries get distinct samples."""
+        topk = D.shape[1]
         if topk == 1:
             return D.squeeze(1).to(torch.float32), I.squeeze(1).to(torch.long)
 
@@ -518,7 +564,6 @@ class Sampler:
         D_np = D.cpu().numpy()
         I_np = I.cpu().numpy()
         Nq, K = D_np.shape
-        Nd = dataset_t.shape[0]
 
         # Sort all (query, candidate) pairs by distance ascending
         q_ids = np.repeat(np.arange(Nq), K)
@@ -589,7 +634,10 @@ class Sampler:
                 pool_feats = self.pool_samples_proj
 
                 # Perform NN search for the local chunk. Returns arrays of shape (local_size, 1).
-                _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
+                if self.mae_search:
+                    _, local_indices = self.nn_search_mae(local_ds_feats, pool_feats)
+                else:
+                    _, local_indices = self.nn_search_batched(local_ds_feats, pool_feats)
 
                 # get count of unique indices for logging
                 self.unique_indices = torch.unique(local_indices).numel() / self.sz

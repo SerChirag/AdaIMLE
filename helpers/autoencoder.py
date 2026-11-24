@@ -54,6 +54,10 @@ def load_autoencoder(H, device):
         ae = ae.to(memory_format=torch.channels_last)
     ae.eval()
     ae.requires_grad_(False)
+    if getattr(H, 'vae_grad_ckpt', False) and hasattr(ae, 'enable_gradient_checkpointing'):
+        # Recompute decoder blocks in backward: only the differentiable (LPIPS/DINO) decode is
+        # affected -- diffusers checkpoints only when grad is enabled, so no-grad decodes are unchanged.
+        ae.enable_gradient_checkpointing()
     ae._cached_scaling_factor = float(getattr(getattr(ae, 'config', None), 'scaling_factor', 1.0))
     return ae
 

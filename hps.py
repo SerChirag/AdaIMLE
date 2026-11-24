@@ -236,6 +236,22 @@ def add_imle_arguments(parser):
                              "LPIPS -- use one or the other, e.g. --lpips_coef 0 --dino_coef 1.")
     parser.add_argument('--dino_path', type=str, default='facebook/dinov2-base')  # HF id or local snapshot dir; facebook/dinov2-with-registers-base has cleaner patch maps
     parser.add_argument('--dino_size', type=int, default=224)  # input resolution for --dino_coef; multiple of the patch size (224 for DINOv2/14, 256 for DINOv3/16)
+    parser.add_argument('--mae_coef', type=float, default=0.0,
+                        help="Latent-space Drifting MAE feature loss coefficient (helpers/mae_feature.py: "
+                             "per-feature normalized distance over the latent MAE-ResNet's 85 drift-loss "
+                             "features, no decode). Needs sd-vae-ft-mse latents (--autoencoder_type kl "
+                             "--autoencoder_name_or_path stabilityai/sd-vae-ft-mse). Alternative to LPIPS/DINO.")
+    parser.add_argument('--mae_path', type=str, default='/home/cva19/Desktop/drifting/weights/mae_latent_256.pt')  # converted checkpoint; mae_latent_640.pt is the stronger (2.1B-param) one
+    parser.add_argument('--mae_res', type=str, default='32',
+                        help="Comma-separated output resolutions that get the --mae_coef term, e.g. '16,32'. "
+                             "Lower-res taps are scored like the multi-res L2 (against the bicubic-downsampled "
+                             "target), with both upsampled back to the full latent size the MAE was trained on. "
+                             "Each tap is added at full --mae_coef weight.")
+    parser.add_argument('--mae_bf16', default=False, type=lambda x: bool(strtobool(x)))  # keep the frozen MAE in bf16 (convs already run in bf16 under autocast); halves its memory, needed for mae_latent_640 on a 24 GB card
+    parser.add_argument('--mae_search', default=False, type=lambda x: bool(strtobool(x)),
+                        help="Match data points to pool samples by the latent-MAE feature distance (the "
+                             "--mae_coef loss per pair, with fixed per-key scales from the data) instead of "
+                             "latent L2. Exact over all pool x data pairs, so meant for small datasets.")
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
@@ -332,6 +348,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--autoencoder_name_or_path', type=str, default='')
     parser.add_argument('--autoencoder_subfolder', type=str, default='')
     parser.add_argument('--autoencoder_decode_for_metrics', default=True, type=lambda x: bool(strtobool(x)))
+    parser.add_argument('--vae_grad_ckpt', default=False, type=lambda x: bool(strtobool(x)))  # gradient checkpointing in the VAE decoder for the differentiable LPIPS/DINO decode; needed for --lpips_coef at n_batch 32 on a 24 GB card
 
     parser.add_argument('--use_comet', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--comet_name', type=str, default='AdaptiveIMLE')  # used in comet.ml

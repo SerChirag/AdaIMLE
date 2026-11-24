@@ -313,12 +313,20 @@ def set_up_hyperparams(s=None):
     set_seed(H.seed)
     logprint = logger(H.logdir)
     apply_resume(H, logprint)
-    if H.lpips_coef > 0.0 and getattr(H, 'dino_coef', 0.0) > 0.0:
-        raise ValueError('--lpips_coef and --dino_coef are both > 0: use one perceptual loss '
-                         '(e.g. --lpips_coef 0 --dino_coef 1 for DINO).')
-    if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and H.lpips_coef == 0.0 and getattr(H, 'dino_coef', 0.0) == 0.0:
-        raise ValueError('--latent_loss_coef, --lpips_coef and --dino_coef are all 0: the training loss '
-                         'would be identically zero and no gradients would flow.')
+    perc_coefs = [H.lpips_coef, getattr(H, 'dino_coef', 0.0), getattr(H, 'mae_coef', 0.0)]
+    if sum(c > 0.0 for c in perc_coefs) > 1:
+        raise ValueError('more than one of --lpips_coef, --dino_coef and --mae_coef is > 0: use one perceptual '
+                         'loss (e.g. --lpips_coef 0 --dino_coef 1 for DINO).')
+    uses_mae = getattr(H, 'mae_coef', 0.0) > 0.0 or getattr(H, 'mae_search', False)
+    if getattr(H, 'mae_search', False) and getattr(H, 'use_rs_imle', False):
+        raise ValueError('--mae_search does not support --use_rs_imle (its rejection radius is in latent L2).')
+    if uses_mae and 'sd-vae' not in getattr(H, 'autoencoder_name_or_path', ''):
+        raise ValueError('--mae_coef / --mae_search need the sd-vae-ft-mse latents the Drifting MAE was trained on: pass '
+                         '--autoencoder_name_or_path stabilityai/sd-vae-ft-mse (--autoencoder_type kl '
+                         'defaults to zelaki/eq-vae).')
+    if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and all(c == 0.0 for c in perc_coefs):
+        raise ValueError('--latent_loss_coef, --lpips_coef, --dino_coef and --mae_coef are all 0: the training '
+                         'loss would be identically zero and no gradients would flow.')
     np.random.seed(H.seed)
     torch.manual_seed(H.seed)
     torch.cuda.manual_seed(H.seed)

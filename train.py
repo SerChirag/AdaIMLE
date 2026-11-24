@@ -101,6 +101,24 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
         dino_loss = sampler.calc_dino_loss(px_z[-1], targets_bchw)
         perc_measure = dino_loss.detach().clone()
         loss = loss.float() + H.dino_coef * dino_loss
+    elif H.mae_coef > 0.0:
+        mae_res = {int(r) for r in str(H.mae_res).split(',')}
+        full_res = targets_bchw.shape[-1]
+        mae_loss = torch.zeros((), device=loss.device)
+        if full_res in mae_res:
+            mae_loss = sampler.calc_mae_loss(px_z[-1], targets_bchw)
+        perc_measure = mae_loss.detach().clone()   # logged mean_mae: full-res tap only, comparable across --mae_res
+        # Lower-res taps: the tap and its downsampled target (as in the multi-res L2 above) are both
+        # upsampled back to the MAE's input size, so they blur alike and a match still scores 0.
+        for px_z_scale in px_z[:-1]:
+            res = px_z_scale.shape[-1]
+            if res not in mae_res or px_z_scale.shape[1] != targets_bchw.shape[1]:
+                continue
+            targets_scale = F.interpolate(targets_bchw, size=(res, res), antialias=True,
+                                          mode='bicubic', align_corners=H.align_corners)
+            up = lambda t: F.interpolate(t, size=(full_res, full_res), mode='bicubic', align_corners=H.align_corners)
+            mae_loss = mae_loss + sampler.calc_mae_loss(up(px_z_scale.float()), up(targets_scale))
+        loss = loss.float() + H.mae_coef * mae_loss
 
     loss = loss / (H.accumulation_steps)
 
@@ -316,6 +334,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             metrics['mean_lpips'] = epoch_perc_sum.item() / total_batches
         elif H.dino_coef > 0.0:
             metrics['mean_dino'] = epoch_perc_sum.item() / total_batches
+        elif H.mae_coef > 0.0:
+            metrics['mean_mae'] = epoch_perc_sum.item() / total_batches
         if sampler.use_rs_imle:
             metrics['rs_reject_pct'] = sampler.rs_reject_pct
 
