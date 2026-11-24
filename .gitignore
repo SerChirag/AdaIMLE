@@ -39,3 +39,6 @@ transfer/
 transfer-narval/*
 transfer_rebuttal/*
 *.zip
+evaluation/*
+eval_refs/*
+cache/*

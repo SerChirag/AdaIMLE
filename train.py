@@ -45,14 +45,44 @@ def print_seed(device):
     cuda_seed = torch.cuda.initial_seed()
     print(f"Device {device} CPU seed = {cpu_seed}, GPU seed = {cuda_seed} \n")
 
-def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
-    loss_fn = sampler.calc_loss
+def build_image_weights(H, n, device):
+    """--old_weight: per-dataset-index loss weight (old images = files under --old_images_root, after
+    resolving symlinks; everything else 1). Index order = ImageFolder order, which is what set_up_data
+    uses for imagenet_folder (class-sorted; its stable sort by label is a no-op). None when off."""
+    w_old = float(getattr(H, 'old_weight', 1.0))
+    if w_old == 1.0:
+        return None
+    if H.dataset != 'imagenet_folder':
+        raise ValueError('--old_weight is only implemented for --dataset imagenet_folder.')
+    from torchvision.datasets import ImageFolder
+    samples = ImageFolder(H.data_root).samples                      # lists files only, loads nothing
+    if len(samples) != n:
+        raise ValueError(f'--old_weight: ImageFolder lists {len(samples)} files, dataset has {n}.')
+    if H.labels is not None and not torch.equal(torch.tensor([c for _, c in samples]), H.labels.cpu().long()):
+        raise ValueError('--old_weight: ImageFolder order does not match the dataset labels.')
+    root = os.path.realpath(H.old_images_root) + os.sep
+    is_old = torch.tensor([os.path.realpath(p).startswith(root) for p, _ in samples])
+    if is_old.all() or not is_old.any():
+        raise ValueError(f'--old_weight: {int(is_old.sum())}/{n} images are under {root}; need a mix.')
+    if is_main_process():
+        print(f'[old_weight] {int(is_old.sum())} old images (weight {w_old}), {int((~is_old).sum())} new (weight 1.0)')
+    return torch.where(is_old, w_old, 1.0).float().to(device)
+
+
+def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler, img_weights=None, perc_weights=None):
+    if img_weights is None:
+        loss_fn = sampler.calc_loss
+    else:
+        loss_fn = lambda inp, tar: sampler.calc_loss(inp, tar, weights=img_weights)
 
     # torch.autograd.set_detect_anomaly(True)  # Enable anomaly detection
     with autocast(device_type='cuda', dtype=H.amp_dtype_torch):
         px_z = imle(latents, labels, train=True)
         loss = loss_fn(px_z[-1], targets_bchw)
-        loss_measure = loss.detach().clone()
+        if img_weights is None:
+            loss_measure = loss.detach().clone()
+        else:   # log the unweighted loss so mean_loss stays comparable across --old_weight settings
+            loss_measure = sampler.calc_loss(px_z[-1].detach(), targets_bchw)
         num_resolutions = 1
 
         if(H.use_multi_res):
@@ -93,7 +123,16 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
     # spatial DINOv2 (one or the other). Kept outside the autocast block: it decodes through
     # the frozen VAE and runs the perceptual net, both in fp32.
     perc_measure = torch.zeros((), device=loss.device)
-    if H.lpips_coef > 0.0:
+    lpips2_measure = torch.zeros((), device=loss.device)   # LPIPS when it runs next to DINO (--lpips_with_dino)
+    if perc_weights is not None and not (H.lpips_coef > 0.0 and H.dino_coef > 0.0):
+        raise NotImplementedError('per-sample perceptual weights (--balanced_moved_weight) are only wired for '
+                                  '--lpips_with_dino (LPIPS + DINO together)')
+    if H.lpips_coef > 0.0 and H.dino_coef > 0.0:            # only reachable with --lpips_with_dino (set_up_hyperparams)
+        dino_loss, lpips_loss = sampler.calc_dino_lpips_loss(px_z[-1], targets_bchw, weights=perc_weights)
+        perc_measure = dino_loss.detach().clone()
+        lpips2_measure = lpips_loss.detach().clone()
+        loss = loss.float() + H.dino_coef * dino_loss + H.lpips_coef * lpips_loss
+    elif H.lpips_coef > 0.0:
         lpips_loss = sampler.calc_lpips_loss(px_z[-1], targets_bchw)
         perc_measure = lpips_loss.detach().clone()
         loss = loss.float() + H.lpips_coef * lpips_loss
@@ -105,7 +144,7 @@ def training_step_imle(H, targets_bchw, latents, labels, imle, sampler, scaler):
     loss = loss / (H.accumulation_steps)
 
     scaler.scale(loss).backward()
-    return loss_measure.detach(), perc_measure.detach()
+    return loss_measure.detach(), perc_measure.detach(), lpips2_measure.detach()
 
 def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, logprint, experiment=None, autoencoder=None):
     optimizer, scheduler, scaler, best_fid, iterate, starting_epoch = load_opt(H, imle, logprint)
@@ -170,18 +209,24 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
     # (same permutation, same wrap-around padding, same rank stride) so batch composition
     # and step count per rank are unchanged -- the latter matters for DDP, where a rank
     # running a different number of steps would hang at the gradient all-reduce.
-    samples_per_rank = math.ceil(train_len / H.world_size)
-    padded_len = samples_per_rank * H.world_size
 
     labels_gpu = H.labels.to(device) if (H.num_classes > 0 and H.labels is not None) else None
+    img_weight_table = build_image_weights(H, train_len, device)
 
-    def epoch_index_batches(ep):
+    def epoch_index_batches(ep, n_extra=0, active_idx=None):
+        # n_extra > 0 (--balanced_extra_moved): indices train_len .. train_len + n_extra - 1 are the extra
+        # moved-latent examples. active_idx (--balanced_rs_radius): train only these image indices this epoch.
+        # n_extra == 0 and active_idx None reproduce the original stream exactly.
+        n_items = active_idx.numel() if active_idx is not None else train_len + n_extra
+        padded_len = math.ceil(n_items / H.world_size) * H.world_size
         g = torch.Generator()
         g.manual_seed(H.seed + ep)
-        order = torch.randperm(train_len, generator=g)
-        pad = padded_len - train_len
+        order = torch.randperm(n_items, generator=g)
+        if active_idx is not None:
+            order = active_idx[order]
+        pad = padded_len - n_items
         if pad > 0:
-            order = torch.cat([order, order.repeat(math.ceil(pad / train_len))[:pad]])
+            order = torch.cat([order, order.repeat(math.ceil(pad / n_items))[:pad]])
         rank_order = order[H.local_rank:padded_len:H.world_size]
         for start in range(0, rank_order.numel(), H.n_batch):
             yield rank_order[start:start + H.n_batch]
@@ -204,6 +249,8 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if (epoch % H.imle_force_resample == 0) or (force_initial_resample):
             sampler.imle_sample_force(imle)
             force_initial_resample = False
+        if sampler.match_balanced:
+            sampler.set_balanced_slot(epoch)
 
 
         if (epoch % H.viz_freq == 0 and is_main_process()):
@@ -228,14 +275,45 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
 
         epoch_loss_sum = torch.zeros((), device=device)  # Accumulate on device to avoid per-step host syncs.
         epoch_perc_sum = torch.zeros((), device=device)
+        epoch_lpips2_sum = torch.zeros((), device=device)
         epoch_iter_count = 0
         accum_counter = 0
         imle.zero_grad(set_to_none=True)
+        # per-epoch own / moved split of the per-sample DINO and LPIPS (match_balanced + --lpips_with_dino):
+        # [dino_own, lpips_own, n_own, dino_moved, lpips_moved, n_moved]
+        split_sums = torch.zeros(6, dtype=torch.float64, device=device)
+        track_split = (sampler.match_balanced and sampler.balanced_slot_moved is not None
+                       and H.lpips_coef > 0.0 and H.dino_coef > 0.0)
 
-        for indices in epoch_index_batches(epoch):
-            idx_gpu = indices.to(device, non_blocking=True)
+        active_idx = None
+        if getattr(sampler, 'balanced_rs_radius', 0.0) > 0 and sampler.balanced_active is not None:
+            active_idx = torch.nonzero(sampler.balanced_active).flatten()
+            if active_idx.numel() < H.world_size * H.n_batch:
+                active_idx = None   # (nearly) every slot inside the radius: train everyone on their slot this epoch
+        n_extra = 0
+        if getattr(sampler, 'balanced_extra_moved', False) and sampler.balanced_extra_idx is not None:
+            n_extra = sampler.balanced_extra_idx.numel()
+        use_moved_w = getattr(sampler, 'balanced_moved_weight', 1.0) != 1.0 and sampler.balanced_slot_moved is not None
+        for indices in epoch_index_batches(epoch, n_extra, active_idx):
+            if n_extra > 0:
+                is_extra = indices >= train_len
+                j = (indices - train_len).clamp(min=0, max=n_extra - 1)
+                img_idx = torch.where(is_extra, sampler.balanced_extra_idx[j], indices)
+                latents = sampler.selected_latents.index_select(0, img_idx)
+                latents[is_extra] = sampler.balanced_extra_latents[j[is_extra]]
+            else:
+                is_extra = None
+                img_idx = indices
+                latents = sampler.selected_latents.index_select(0, indices)
+            idx_gpu = img_idx.to(device, non_blocking=True)
             labels = labels_gpu.index_select(0, idx_gpu) if labels_gpu is not None else None
-            latents = sampler.selected_latents.index_select(0, indices).to(device, non_blocking=True)
+            latents = latents.to(device, non_blocking=True)
+            moved_w = None
+            if use_moved_w:
+                mv = sampler.balanced_slot_moved.index_select(0, img_idx)
+                if is_extra is not None:
+                    mv = mv | is_extra
+                moved_w = torch.where(mv, sampler.balanced_moved_weight, 1.0).float().to(device, non_blocking=True)
             flat_target = proj_table.index_select(0, idx_gpu)
             target_bchw = flat_target.view(
                 flat_target.shape[0],
@@ -247,12 +325,26 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             should_sync_grads = ((accum_counter + 1) % H.accumulation_steps == 0)
             grad_sync_context = nullcontext() if should_sync_grads or not hasattr(imle, 'no_sync') else imle.no_sync()
             with grad_sync_context:
-                loss, perc_loss = training_step_imle(H, target_bchw, latents, labels,
-                                                     imle, sampler, scaler)
+                img_w = img_weight_table.index_select(0, idx_gpu) if img_weight_table is not None else None
+                if moved_w is not None:
+                    img_w = moved_w if img_w is None else img_w * moved_w
+                loss, perc_loss, lpips2_loss = training_step_imle(H, target_bchw, latents, labels,
+                                                     imle, sampler, scaler, img_weights=img_w, perc_weights=moved_w)
 
             epoch_loss_sum.add_(loss)
             epoch_perc_sum.add_(perc_loss)
+            epoch_lpips2_sum.add_(lpips2_loss)
             epoch_iter_count += 1
+            if track_split and getattr(sampler, '_last_per_sample', None) is not None:
+                ps_dino, ps_lp = sampler._last_per_sample
+                mvb = sampler.balanced_slot_moved.index_select(0, img_idx)
+                if is_extra is not None:
+                    mvb = mvb | is_extra
+                mvb = mvb.to(device, non_blocking=True)
+                ow = (~mvb).double()
+                mw = mvb.double()
+                split_sums += torch.stack([(ps_dino.double() * ow).sum(), (ps_lp.double() * ow).sum(), ow.sum(),
+                                           (ps_dino.double() * mw).sum(), (ps_lp.double() * mw).sum(), mw.sum()])
 
             accum_counter += 1
 
@@ -298,6 +390,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         epoch_loss_tensor = epoch_loss_sum
         dist.all_reduce(epoch_loss_tensor, op=dist.ReduceOp.SUM)
         dist.all_reduce(epoch_perc_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(epoch_lpips2_sum, op=dist.ReduceOp.SUM)
         total_batches_tensor = torch.tensor(epoch_iter_count, device=device)
         dist.all_reduce(total_batches_tensor, op=dist.ReduceOp.SUM)
 
@@ -312,12 +405,32 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
             'unique_indices': sampler.unique_indices,
             'class_emb_norm': class_emb_norm,
         }
-        if H.lpips_coef > 0.0:
+        if H.lpips_coef > 0.0 and H.dino_coef > 0.0:
+            metrics['mean_dino'] = epoch_perc_sum.item() / total_batches
+            metrics['mean_lpips'] = epoch_lpips2_sum.item() / total_batches
+        elif H.lpips_coef > 0.0:
             metrics['mean_lpips'] = epoch_perc_sum.item() / total_batches
         elif H.dino_coef > 0.0:
             metrics['mean_dino'] = epoch_perc_sum.item() / total_batches
         if sampler.use_rs_imle:
             metrics['rs_reject_pct'] = sampler.rs_reject_pct
+        if sampler.match_balanced:
+            metrics['balanced_moved_pct'] = sampler.balanced_moved_pct
+            for k, v in getattr(sampler, 'balanced_zone_stats', {}).items():
+                if isinstance(v, list):
+                    for name, x in zip(('p10', 'p50', 'p90'), v):
+                        metrics[f'{k.split("_d")[0]}_dist_{name}'] = x
+                else:
+                    metrics[k] = v
+            if track_split:
+                dist.all_reduce(split_sums, op=dist.ReduceOp.SUM)
+                so = split_sums.tolist()
+                if so[2] > 0:
+                    metrics['dino_own'], metrics['lpips_own'] = so[0] / so[2], so[1] / so[2]
+                if so[5] > 0:
+                    metrics['dino_moved'], metrics['lpips_moved'] = so[3] / so[5], so[4] / so[5]
+                metrics['trained_moved_frac'] = so[5] / max(so[2] + so[5], 1.0)
+                metrics['trained_examples'] = so[2] + so[5]
 
         if (epoch > 0 and epoch % H.fid_freq == 0):
             generate_and_save(H, imle, sampler, min(5000, train_len * H.fid_factor))
@@ -344,8 +457,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
         if(is_main_process()):
             print(f'Epoch {epoch} took {time.time() - start_time} seconds')
 
-            if epoch % 5 == 0:
-                logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)
+            logprint(model=H.desc, type='train_loss', epoch=epoch, step=iterate, **metrics)   # every epoch
 
 
         if (epoch % H.viz_freq == 0 and is_main_process()):
@@ -367,7 +479,7 @@ def train_loop_imle(H, data_train, data_valid, preprocess_fn, imle, ema_imle, lo
                                         latent_labels=vis_row_labels)
             imle.train()
 
-        if (epoch % 5 == 0 and experiment is not None and is_main_process()):
+        if (experiment is not None and is_main_process()):
             experiment.log_metrics(metrics, epoch=epoch, step=iterate)
         
         if epoch % H.epoch_per_save == 0 and isValid(mean_loss):

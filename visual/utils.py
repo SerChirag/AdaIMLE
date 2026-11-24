@@ -531,6 +531,13 @@ def compute_fid_smart_roundtrip(H, imle, sampler, target, subdir='fid'):
 
     imle.train()
 
+    dump_dir = getattr(H, 'roundtrip_dump_dir', '')
+    if dump_dir:
+        os.makedirs(dump_dir, exist_ok=True)
+        np.savez(os.path.join(dump_dir, f'rank{rank}.npz'), images=images, idx=np.asarray(indices, dtype=np.int64),
+                 lpips=lpips_local, mse=mse_local)
+        print(f'[compute_fid_smart_roundtrip] rank{rank}: dumped {n_local} samples + costs to {dump_dir}')
+
     # Global keep-best-K: all-gather per-sample costs so every rank computes the same cut.
     cost_local = lpips_local if metric == 'lpips' else mse_local
     lpips_all = _all_gather_features(torch.from_numpy(lpips_local).float().view(-1, 1)).view(-1).numpy()

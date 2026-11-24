@@ -313,7 +313,7 @@ def set_up_hyperparams(s=None):
     set_seed(H.seed)
     logprint = logger(H.logdir)
     apply_resume(H, logprint)
-    if H.lpips_coef > 0.0 and getattr(H, 'dino_coef', 0.0) > 0.0:
+    if H.lpips_coef > 0.0 and getattr(H, 'dino_coef', 0.0) > 0.0 and not getattr(H, 'lpips_with_dino', False):
         raise ValueError('--lpips_coef and --dino_coef are both > 0: use one perceptual loss '
                          '(e.g. --lpips_coef 0 --dino_coef 1 for DINO).')
     if getattr(H, 'latent_loss_coef', 1.0) == 0.0 and H.lpips_coef == 0.0 and getattr(H, 'dino_coef', 0.0) == 0.0:

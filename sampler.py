@@ -1,4 +1,5 @@
 from math import ceil
+import copy
 import os
 import time
 
@@ -97,7 +98,7 @@ class Sampler:
                       f'weights from {lpips_path}\n')
 
         # Alternative perceptual loss: spatial DINO patch tokens (--dino_coef). Either this or
-        # LPIPS, not both (enforced in set_up_hyperparams): each costs a differentiable decode.
+        # LPIPS, unless --lpips_with_dino (then both share one decode: calc_dino_lpips_loss).
         self.dino_coef = float(getattr(H, 'dino_coef', 0.0))
         self.dino_net = None
         if self.dino_coef > 0.0:
@@ -108,6 +109,21 @@ class Sampler:
                       f'latent_loss_coef={float(getattr(H, "latent_loss_coef", 1.0))}, '
                       f'weights from {dino_path}, {self.dino_net.size}px, skipping {self.dino_net.num_skip} '
                       f'CLS/register tokens)\n')
+
+        # --perc_bf16: bf16 copy of the VAE decoder (+ post_quant_conv) for the perceptual-loss decodes, and
+        # DINO under bf16 autocast. Frozen weights; gradients flow through the bf16 activations to the latents.
+        self.perc_bf16 = bool(getattr(H, 'perc_bf16', False))
+        self._perc_dec16 = self._perc_pq16 = None
+        if self.perc_bf16 and (self.lpips_coef > 0.0 or self.dino_coef > 0.0):
+            if not (hasattr(self.autoencoder, 'decoder') and hasattr(self.autoencoder, 'post_quant_conv')):
+                raise ValueError('--perc_bf16 needs an AutoencoderKL-style autoencoder (decoder + post_quant_conv).')
+            self._perc_dec16 = copy.deepcopy(self.autoencoder.decoder).to(torch.bfloat16).to(
+                memory_format=torch.channels_last).eval().requires_grad_(False)
+            use_pq = getattr(getattr(self.autoencoder, 'config', None), 'use_post_quant_conv', True)
+            if use_pq and self.autoencoder.post_quant_conv is not None:
+                self._perc_pq16 = copy.deepcopy(self.autoencoder.post_quant_conv).to(torch.bfloat16).eval().requires_grad_(False)
+            if is_main_process():
+                print('[perc] perceptual-loss decode in bf16 (decoder copy), DINO under bf16 autocast')
 
         if H.search_type != 'l2':
             raise ValueError('This branch expects search_type=l2.')
@@ -145,6 +161,75 @@ class Sampler:
         if self.use_rs_imle and self.rs_radius <= 0.0:
             raise ValueError('--use_rs_imle needs --rs_radius > 0.')
         self.rs_reject_pct = 0.0
+
+        # NN search / rejection space (see --match_space). In 'dino' mode the training targets stay the
+        # latents in dataset_proj_torch; only the matching uses DINO features. Training-image features are
+        # built lazily, per rank for its local classes only (~2.5 GB bf16 per rank for 125 classes).
+        self.match_space = getattr(H, 'match_space', 'latent')
+        self.match_dino = None
+        self._dino_ds_feats = None
+        if self.match_space == 'dino':
+            if self.num_classes <= 0:
+                raise ValueError('--match_space dino is only implemented for the conditional search.')
+            self.match_dino = self.dino_net if self.dino_net is not None else load_dino_spatial(
+                self.device, path=getattr(H, 'dino_path', 'facebook/dinov2-base'), size=int(getattr(H, 'dino_size', 224)))
+            # bf16 copy of the VAE decoder for decoding the pool at every resample: ~2x faster than the fp32
+            # decode, ~0.004 median shift in the spatial DINO distance (a few % of images move by > eps/2).
+            # The cached training-image features are still decoded in fp32 (once), so only one side is noisy.
+            self._match_dec16 = None
+            if hasattr(self.autoencoder, 'decoder') and hasattr(self.autoencoder, 'post_quant_conv'):
+                self._match_dec16 = copy.deepcopy(self.autoencoder.decoder).to(torch.bfloat16).to(
+                    memory_format=torch.channels_last).eval()
+                use_pq = getattr(getattr(self.autoencoder, 'config', None), 'use_post_quant_conv', True)
+                self._match_pq16 = (copy.deepcopy(self.autoencoder.post_quant_conv).to(torch.bfloat16).eval()
+                                    if use_pq and self.autoencoder.post_quant_conv is not None else None)
+            if is_main_process():
+                print(f'[match] NN search / RS rejection in DINO spatial space '
+                      f'({self.match_dino.num_patches} patches), rs_radius={self.rs_radius}, '
+                      f'pool decode {"bf16" if self._match_dec16 is not None else "fp32"}')
+
+        # Balanced matching (see --match_balanced): each training image owns `balanced_quota` pool latents per
+        # resample, kept in balanced_latents [sz, quota, latent_dim] (nearest first); set_balanced_slot() copies
+        # one slot per epoch into selected_latents, so the training loop / visualization are unchanged.
+        self.match_balanced = bool(getattr(H, 'match_balanced', False))
+        self.balanced_priority = bool(getattr(H, 'balanced_priority', False))
+        self.balanced_latents = None
+        self.balanced_moved = None          # [sz, quota] bool: slot's latent currently copies a different image
+        self.balanced_moved_pct = 0.0
+        if self.balanced_priority and not self.match_balanced:
+            raise ValueError('--balanced_priority needs --match_balanced True.')
+        self.balanced_moved_weight = float(getattr(H, 'balanced_moved_weight', 1.0))
+        self.balanced_extra_moved = bool(getattr(H, 'balanced_extra_moved', False))
+        if (self.balanced_moved_weight != 1.0 or self.balanced_extra_moved) and not self.match_balanced:
+            raise ValueError('--balanced_moved_weight / --balanced_extra_moved need --match_balanced True.')
+        if self.balanced_extra_moved and self.balanced_priority:
+            raise ValueError('--balanced_extra_moved adds the priority pick on top of the default rotation; '
+                             'do not combine it with --balanced_priority.')
+        self.balanced_rs_radius = float(getattr(H, 'balanced_rs_radius', 0.0) or 0.0)
+        if self.balanced_rs_radius > 0 and not self.match_balanced:
+            raise ValueError('--balanced_rs_radius needs --match_balanced True.')
+        if self.balanced_rs_radius > 0 and (self.balanced_priority or self.balanced_extra_moved):
+            raise ValueError('--balanced_rs_radius picks the slot itself; do not combine it with '
+                             '--balanced_priority / --balanced_extra_moved.')
+        self.balanced_dist = None           # [sz, q] distance of each slot's latent to its assigned image
+        self.balanced_active = None         # [sz] bool (--balanced_rs_radius): image has a slot outside the radius
+        self.balanced_zone_stats = {}
+        self.balanced_slot_moved = None     # [sz] bool: the slot trained this epoch is moved
+        self.balanced_extra_idx = None      # [n_extra] long: images that get an extra moved-latent example
+        self.balanced_extra_latents = None  # [n_extra, latent_dim]
+        if self.match_balanced:
+            if self.num_classes <= 0:
+                raise ValueError('--match_balanced is only implemented for the conditional search.')
+            if self.use_rs_imle:
+                raise ValueError('--match_balanced replaces RS rejection: pass --use_rs_imle False.')
+            if float(H.force_factor) != int(H.force_factor) or int(H.force_factor) < 1:
+                raise ValueError('--match_balanced needs an integer --force_factor (the per-image quota).')
+            self.balanced_quota = int(H.force_factor)
+            if self.balanced_quota * (sz // self.num_classes) > self.pool_size_per_class:
+                raise ValueError('--match_balanced: pool_size_per_class is smaller than quota * images per class.')
+            if is_main_process():
+                print(f'[match] balanced matching: {self.balanced_quota} latents per training image '
+                      f'(pool {self.pool_size_per_class}/class, {self.match_space} space)')
 
         self.dataset_size = sz
         self.db_iter = 0
@@ -250,6 +335,9 @@ class Sampler:
                 int(c): (int(s), int(s + n))
                 for c, s, n in zip(unique, starts, counts)
             }
+            # A dataset holding only some of the classes (e.g. the first N class folders, labels unchanged):
+            # skip the absent ones in the resampling loop. No-op when every class has images.
+            self.local_classes = [c for c in self.local_classes if c in self.class_ranges]
 
         # Build a persistent GPU cache of query features.
         # For conditional: all ranks need it (each handles its own local_classes slice).
@@ -281,7 +369,7 @@ class Sampler:
     def pseudo_huber(self, diff):
         return 2.0 * self.H.huber_delta**2 * (torch.sqrt(1 + (diff / (self.H.huber_delta)**2)) - 1)
 
-    def calc_loss(self, inp, tar, use_mean=True, logging=False):
+    def calc_loss(self, inp, tar, use_mean=True, logging=False, weights=None):
         if self.H.loss_type == 'huber':
             per_elem = self.pseudo_huber((inp - tar) ** 2)
         elif self.H.loss_type == 'pseudo_l1':
@@ -300,6 +388,11 @@ class Sampler:
         else:
             per_elem = self.l2_loss(inp, tar)
 
+        if weights is not None:
+            # --old_weight: per-image weights [B]; mean over the batch (not over the weights), so
+            # down-weighting old images shrinks their pull without scaling up the new ones'.
+            per_img = per_elem.flatten(1).mean(dim=1) if per_elem.dim() > 1 else per_elem
+            return (per_img * weights.to(per_img.dtype)).mean()
         return per_elem.mean()
 
     def _robust_lpips(self, d):
@@ -340,6 +433,11 @@ class Sampler:
         Only ``inp``'s decode is differentiable: ``tar`` is a fixed property of the dataset image,
         so decoding it under ``no_grad`` keeps the backward graph to a single decoder pass.
         """
+        if self._perc_dec16 is not None and (inp.shape[-2], inp.shape[-1]) == tuple(self.autoencoder_native_latent_size):
+            with torch.no_grad():
+                img_tar = self._perc_decode16(tar.detach()).clamp(-1.0, 1.0)
+            return self._perc_decode16(inp), img_tar
+
         with torch.no_grad():
             img_tar = decode_latents_to_images_differentiable(
                 self.autoencoder, tar.detach(), self.autoencoder_native_latent_size)
@@ -348,6 +446,14 @@ class Sampler:
         img_inp = decode_latents_to_images_differentiable(
             self.autoencoder, inp, self.autoencoder_native_latent_size)
         return img_inp, img_tar
+
+    def _perc_decode16(self, z):
+        """Differentiable decode with the bf16 decoder copy (unclamped, like the fp32 path); returns fp32."""
+        sf = getattr(self.autoencoder, '_cached_scaling_factor', 1.0)
+        z16 = (z / sf).to(torch.bfloat16).contiguous(memory_format=torch.channels_last)
+        if self._perc_pq16 is not None:
+            z16 = self._perc_pq16(z16)
+        return self._perc_dec16(z16).float()
 
     def calc_lpips_loss(self, inp, tar):
         """LPIPS between the decoded prediction and the decoded target latent.
@@ -370,8 +476,25 @@ class Sampler:
             return torch.zeros((), device=inp.device, dtype=torch.float32)
 
         img_inp, img_tar = self._decode_pair(inp, tar)
+        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.perc_bf16):
+            return self.dino_net(img_inp.float(), img_tar.float()).float().mean()
+
+    def calc_dino_lpips_loss(self, inp, tar, weights=None):
+        """--lpips_with_dino: (spatial DINO, LPIPS-VGG) between the decoded prediction and target, from ONE
+        decode of the pair; each term exactly as calc_dino_loss / calc_lpips_loss compute it.
+        weights: optional per-sample [B] (--balanced_moved_weight), mean over the batch like calc_loss."""
+        img_inp, img_tar = self._decode_pair(inp, tar)
+        with autocast(device_type='cuda', dtype=torch.bfloat16, enabled=self.perc_bf16):
+            dino = self.dino_net(img_inp.float(), img_tar.float()).float()
         with autocast(device_type='cuda', enabled=False):
-            return self.dino_net(img_inp.float(), img_tar.float()).mean()
+            lp = self._robust_lpips(self.lpips_net(img_inp.float(), img_tar.float()))
+        self._last_per_sample = (dino.detach(), lp.detach())   # train.py's own/moved logging split
+        if weights is not None:
+            if dino.dim() != 1 or lp.dim() != 1:
+                raise ValueError(f'per-sample weights need per-sample losses, got {tuple(dino.shape)}, {tuple(lp.shape)}')
+            w = weights.float()
+            return (dino * w).mean(), (lp * w).mean()
+        return dino.mean(), lp.mean()
 
     def resample_pool(self, gen, class_condition=None):
 
@@ -620,6 +743,68 @@ class Sampler:
 
         self.faiss_index_flat.reset()
 
+    def set_balanced_slot(self, epoch):
+        """--match_balanced: pick which of each image's assigned latents to train this epoch.
+        Default: slot (epoch % quota). With --balanced_priority: a moved slot (rotating among the image's moved
+        slots by epoch), or slot 0 (its nearest, usually its own copy) when the image has no moved slot."""
+        if self.balanced_latents is None:
+            return
+        rows = torch.arange(self.balanced_latents.shape[0])
+        m = self.balanced_moved                                         # [sz, q] bool (None before the first match)
+        if m is not None:
+            n_moved = m.sum(dim=1)                                      # [sz]
+            k = torch.remainder(torch.full_like(n_moved, epoch), n_moved.clamp(min=1))   # which moved slot this epoch
+            rank = m.long().cumsum(dim=1) - 1                           # rank of each moved slot within its row
+            pick = (m & (rank == k.unsqueeze(1))).float().argmax(dim=1)    # the k-th moved slot
+        if self.balanced_rs_radius > 0 and self.balanced_dist is not None:
+            # RS-IMLE's rule inside balanced matching: a slot whose latent is already within the radius of its
+            # assigned image is not trained. Each image trains its NEAREST slot outside the radius (slots are
+            # sorted nearest first, so the first True); an image with every slot inside skips this epoch.
+            out = self.balanced_dist >= self.balanced_rs_radius        # [sz, q]
+            self.balanced_active = out.any(dim=1)
+            slot = torch.where(self.balanced_active, out.float().argmax(dim=1), torch.zeros(rows.numel(), dtype=torch.long))
+        elif not self.balanced_priority or m is None:
+            slot = torch.full((rows.numel(),), epoch % self.balanced_quota, dtype=torch.long)
+        else:
+            slot = torch.where(n_moved > 0, pick, torch.zeros_like(pick))
+        self.selected_latents.copy_(self.balanced_latents[rows, slot])
+        self.balanced_slot_moved = m[rows, slot] if m is not None else None
+        if self.balanced_extra_moved and m is not None:
+            # default rotation above, plus one extra example per image on its rotating moved slot
+            self.balanced_extra_idx = torch.nonzero(n_moved > 0).flatten()
+            self.balanced_extra_latents = self.balanced_latents[self.balanced_extra_idx, pick[self.balanced_extra_idx]]
+            if is_main_process():
+                print(f"[match] balanced_extra_moved: {self.balanced_extra_idx.numel()} extra moved-latent examples "
+                      f"({100.0 * self.balanced_extra_idx.numel() / rows.numel():.1f}% of images)")
+
+    @torch.inference_mode()
+    def _dino_match_feats(self, latents_flat, fast=False):
+        """Flattened latents (n, dci_dim; generator/dataset_proj layout) -> unit-norm DINO patch tokens,
+        flattened to (n, num_patches * C) in bf16, for the spatial distance 1 - (a . b) / num_patches.
+        fast=True decodes with the bf16 decoder copy (pool samples); otherwise the fp32 decode."""
+        feats = []
+        for start in range(0, latents_flat.shape[0], self.H.match_batch):
+            z = latents_flat[start:start + self.H.match_batch].to(self.device).float()
+            z = z.reshape(-1, self.latent_channels, self.latent_spatial_size, self.latent_spatial_size)
+            if fast and self._match_dec16 is not None and \
+                    (z.shape[-2], z.shape[-1]) == tuple(self.autoencoder_native_latent_size):
+                sf = getattr(self.autoencoder, '_cached_scaling_factor', 1.0)
+                z16 = (z / sf).to(torch.bfloat16).contiguous(memory_format=torch.channels_last)
+                if self._match_pq16 is not None:
+                    z16 = self._match_pq16(z16)
+                imgs = self._match_dec16(z16).float().clamp_(-1.0, 1.0)
+            else:
+                imgs = decode_latents_to_images(self.autoencoder, z, self.autoencoder_native_latent_size)
+            with autocast(device_type='cuda', dtype=torch.bfloat16):
+                tok = self.match_dino._tokens(imgs.float())                     # (b, num_patches, C), unit-norm
+            feats.append(tok.reshape(tok.shape[0], -1).to(torch.bfloat16))
+        return torch.cat(feats)
+
+    def _dino_match_dists(self, ds_feats, pool_feats):
+        """Spatial DINO distance (n_real, n_pool) = 1 - mean patch cosine."""
+        sim = (ds_feats @ pool_feats.T).float() / self.match_dino.num_patches
+        return 1.0 - sim
+
     def _imle_sample_force_conditional(self, gen):
         """
         Conditional force resampling: each rank handles its local_classes.
@@ -636,6 +821,13 @@ class Sampler:
             self.sz, self.H.latent_dim,
             dtype=torch.float32, device=self.device
         )
+        if self.match_balanced:
+            # allocated outside inference_mode (like comm_latents): they are all_reduced / updated in place after it
+            comm_balanced = torch.zeros(self.sz, self.balanced_quota, self.H.latent_dim,
+                                        dtype=torch.float32, device=self.device)
+            bal_stats = torch.zeros(2, dtype=torch.float64, device=self.device)  # [moved, assigned]
+            comm_moved = torch.zeros(self.sz, self.balanced_quota, dtype=torch.float32, device=self.device)
+            comm_bdist = torch.zeros(self.sz, self.balanced_quota, dtype=torch.float32, device=self.device)
 
         n_local = len(self.local_classes)
         if n_local == 0:
@@ -670,6 +862,18 @@ class Sampler:
                     proj = self.get_l2_feature(outputs, False)
                 self._local_pool_proj[start:end].copy_(proj.to(self._comm_dtype))
 
+            if self.match_space == 'dino' and self._dino_ds_feats is None:
+                t_ds = time.time()
+                self._dino_ds_feats = {}
+                for class_id in self.local_classes:
+                    ds_start, ds_end = self.class_ranges[class_id]
+                    if ds_end > ds_start:
+                        # kept in pinned host memory (~2.5 GB/rank): on the GPU it pushed the training step OOM
+                        self._dino_ds_feats[class_id] = self._dino_match_feats(
+                            self.dataset_proj_torch[ds_start:ds_end]).cpu().pin_memory()
+                if is_main_process():
+                    print(f"[match] cached DINO features of the local training images in {time.time() - t_ds:.1f}s")
+
             # Per-class NN search using the fused buffers
             all_local_indices = []
             rs_stats = torch.zeros(2, dtype=torch.float64, device=self.device)  # [rejected, pool total]
@@ -677,14 +881,19 @@ class Sampler:
                 start_pool = i * self.pool_size_per_class
                 end_pool   = start_pool + self.pool_size_per_class
                 pool_latents = self._local_pool_latents[start_pool:end_pool]          # float32
-                pool_feats   = self._local_pool_proj[start_pool:end_pool].float()     # bfloat16 → float32 for cdist
 
                 ds_start, ds_end = self.class_ranges[class_id]
                 if ds_end <= ds_start:
                     continue
                 n_real = ds_end - ds_start
-                class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
-                dists = torch.cdist(class_ds_feats, pool_feats)  # [n_real, pool_size]
+                if self.match_space == 'dino':
+                    pool_feats = self._dino_match_feats(self._local_pool_proj[start_pool:end_pool], fast=True)
+                    ds_feats = self._dino_ds_feats[class_id].to(self.device, non_blocking=True)
+                    dists = self._dino_match_dists(ds_feats, pool_feats)  # [n_real, pool_size]
+                else:
+                    pool_feats = self._local_pool_proj[start_pool:end_pool].float()  # bfloat16 → float32 for cdist
+                    class_ds_feats = self._dataset_proj_gpu[ds_start:ds_end]  # [n_real, dci_dim]
+                    dists = torch.cdist(class_ds_feats, pool_feats)  # [n_real, pool_size]
 
                 if self.use_rs_imle:
                     # Exact RS-IMLE rejection: drop every sample within epsilon of any image in the class.
@@ -701,7 +910,27 @@ class Sampler:
                     rs_stats[0] += n_rej
                     rs_stats[1] += reject.numel()
 
-                if self.H.imle_db_topk is not None and self.H.imle_db_topk > 1:
+                if self.match_balanced:
+                    # Capacity-constrained assignment: each training image gets `quota` slots and every slot a
+                    # distinct pool sample, so surplus copies of an over-produced image go to the images that
+                    # are short instead of staying untouched.
+                    q = self.balanced_quota
+                    if n_real * q > dists.shape[1]:
+                        raise ValueError(f'--match_balanced: class {class_id} has {n_real} images, needs {n_real * q} '
+                                         f'pool samples but the pool is {dists.shape[1]}; raise --pool_size_per_class.')
+                    cost = dists.repeat_interleave(q, dim=0)                       # [n_real * q, pool_size]
+                    _, col_ind = scipy.optimize.linear_sum_assignment(cost.cpu().numpy())
+                    col = torch.from_numpy(col_ind).to(self.device, dtype=torch.long).view(n_real, q)
+                    col = col.gather(1, dists.gather(1, col).argsort(dim=1))         # each image's slots, nearest first
+                    owner = dists.argmin(dim=0)                                     # image each pool sample is closest to
+                    moved = owner[col] != torch.arange(n_real, device=self.device).unsqueeze(1)    # [n_real, q]
+                    comm_moved[ds_start:ds_end] = moved.float()
+                    comm_bdist[ds_start:ds_end] = dists.gather(1, col).float()     # ascending per row
+                    bal_stats[0] += moved.sum()
+                    bal_stats[1] += col.numel()
+                    comm_balanced[ds_start:ds_end] = pool_latents[col]             # [n_real, q, latent_dim]
+                    local_indices = col[:, 0]
+                elif self.H.imle_db_topk is not None and self.H.imle_db_topk > 1:
                     # Optimal 1-to-1 assignment: no pool latent shared across images.
                     _, col_ind = scipy.optimize.linear_sum_assignment(dists.cpu().numpy())
                     local_indices = torch.from_numpy(col_ind).to(self.device, dtype=torch.long)
@@ -713,6 +942,10 @@ class Sampler:
                 comm_latents[ds_start:ds_end] = new_latents
 
         gen.train()
+        if self.match_space == 'dino':
+            # hand the decode/DINO activations back before the training step (it OOM'd without this)
+            pool_feats = ds_feats = dists = None
+            torch.cuda.empty_cache()
 
         if all_local_indices:
             # Measure per-class uniqueness: fraction of dataset images that got a unique pool latent.
@@ -739,6 +972,34 @@ class Sampler:
 
         self.last_selected_latents.copy_(self.selected_latents)
         self.selected_latents.copy_(full_updated_latents.cpu())
+
+        if self.match_balanced:
+            torch.distributed.all_reduce(comm_balanced, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(bal_stats, op=torch.distributed.ReduceOp.SUM)
+            comm_balanced.add_(self.H.imle_perturb_coef * torch.randn(
+                comm_balanced.shape, device=self.device, generator=self.generator_seed))
+            self.balanced_latents = comm_balanced.cpu()
+            torch.distributed.all_reduce(comm_moved, op=torch.distributed.ReduceOp.SUM)
+            self.balanced_moved = (comm_moved > 0.5).cpu()
+            self.balanced_moved_pct = 100.0 * bal_stats[0].item() / max(bal_stats[1].item(), 1.0)
+            torch.distributed.all_reduce(comm_bdist, op=torch.distributed.ReduceOp.SUM)
+            self.balanced_dist = comm_bdist.cpu()
+            d, mv = self.balanced_dist, self.balanced_moved
+            qs = torch.tensor([0.1, 0.5, 0.9])
+            st = {'own_d10_50_90': [round(x, 2) for x in torch.quantile(d[~mv], qs).tolist()] if (~mv).any() else [],
+                  'moved_d10_50_90': [round(x, 2) for x in torch.quantile(d[mv], qs).tolist()] if mv.any() else [],
+                  'slot0_d50': round(d[:, 0].median().item(), 2)}
+            if self.balanced_rs_radius > 0:
+                out = d >= self.balanced_rs_radius
+                st['in_zone_pct'] = round(100.0 * (~out).float().mean().item(), 2)
+                st['own_in_zone_pct'] = round(100.0 * (~out[~mv]).float().mean().item(), 2) if (~mv).any() else 0.0
+                st['moved_in_zone_pct'] = round(100.0 * (~out[mv]).float().mean().item(), 2) if mv.any() else 0.0
+                st['active_img_pct'] = round(100.0 * out.any(dim=1).float().mean().item(), 2)
+            self.balanced_zone_stats = st
+            if is_main_process():
+                print(f"[match] balanced: {self.balanced_moved_pct:.2f}% of assigned latents are pulled "
+                      f"from a different image than the one they currently copy")
+                print(f"[match] slot distances: {self.balanced_zone_stats}")
 
         if is_main_process():
             print(f"Conditional force resampling took {time.time() - t1:.2f}s")

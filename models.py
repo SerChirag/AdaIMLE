@@ -157,8 +157,14 @@ class Decoder(nn.Module):
         dec_blocks = []
         self.widths = get_width_settings(H.width, H.custom_width_str)
         blocks = parse_layer_string(H.dec_blocks)
+        plain = {int(i) for i in (getattr(H, 'plain_residual_blocks', '') or '').split(',') if i.strip()}
         for idx, (res, mixin) in enumerate(blocks):
-            dec_blocks.append(DecBlock(H, res, mixin, n_blocks=len(blocks)))
+            block = DecBlock(H, res, mixin, n_blocks=len(blocks))
+            if idx in plain:
+                # blocks inserted into a trained decoder (expand_decoder.py): x + r*branch, so a
+                # zeroed last layer makes them an exact pass-through at insertion
+                block.residual_type = 'normal'
+            dec_blocks.append(block)
             resos.add(res)
         self.resolutions = sorted(resos)
         self.dec_blocks = nn.ModuleList(dec_blocks)

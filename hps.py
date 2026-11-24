@@ -197,6 +197,7 @@ def add_imle_arguments(parser):
 
     parser.add_argument('--residual_ratio', type=float, default=-3.0)
     parser.add_argument('--residual_type', type=str, default='convex', choices=['normal', 'convex'])
+    parser.add_argument('--plain_residual_blocks', type=str, default='')  # comma-separated dec_blocks indices that use 'normal' residual (blocks added by expand_decoder.py)
 
     parser.add_argument('--accumulation_steps', type=int, default=1)  # accumulation steps
 
@@ -213,6 +214,12 @@ def add_imle_arguments(parser):
     parser.add_argument('--lpips_net', type=str, default='vgg')  # lpips network type
     parser.add_argument('--proj_dim', type=int, default=800)  # projection dimension for nearest neighbour search
     parser.add_argument('--proj_proportion', type=int, default=1)  # whether to use projection proportional to the lpips feature dimensions for nearest neighbour search
+    parser.add_argument('--old_weight', type=float, default=1.0,
+                        help="Per-image weight on the latent loss for 'old' images (files whose real path is under "
+                             "--old_images_root); all other images get weight 1. 1.0 = off. NN selection is unchanged: "
+                             "only how hard each matched pair pulls. The logged mean_loss stays unweighted.")
+    parser.add_argument('--old_images_root', type=str, default='./datasets/imagenet_clean',
+                        help="Directory whose images count as 'old' for --old_weight (symlinks are resolved).")
     parser.add_argument('--latent_loss_coef', type=float, default=1.0,
                          help="Weight on the latent-space reconstruction loss (--loss_type), the term "
                               "that --lpips_coef is traded off against. Pass 0 to train on the "
@@ -236,6 +243,10 @@ def add_imle_arguments(parser):
                              "LPIPS -- use one or the other, e.g. --lpips_coef 0 --dino_coef 1.")
     parser.add_argument('--dino_path', type=str, default='facebook/dinov2-base')  # HF id or local snapshot dir; facebook/dinov2-with-registers-base has cleaner patch maps
     parser.add_argument('--dino_size', type=int, default=224)  # input resolution for --dino_coef; multiple of the patch size (224 for DINOv2/14, 256 for DINOv3/16)
+    parser.add_argument('--lpips_with_dino', default=False, type=lambda x: bool(strtobool(x)),
+                        help="Allow --lpips_coef and --dino_coef together: loss += dino_coef * DINO + lpips_coef * LPIPS-VGG, "
+                             "both on the same decoded pair (one decode). Off by default, so scripts that leave "
+                             "--lpips_coef at its default 1.0 next to --dino_coef still fail loudly instead of silently adding LPIPS.")
     parser.add_argument('--force_factor', type=float, default=5)  # sampling factor for imle, i.e., force_factor * len(dataset)
     parser.add_argument('--change_coef', type=float, default=0.04)  # \gamma in the paper, rate of change of the thresholds, tau_i
     parser.add_argument('--change_threshold', type=float, default=1)  # starting threshold
@@ -270,6 +281,10 @@ def add_imle_arguments(parser):
                         help="number of kept samples FID is computed over")
     parser.add_argument('--roundtrip_lpips_path', type=str, default='lpips/weights/v0.1/vgg.pth',
                         help="repo-local LPIPS-VGG lin-layer weights (no download)")
+    parser.add_argument('--roundtrip_dump_dir', type=str, default='',
+                        help="eval_fid_smart_roundtrip: if set, each rank also saves ALL its oversampled images + "
+                             "global indices (class = idx %% num_classes) + lpips/mse costs to <dir>/rank<r>.npz, "
+                             "so global vs per-class keep-best-K can be compared offline with the same samples")
 
     # generate_smart_roundtrip: reject-and-save. Keep resampling until roundtrip_target
     # accepted samples are written to disk, rejecting any with round-trip cost > threshold.
@@ -356,6 +371,40 @@ def add_imle_arguments(parser):
     # data point to its nearest surviving sample.
     parser.add_argument('--use_rs_imle', default=False, type=lambda x: bool(strtobool(x)))
     parser.add_argument('--rs_radius', type=float, default=0.0)  # fixed rejection radius epsilon
+    parser.add_argument('--perc_bf16', default=False, type=lambda x: bool(strtobool(x)),
+                        help="Run the perceptual-loss path in bf16: decode prediction/target with a bf16 copy of the "
+                             "VAE decoder (channels_last) and run DINO under bf16 autocast. Default False = fp32.")
+    parser.add_argument('--match_space', type=str, default='latent', choices=['latent', 'dino'],
+                        help="Feature space for the conditional NN search / RS rejection. 'latent': raw L2 on the "
+                             "flattened generator latents (default). 'dino': spatial DINO distance (1 - mean patch "
+                             "cos, same as --dino_coef) between decoded pool samples and decoded training latents; "
+                             "--rs_radius is then in those units (e.g. 0.07). Uses --dino_path/--dino_size.")
+    parser.add_argument('--match_batch', type=int, default=64)  # decode+DINO chunk size for --match_space dino
+    parser.add_argument('--match_balanced', default=False, type=lambda x: bool(strtobool(x)),
+                        help="Balanced (capacity-constrained) matching for the conditional search: every pool sample "
+                             "is assigned to a training image with an equal quota of --force_factor samples per image "
+                             "(1-to-1 assignment between force_factor*n slots and the pool), so latent mass that "
+                             "over-produces one image is handed to under-produced ones. Each image keeps force_factor "
+                             "latents (nearest first) and trains on slot epoch %% force_factor. Replaces RS rejection "
+                             "(--use_rs_imle must be False); --force_factor must be an integer.")
+    parser.add_argument('--balanced_priority', default=False, type=lambda x: bool(strtobool(x)),
+                        help="With --match_balanced: each epoch, train an image on one of its MOVED latents (assigned "
+                             "to it but currently copying a different image), rotating among them, and fall back to "
+                             "its nearest latent only when none is moved. Spends the training on the latents that "
+                             "actually shift mass instead of re-polishing existing copies.")
+    parser.add_argument('--balanced_moved_weight', type=float, default=1.0,
+                        help="With --match_balanced: loss weight (latent, LPIPS and DINO terms) on an image whose "
+                             "slot this epoch is MOVED; 1.0 = off. Keeps the default slot rotation (own copies still "
+                             "trained) but pushes the mass-moving updates harder.")
+    parser.add_argument('--balanced_rs_radius', type=float, default=0.0,
+                        help="With --match_balanced: RS-IMLE's rule inside balanced matching. A slot whose latent is "
+                             "already within this (matching-space) distance of its assigned image is not trained; "
+                             "each image trains its nearest slot outside the radius, and an image with every slot "
+                             "inside skips the epoch. 0 = off.")
+    parser.add_argument('--balanced_extra_moved', default=False, type=lambda x: bool(strtobool(x)),
+                        help="With --match_balanced: keep the default slot rotation AND give every image that has a "
+                             "moved slot one extra training example per epoch on a moved latent (rotating among its "
+                             "moved slots). Epochs get longer by the share of images with a moved slot.")
 
     parser.add_argument('--num_classes', type=int, default=0,
                         help='Number of classes for conditional generation. 0 = unconditional.')
