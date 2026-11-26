@@ -207,7 +207,7 @@ class Decoder(nn.Module):
 def build_dit(H):
     """Classic s27 IMLE DiT (dit_models.py) on the latent grid; H.latent_dim is set to its z size in set_up_data."""
     model = IMLEDiT_models[H.dit_model](input_size=H.latent_spatial_size, in_channels=H.image_channels,
-                                        num_classes=H.num_classes or 0)
+                                        num_classes=H.num_classes or 0, class_emb_init_std=H.class_emb_init_std)
     assert model.latent_dim == H.latent_dim, f'IMLEDiT latent_dim {model.latent_dim} != H.latent_dim {H.latent_dim}'
     return model
 

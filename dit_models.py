@@ -7,8 +7,10 @@
 #
 # z -> w (conditioning):
 #   z (N, 128), RMS-normalized, split into 16 tokens of 8 -> linear to D + learned token embedding
+#   [+ class embedding, added to every token, init std class_emb_init_std ~ the z tokens' scale]
 #   -> 2 mixer blocks (self-attention, SwiGLU MLP; additive residuals with per-channel gates at 1)
-#   -> mean over tokens -> RMS-normalize = w (N, D). Class labels, if any, are embedded and added to w.
+#   -> mean over tokens -> RMS-normalize = w (N, D). The class enters before the mixer, so w is a nonlinear
+#   function of (z, class), as with the conv generator's class embedding added to z before its mapping MLP.
 # Image tokens:
 #   a learned canvas, one token per 2x2 latent patch, init std 0.1 (small), the same for every z.
 # Each of the `depth` blocks: self-attention (1-D RoPE, QK RMSNorm) -> SwiGLU MLP, each one gated branch:
@@ -32,7 +34,8 @@ def rms_normalize(x, eps=1e-6):
 
 
 class LabelEmbedder(nn.Module):
-    """Class labels -> vectors added to w. No label dropout: IMLE has no classifier-free guidance."""
+    """Class labels -> vectors added to the conditioning tokens before the mixer. No label dropout: IMLE has no
+    classifier-free guidance."""
     def __init__(self, num_classes, hidden_size):
         super().__init__()
         self.embedding_table = nn.Embedding(num_classes, hidden_size)
@@ -190,6 +193,7 @@ class IMLEDiT(nn.Module):
         weight_init_constant=0.32,
         embedding_init_constant=1.0,
         token_init_constant=1.0,
+        class_emb_init_std=1.0,
     ):
         super().__init__()
         assert Z_DIM % num_cond_tokens == 0, 'z must split evenly into num_cond_tokens'
@@ -205,6 +209,7 @@ class IMLEDiT(nn.Module):
         self.weight_init_constant = weight_init_constant
         self.embedding_init_constant = embedding_init_constant
         self.token_init_constant = token_init_constant
+        self.class_emb_init_std = class_emb_init_std
         self.head_init_std = 1 / math.sqrt(hidden_size)    # unit-RMS tokens in -> output std ~1 at init
         num_patches = (input_size // patch_size) ** 2
 
@@ -262,8 +267,9 @@ class IMLEDiT(nn.Module):
         nn.init.constant_(self.z_proj.bias, 0)
         nn.init.normal_(self.cond_embed, std=self.token_init_constant / math.sqrt(hidden_size))
         if self.num_classes > 0:
-            emb = self.y_embedder.embedding_table.weight
-            nn.init.normal_(emb, std=self.embedding_init_constant / math.sqrt(emb.shape[1]))
+            # Per-element std ~1, the scale of the z tokens (z_proj of an RMS-1 z), so the class starts as
+            # strong as z in the mixer input (the conv generator uses 0.9 against z ~ N(0, 1)).
+            nn.init.normal_(self.y_embedder.embedding_table.weight, std=self.class_emb_init_std)
 
         # Canvas: small, so its pass-through to the output is small and Adam's steps change it relatively more.
         nn.init.normal_(self.canvas, std=self.canvas_std)
@@ -283,17 +289,17 @@ class IMLEDiT(nn.Module):
         return x.reshape(shape=(x.shape[0], c, h * p, h * p))
 
     def conditioning(self, z, y=None):
-        """z (N, 128) [+ labels y] -> w (N, D) with RMS 1."""
+        """z (N, 128) [+ labels y] -> w (N, D) with RMS 1. The class embedding is added to every conditioning
+        token before the mixer, so the mixer combines z and class nonlinearly."""
         N = z.shape[0]
         z = rms_normalize(z)
         ctx = self.z_proj(z.view(N, self.num_cond_tokens, -1)) + self.cond_embed      # (N, K, D)
-        for block in self.mixer:
-            ctx = block(ctx)
-        w = rms_normalize(ctx.mean(dim=1))                                             # (N, D)
         if self.num_classes > 0:
             assert y is not None, 'class-conditional model needs labels'
-            w = rms_normalize(w + self.y_embedder(y))
-        return w
+            ctx = ctx + self.y_embedder(y).unsqueeze(1)                                # same class vector on all K tokens
+        for block in self.mixer:
+            ctx = block(ctx)
+        return rms_normalize(ctx.mean(dim=1))                                          # (N, D)
 
     def forward(self, z, y=None, train=False):
         """z: (N, 128) Gaussian latent. y: (N,) labels if num_classes > 0. train=True returns [x] (AdaIMLE's

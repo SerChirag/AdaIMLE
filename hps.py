@@ -189,7 +189,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--adam_beta2', type=float, default=0.9)
     parser.add_argument('--adam_eps', type=float, default=1e-8)
     parser.add_argument('--class_emb_lr_mult', type=float, default=1.0)  # LR multiplier for class embedding (>1 to accelerate embedding norm growth)
-    parser.add_argument('--class_emb_init_std', type=float, default=0.9)  # std for class embedding initialization
+    parser.add_argument('--class_emb_init_std', type=float, default=0.4)  # std for class embedding initialization
 
     parser.add_argument('--iters_per_ckpt', type=int, default=5000)  # number of iterations per checkpoint
     parser.add_argument('--iters_per_save', type=int, default=1000)  # number of iterations per saving the latest models
@@ -386,6 +386,7 @@ def add_imle_arguments(parser):
     parser.add_argument('--nn_search_batch', type=int, default=4096)  # batch size for FAISS queries
     parser.add_argument('--nn_search_normalize', default=False, type=lambda x: bool(strtobool(x)))  # L2-normalize queries and dataset before NN search
     parser.add_argument('--compress_comm', default=True, type=lambda x: bool(strtobool(x)))  # compress DDP communication with bfloat16/float16
+    parser.add_argument('--ddp_comm_hook', type=str, default='none', choices=['none', 'bf16'])  # bf16: DDP gradient all-reduce in bf16 (halves traffic; for comm-bound runs, e.g. DiT-L/2 over PCIe)
     parser.add_argument('--num_workers', type=int, default=4)  # DataLoader worker count
     parser.add_argument('--prefetch_factor', type=int, default=4)  # DataLoader prefetch factor
     parser.add_argument('--latent_spatial_size', type=int, default=0,

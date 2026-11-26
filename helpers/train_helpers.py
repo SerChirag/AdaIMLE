@@ -69,6 +69,7 @@ def maybe_to_channels_last(module, enabled):
                 param.data = param.data.contiguous()
     return module
 
+@torch.no_grad()
 def update_ema(imle, ema_imle, ema_rate):
     ema_rate = float(ema_rate)
     src_params = list(imle.parameters())
@@ -399,8 +400,14 @@ def load_imle(H, logprint):
         imle = DDP(imle, device_ids=[ddp_dev], 
                     output_device=ddp_dev,
                     gradient_as_bucket_view=True,
-                    static_graph=True
+                    static_graph=True,
+                    # No buffer broadcast per forward: the DiT's RoPE tables are constant buffers, and a
+                    # rank-0-only forward (sample grids) would issue a broadcast the other ranks never match -> hang.
+                    broadcast_buffers=False,
                     )
+        if getattr(H, 'ddp_comm_hook', 'none') == 'bf16':
+            from torch.distributed.algorithms.ddp_comm_hooks import default_hooks
+            imle.register_comm_hook(dist.group.WORLD, default_hooks.bf16_compress_hook)
     
     if(H.compile):
         imle = torch.compile(imle)
